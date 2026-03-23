@@ -1,0 +1,218 @@
+/**
+ * ChannelBackend — abstract interface for messaging platform integrations.
+ *
+ * Each backend (Discord, Telegram, Slack, etc.) implements this interface
+ * to provide a unified messaging layer to the MCP server.
+ */
+
+// ── Inbound message from a messaging platform ──────────────────────────
+
+export interface AttachmentInfo {
+  name: string
+  contentType: string
+  /** Size in bytes */
+  size: number
+}
+
+export interface InboundMessage {
+  chatId: string
+  messageId: string
+  user: string
+  userId: string
+  text: string
+  /** ISO 8601 timestamp */
+  ts: string
+  attachments: AttachmentInfo[]
+  /** Local file path of an inline image (Telegram photos) */
+  imagePath?: string
+}
+
+// ── Outbound types ─────────────────────────────────────────────────────
+
+export interface SendOptions {
+  /** Message ID to thread/reply under */
+  replyTo?: string
+  /** Absolute file paths to attach */
+  files?: string[]
+}
+
+export interface SendResult {
+  /** IDs of sent message(s) — may be split into multiple chunks */
+  sentIds: string[]
+}
+
+export interface FetchedMessage {
+  id: string
+  user: string
+  text: string
+  /** ISO 8601 timestamp */
+  ts: string
+  isMe: boolean
+  attachmentCount: number
+}
+
+export interface DownloadedFile {
+  path: string
+  name: string
+  contentType: string
+  /** Size in bytes */
+  size: number
+}
+
+// ── Backend interface ──────────────────────────────────────────────────
+
+export interface ChannelBackend {
+  /** Backend identifier (e.g. "discord", "telegram") */
+  readonly name: string
+
+  /**
+   * Connect to the messaging platform.
+   * Must be called before any other method.
+   */
+  connect(): Promise<void>
+
+  /**
+   * Gracefully disconnect from the platform.
+   */
+  disconnect(): Promise<void>
+
+  /**
+   * Send a message to a chat. Long messages are automatically chunked
+   * per platform limits. Returns IDs of all sent message parts.
+   */
+  sendMessage(chatId: string, text: string, opts?: SendOptions): Promise<SendResult>
+
+  /**
+   * Fetch recent messages from a channel, oldest first.
+   */
+  fetchMessages(channelId: string, limit: number): Promise<FetchedMessage[]>
+
+  /**
+   * Add an emoji reaction to a message.
+   */
+  react(chatId: string, messageId: string, emoji: string): Promise<void>
+
+  /**
+   * Edit a previously sent message. Returns the edited message ID.
+   */
+  editMessage(chatId: string, messageId: string, text: string): Promise<string>
+
+  /**
+   * Download all attachments from a message. Returns local file paths.
+   */
+  downloadAttachment(chatId: string, messageId: string): Promise<DownloadedFile[]>
+
+  /**
+   * Validate that an outbound message to this chat is allowed.
+   * Throws if the channel is not in the allowlist.
+   */
+  validateChannel(chatId: string): Promise<void>
+
+  /**
+   * Callback invoked when an inbound message passes the access gate.
+   * Set by the MCP server to route messages as notifications.
+   */
+  onMessage: ((msg: InboundMessage) => void) | null
+}
+
+// ── Channel types ─────────────────────────────────────────────────────
+
+export interface ChannelEntry {
+  /** Platform-specific channel ID */
+  id: string
+  /** "interactive" = listen + respond, "monitor" = listen only, report to main */
+  mode: 'interactive' | 'monitor'
+}
+
+export interface ChannelsConfig {
+  /** Label of the main channel (key in channels map) */
+  main: string
+  /** Named channels — key is a human-readable label, value has id + mode */
+  channels: Record<string, ChannelEntry>
+}
+
+// ── Access types ──────────────────────────────────────────────────────
+
+export interface ChannelAccessPolicy {
+  /** Whether the bot requires an @mention to respond */
+  requireMention: boolean
+  /** User IDs allowed to interact; empty = everyone */
+  allowFrom: string[]
+}
+
+// ── Voice types ───────────────────────────────────────────────────────
+
+export interface VoiceConfig {
+  /** Whether voice message transcription is enabled */
+  enabled: boolean
+}
+
+// ── Backend config types ───────────────────────────────────────────────
+
+export interface DiscordBackendConfig {
+  token: string
+  stateDir?: string
+  accessMode?: 'static' | 'dynamic'
+}
+
+export interface TelegramBackendConfig {
+  token: string
+  stateDir?: string
+  accessMode?: 'static' | 'dynamic'
+}
+
+export interface PluginConfig {
+  backend: 'discord' | 'telegram'
+  telegram?: TelegramBackendConfig
+  discord?: DiscordBackendConfig
+  /** Named channel configuration */
+  channelsConfig?: ChannelsConfig
+  /** MD file paths to inject as additional context into instructions */
+  contextFiles?: string[]
+  /** Spawns a separate claude -p session at the scheduled time */
+  nonInteractive?: TimedSchedule[]
+  /** Injects prompt into the current session at the scheduled time */
+  interactive?: TimedSchedule[]
+  /** Bot-initiated conversation based on frequency and idle guard */
+  proactive?: ProactiveConfig
+  /** Directory containing prompt .md files */
+  promptsDir?: string
+  /** Voice message transcription settings */
+  voice?: VoiceConfig
+}
+
+// ── Schedule types ─────────────────────────────────────────────────────
+
+/** Shared shape for non-interactive and interactive schedules */
+export interface TimedSchedule {
+  /** Unique name (kebab-case), also used as prompt filename */
+  name: string
+  /** "HH:MM" (24h) or "hourly" for every-hour execution */
+  time: string
+  /** "daily" or "weekday" (Mon-Fri, skips weekends). Default: "daily" */
+  days?: 'daily' | 'weekday'
+  /** Target channel label (resolved to ID via channelsConfig) */
+  channel: string
+  /** Prompt file path relative to promptsDir, or absolute path */
+  prompt?: string
+  /** Whether this schedule is enabled (default: true) */
+  enabled?: boolean
+}
+
+/** A single proactive conversation topic */
+export interface ProactiveItem {
+  /** Topic name — also used as prompt filename ({topic}.md) */
+  topic: string
+  /** Target channel label (resolved to ID via channelsConfig) */
+  channel: string
+}
+
+/** Configuration for bot-initiated proactive conversations */
+export interface ProactiveConfig {
+  /** Frequency level 1-5 (1 = ~1/day, 2 = ~2/day, 3 = ~4/day, 4 = ~7/day, 5 = ~10/day) */
+  frequency: number
+  /** Whether to append proactive-feedback.md to prompts */
+  feedback: boolean
+  /** Topic items — each gets its own prompt file */
+  items: ProactiveItem[]
+}

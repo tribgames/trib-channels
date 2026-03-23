@@ -1,0 +1,19 @@
+{
+  "name": "claude2bot",
+  "version": "0.1.0",
+  "description": "Multi-backend channel plugin for Claude Code with pluggable messaging backends",
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "start": "npx tsx server.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "discord.js": "^14.14.0",
+    "grammy": "^1.20.0",
+    "tsx": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0"
+  }
+}

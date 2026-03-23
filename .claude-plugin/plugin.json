@@ -1,0 +1,13 @@
+{
+  "name": "claude2bot",
+  "description": "Multi-backend channel plugin for Claude Code. Supports Discord and Telegram with a pluggable backend architecture for adding Slack and other messaging platforms.",
+  "version": "0.1.0",
+  "keywords": [
+    "channel",
+    "discord",
+    "telegram",
+    "messaging",
+    "mcp",
+    "multi-backend"
+  ]
+}

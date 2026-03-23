@@ -1,0 +1,5 @@
+node_modules/
+dist/
+bun.lock
+settings.local.md
+*.tsbuildinfo
