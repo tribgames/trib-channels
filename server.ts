@@ -99,13 +99,14 @@ function runCmd(cmd: string, args: string[], capture = false): Promise<string> {
 
 /** Resolve whisper binary — try config override, then common names in PATH */
 let resolvedWhisperCmd: string | null = null
+const whichCmd = process.platform === 'win32' ? 'where' : 'which'
 
 async function findWhisper(override?: string): Promise<string> {
   if (override) return override
   if (resolvedWhisperCmd) return resolvedWhisperCmd
   for (const candidate of ['whisper-cli', 'whisper', 'whisper.cpp']) {
     try {
-      await runCmd('which', [candidate], true)
+      await runCmd(whichCmd, [candidate], true)
       resolvedWhisperCmd = candidate
       return candidate
     } catch { /* not found, try next */ }
