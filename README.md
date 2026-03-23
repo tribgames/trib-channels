@@ -16,35 +16,14 @@
 
 ## Quick Start
 
-### 1. Register as a local marketplace
+### 1. Add marketplace & install
 
 ```bash
-# Create a marketplace wrapper directory
-mkdir -p /path/to/claude2bot-marketplace/.claude-plugin
-cat > /path/to/claude2bot-marketplace/.claude-plugin/marketplace.json << 'EOF'
-{
-  "name": "claude2bot",
-  "description": "Local marketplace for claude2bot",
-  "owner": { "name": "Your Name", "email": "you@example.com" },
-  "plugins": [{ "name": "claude2bot", "category": "productivity", "source": "./claude2bot" }]
-}
-EOF
-
-# Symlink or copy the plugin into the marketplace
-ln -s /path/to/claude2bot /path/to/claude2bot-marketplace/claude2bot
-
-# Register the marketplace
-claude plugin marketplace add /path/to/claude2bot-marketplace
-```
-
-### 2. Install & enable
-
-```bash
+claude plugin marketplace add https://github.com/claude2bot/claude2bot
 claude plugin install claude2bot@claude2bot
-claude plugin enable claude2bot@claude2bot
 ```
 
-### 3. Configure
+### 2. Configure
 
 Run the setup wizard inside a Claude Code session:
 
@@ -52,22 +31,14 @@ Run the setup wizard inside a Claude Code session:
 /claude2bot:setup
 ```
 
-Or manually create `~/.claude/plugins/data/claude2bot-claude2bot/config.json`:
+The wizard will:
+- Ask for your backend (Discord / Telegram) and bot token
+- Connect to verify the token and discover channels (Discord) or bot info (Telegram)
+- Let you select main channel and additional channels
+- Configure access policy and voice transcription
+- Write `config.json` and `access.json` automatically
 
-```jsonc
-{
-  "backend": "discord",          // "discord" or "telegram"
-  "discord": {
-    "token": "YOUR_BOT_TOKEN"
-  },
-  "voice": {
-    "enabled": true,
-    "language": "auto"           // "auto", "en", "ko", etc.
-  }
-}
-```
-
-### 4. Run
+### 3. Run
 
 ```bash
 # Channel API is in preview — this flag is required
@@ -88,6 +59,7 @@ Listening for channel messages from: plugin:claude2bot@claude2bot
 | `/claude2bot:schedule` | List, add, remove, or trigger schedules |
 | `/claude2bot:access` | Manage allowlists, pairings, DM policy |
 | `/claude2bot:doctor` | Diagnose configuration and connectivity |
+| `/claude2bot:voice-setup` | Install voice transcription dependencies |
 
 ## Configuration Files
 

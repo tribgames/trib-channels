@@ -5,13 +5,19 @@
 
 import { readFileSync, mkdirSync } from 'fs'
 import { join } from 'path'
-import { homedir } from 'os'
 import { DiscordBackend } from '../backends/discord.js'
 import { TelegramBackend } from '../backends/telegram.js'
 import type { ChannelBackend, PluginConfig } from '../backends/types.js'
 
-export const DATA_DIR =
-  process.env.CLAUDE_PLUGIN_DATA ?? join(homedir(), '.claude', 'plugins', 'data', 'claude2bot')
+if (!process.env.CLAUDE_PLUGIN_DATA) {
+  process.stderr.write(
+    'claude2bot: CLAUDE_PLUGIN_DATA not set.\n' +
+    '  This plugin must be run through Claude Code (claude --channels plugin:claude2bot@claude2bot).\n',
+  )
+  process.exit(1)
+}
+
+export const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
 
 export const PLUGIN_ROOT =
   process.env.CLAUDE_PLUGIN_ROOT ?? new URL('..', import.meta.url).pathname
@@ -41,7 +47,7 @@ export function createBackend(config: PluginConfig): ChannelBackend {
         process.exit(1)
       }
       const stateDir =
-        config.discord.stateDir ?? join(homedir(), '.claude', 'channels', 'discord')
+        config.discord.stateDir ?? join(DATA_DIR, 'discord')
       mkdirSync(stateDir, { recursive: true })
       return new DiscordBackend(config.discord, stateDir)
     }
@@ -51,7 +57,7 @@ export function createBackend(config: PluginConfig): ChannelBackend {
         process.exit(1)
       }
       const stateDir =
-        config.telegram.stateDir ?? join(homedir(), '.claude', 'channels', 'telegram')
+        config.telegram.stateDir ?? join(DATA_DIR, 'telegram')
       mkdirSync(stateDir, { recursive: true })
       return new TelegramBackend(config.telegram, stateDir)
     }
