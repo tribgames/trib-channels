@@ -221,4 +221,8 @@ export interface ProactiveConfig {
   feedback: boolean
   /** Topic items — each gets its own prompt file */
   items: ProactiveItem[]
+  /** Do-not-disturb start time "HH:MM" (e.g. "23:00") */
+  dndStart?: string
+  /** Do-not-disturb end time "HH:MM" (e.g. "07:00") */
+  dndEnd?: string
 }

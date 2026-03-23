@@ -175,6 +175,9 @@ export class Scheduler {
   private tickProactive(now: Date, dateStr: string): void {
     if (!this.proactive || this.proactive.items.length === 0) return
 
+    // DND check
+    if (this.isDnd(now)) return
+
     // Generate daily random slots if new day
     if (this.proactiveSlotsDate !== dateStr) {
       this.generateDailySlots(dateStr)
@@ -193,6 +196,17 @@ export class Scheduler {
     const items = this.proactive.items
     const item = items[Math.floor(Math.random() * items.length)]
     this.fireProactive(item)
+  }
+
+  /** Check if current time is within DND (do-not-disturb) window */
+  private isDnd(now: Date): boolean {
+    const dndStart = this.proactive?.dndStart
+    const dndEnd = this.proactive?.dndEnd
+    if (!dndStart || !dndEnd) return false
+    const hhmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
+    // Handle overnight DND (e.g. 23:00 - 07:00)
+    if (dndStart > dndEnd) return hhmm >= dndStart || hhmm < dndEnd
+    return hhmm >= dndStart && hhmm < dndEnd
   }
 
   private generateDailySlots(dateStr: string): void {
@@ -259,8 +273,11 @@ export class Scheduler {
       return
     }
 
+    // Replace template variables in prompt
+    const channelId = this.resolveChannel(item.channel)
+    let prompt = topicPrompt.replace(/\{\{CHAT_ID\}\}/g, channelId)
+
     // Merge topic prompt + feedback file
-    let prompt = topicPrompt
     if (this.proactive?.feedback) {
       const feedbackPath = join(DATA_DIR, 'proactive-feedback.md')
       const feedback = this.tryRead(feedbackPath)
