@@ -97,11 +97,32 @@ function runCmd(cmd: string, args: string[], capture = false): Promise<string> {
   })
 }
 
+/** Resolve whisper binary — try config override, then common names in PATH */
+let resolvedWhisperCmd: string | null = null
+
+async function findWhisper(override?: string): Promise<string> {
+  if (override) return override
+  if (resolvedWhisperCmd) return resolvedWhisperCmd
+  for (const candidate of ['whisper-cli', 'whisper', 'whisper.cpp']) {
+    try {
+      await runCmd('which', [candidate], true)
+      resolvedWhisperCmd = candidate
+      return candidate
+    } catch { /* not found, try next */ }
+  }
+  throw new Error('whisper not found in PATH — install whisper.cpp or set voice.command in config')
+}
+
 async function transcribeVoice(audioPath: string): Promise<string | null> {
   const wavPath = audioPath.replace(/\.[^.]+$/, '.wav')
   try {
     await runCmd('ffmpeg', ['-i', audioPath, '-ar', '16000', '-ac', '1', '-y', wavPath])
-    const text = await runCmd('whisper', ['-f', wavPath, '--no-timestamps'], true)
+    const whisperCmd = await findWhisper(config.voice?.command)
+    const args = ['-f', wavPath, '--no-timestamps']
+    const lang = config.voice?.language ?? 'auto'
+    if (lang) args.push('-l', lang)
+    if (config.voice?.model) args.push('-m', config.voice.model)
+    const text = await runCmd(whisperCmd, args, true)
     return text.trim() || null
   } catch {
     return null

@@ -2,40 +2,127 @@
 
 > 🤖 100% built with Claude Code — inspired by the official Discord & Telegram plugins, redesigned as an all-in-one autonomous agent
 
-> 🤖 100% built with Claude Code — inspired by the official Discord & Telegram plugins, redesigned as an all-in-one autonomous agent
+**v0.1.0-preview** — Claude Code channel mode plugin for autonomous AI agent & personal assistant.
 
-> 🤖 100% built with Claude Code — inspired by the official Discord & Telegram plugins, redesigned as an all-in-one autonomous agent
-
-Claude Code channel mode plugin — Autonomous AI agent & personal assistant for messengers.
+> ⚠️ **Preview**: Claude Code's channel API is currently in preview. The `--dangerously-load-development-channels` flag is required to run this plugin.
 
 ## Features
 
-- Discord & Telegram support (multi-backend)
-- Built-in scheduler (non-interactive, interactive, proactive)
-- Voice transcription (whisper.cpp)
-- Access control & pairing
-- Proactive chat with feedback loop
+- **Multi-backend**: Discord & Telegram support with pluggable architecture
+- **Built-in scheduler**: non-interactive (`claude -p`), interactive (session inject), proactive (random-interval bot-initiated chat)
+- **Voice transcription**: whisper.cpp with cross-platform auto-detection (macOS / Windows / Linux)
+- **Access control**: DM allowlists, channel policies, pairing codes
+- **Proactive chat**: Memory-driven conversations with feedback loop and idle guard
 
 ## Quick Start
 
-1. Install: `/plugin marketplace add claude2bot/claude2bot`
-2. Enable: `enabledPlugins: { "claude2bot@claude2bot": true }`
-3. Setup: `/claude2bot:setup`
-4. Run: `claude --channels plugin:claude2bot@claude2bot`
+### 1. Register as a local marketplace
+
+```bash
+# Create a marketplace wrapper directory
+mkdir -p /path/to/claude2bot-marketplace/.claude-plugin
+cat > /path/to/claude2bot-marketplace/.claude-plugin/marketplace.json << 'EOF'
+{
+  "name": "claude2bot",
+  "description": "Local marketplace for claude2bot",
+  "owner": { "name": "Your Name", "email": "you@example.com" },
+  "plugins": [{ "name": "claude2bot", "category": "productivity", "source": "./claude2bot" }]
+}
+EOF
+
+# Symlink or copy the plugin into the marketplace
+ln -s /path/to/claude2bot /path/to/claude2bot-marketplace/claude2bot
+
+# Register the marketplace
+claude plugin marketplace add /path/to/claude2bot-marketplace
+```
+
+### 2. Install & enable
+
+```bash
+claude plugin install claude2bot@claude2bot
+claude plugin enable claude2bot@claude2bot
+```
+
+### 3. Configure
+
+Run the setup wizard inside a Claude Code session:
+
+```
+/claude2bot:setup
+```
+
+Or manually create `~/.claude/plugins/data/claude2bot-claude2bot/config.json`:
+
+```jsonc
+{
+  "backend": "discord",          // "discord" or "telegram"
+  "discord": {
+    "token": "YOUR_BOT_TOKEN"
+  },
+  "voice": {
+    "enabled": true,
+    "language": "auto"           // "auto", "en", "ko", etc.
+  }
+}
+```
+
+### 4. Run
+
+```bash
+# Channel API is in preview — this flag is required
+claude --dangerously-load-development-channels plugin:claude2bot@claude2bot
+```
+
+The session will show:
+```
+Listening for channel messages from: plugin:claude2bot@claude2bot
+```
 
 ## Commands
 
-- `/claude2bot:setup` — Initial configuration
-- `/claude2bot:status` — Bot & scheduler status
-- `/claude2bot:schedule` — Manage schedules
-- `/claude2bot:access` — Access control
-- `/claude2bot:doctor` — Diagnostics
+| Command | Description |
+|---------|-------------|
+| `/claude2bot:setup` | Interactive first-time setup |
+| `/claude2bot:status` | Bot connection, channels, scheduler status |
+| `/claude2bot:schedule` | List, add, remove, or trigger schedules |
+| `/claude2bot:access` | Manage allowlists, pairings, DM policy |
+| `/claude2bot:doctor` | Diagnose configuration and connectivity |
 
-## Configuration
+## Configuration Files
 
-- `config.json` — Bot tokens, channels, schedules
-- `settings.local.md` — Custom response rules (gitignored)
-- `access.json` — Access control policies
+| File | Description |
+|------|-------------|
+| `config.json` | Backend, tokens, channels, schedules, voice settings |
+| `access.json` | Per-backend access control policies |
+| `settings.default.md` | Default behavioral rules (bundled) |
+| `settings.local.md` | User overrides for response style (gitignored) |
+| `prompts/` | Schedule prompt templates (`.md` files) |
+
+### Voice Config
+
+```jsonc
+{
+  "voice": {
+    "enabled": true,
+    "command": "whisper-cli",    // optional: override binary name or full path
+    "model": null,               // optional: path to GGML model file
+    "language": "auto"           // "auto" for detection, or BCP-47 code
+  }
+}
+```
+
+Cross-platform auto-detection order: `whisper-cli` → `whisper` → `whisper.cpp`
+
+Requires [whisper.cpp](https://github.com/ggerganov/whisper.cpp) and `ffmpeg`.
+
+## Scheduler Types
+
+| Type | How it runs | Session required? |
+|------|-------------|-------------------|
+| **non-interactive** | Spawns `claude -p` subprocess | No (independent process) |
+| **interactive** | Injects prompt into current session | Yes |
+| **proactive** | Random-interval session inject with idle guard | Yes |
 
 ## License
 

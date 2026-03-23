@@ -1,5 +1,5 @@
 /**
- * cc-bot session-start hook
+ * claude2bot session-start hook
  *
  * Loads settings files and injects them as additionalContext:
  *   1. settings.default.md (bundled with plugin)
@@ -13,7 +13,7 @@ const path = require('path');
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || __dirname.replace(/[/\\]hooks$/, '');
 const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA || path.join(
   process.env.HOME || process.env.USERPROFILE || '',
-  '.claude', 'plugins', 'data', 'cc-bot'
+  '.claude', 'plugins', 'data', 'claude2bot'
 );
 
 const DEFAULT_FILE = path.join(PLUGIN_ROOT, 'settings.default.md');

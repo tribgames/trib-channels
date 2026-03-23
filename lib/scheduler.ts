@@ -142,7 +142,7 @@ export class Scheduler {
   private tick(): void {
     const now = new Date()
     const hhmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
-    const dateStr = now.toISOString().slice(0, 10)
+    const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
     const key = `${dateStr}T${hhmm}`
     const dow = now.getDay()
     const isWeekend = dow === 0 || dow === 6

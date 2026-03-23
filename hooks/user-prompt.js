@@ -13,7 +13,7 @@ const path = require('path');
 
 const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA || path.join(
   process.env.HOME || process.env.USERPROFILE || '',
-  '.claude', 'plugins', 'data', 'cc-bot'
+  '.claude', 'plugins', 'data', 'claude2bot'
 );
 
 const LOCAL_FILE = path.join(DATA_DIR, 'settings.local.md');

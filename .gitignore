@@ -3,3 +3,5 @@ dist/
 bun.lock
 settings.local.md
 *.tsbuildinfo
+config.json
+prompts/

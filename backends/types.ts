@@ -145,6 +145,12 @@ export interface ChannelAccessPolicy {
 export interface VoiceConfig {
   /** Whether voice message transcription is enabled */
   enabled: boolean
+  /** Whisper binary name or absolute path (default: auto-detect whisper-cli) */
+  command?: string
+  /** GGML model file path (omit to use whisper's built-in default) */
+  model?: string
+  /** BCP-47 language code or "auto" for auto-detect (default: "auto") */
+  language?: string
 }
 
 // ── Backend config types ───────────────────────────────────────────────
