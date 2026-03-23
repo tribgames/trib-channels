@@ -256,11 +256,18 @@ export class Scheduler {
 
     // Non-interactive: spawn claude -p with lock file to prevent cross-process duplicates
     const lockFile = join(tmpdir(), `claude2bot-${schedule.name}.lock`)
+    const LOCK_TIMEOUT_MS = 10 * 60 * 1000 // 10 minutes
     if (existsSync(lockFile)) {
-      process.stderr.write(`cc-bot scheduler: ${schedule.name} skipped (lock file exists)\n`)
-      return
+      try {
+        const lockAge = Date.now() - require('fs').statSync(lockFile).mtimeMs
+        if (lockAge < LOCK_TIMEOUT_MS) {
+          process.stderr.write(`cc-bot scheduler: ${schedule.name} skipped (lock file exists, age ${Math.round(lockAge / 1000)}s)\n`)
+          return
+        }
+        process.stderr.write(`cc-bot scheduler: ${schedule.name} stale lock (${Math.round(lockAge / 1000)}s), overriding\n`)
+      } catch { /* stat failed, proceed */ }
     }
-    try { writeFileSync(lockFile, String(process.pid)) } catch { /* ignore */ }
+    try { writeFileSync(lockFile, `${process.pid}\n${Date.now()}`) } catch { /* ignore */ }
 
     this.running.add(schedule.name)
     const proc = spawn('claude', ['-p', '--dangerously-skip-permissions'])
