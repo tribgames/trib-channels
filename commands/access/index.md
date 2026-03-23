@@ -1,6 +1,10 @@
 ---
 description: Manage cc-bot access control — approve pairings, edit allowlists, set DM/group policy.
 args: "[pair|allow|deny|policy|channel|show] [value]"
+allowed-tools:
+  - AskUserQuestion
+  - Read
+  - Write
 ---
 
 # cc-bot Access Control

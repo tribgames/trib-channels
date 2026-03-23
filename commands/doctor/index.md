@@ -1,5 +1,10 @@
 ---
 description: Diagnose cc-bot configuration and connectivity issues.
+allowed-tools:
+  - Read
+  - Bash(node *)
+  - Bash(which *)
+  - Bash(ls *)
 ---
 
 # cc-bot Doctor

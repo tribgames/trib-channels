@@ -1,5 +1,8 @@
 ---
 description: Show cc-bot status — backend connection, channels, schedules, running processes, and access summary.
+allowed-tools:
+  - Read
+  - mcp__plugin_claude2bot_claude2bot__schedule_status
 ---
 
 # cc-bot Status
