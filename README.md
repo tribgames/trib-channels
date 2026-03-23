@@ -4,6 +4,8 @@
 
 > 🤖 100% built with Claude Code — inspired by the official Discord & Telegram plugins, redesigned as an all-in-one autonomous agent
 
+> 🤖 100% built with Claude Code — inspired by the official Discord & Telegram plugins, redesigned as an all-in-one autonomous agent
+
 Claude Code channel mode plugin — Autonomous AI agent & personal assistant for messengers.
 
 ## Features
