@@ -7,7 +7,7 @@
  */
 
 import { spawn } from 'child_process'
-import { readFileSync, writeFileSync, unlinkSync, existsSync } from 'fs'
+import { readFileSync, writeFileSync, unlinkSync, existsSync, openSync, closeSync, constants as fsConstants, statSync } from 'fs'
 import { join, isAbsolute } from 'path'
 import { tmpdir } from 'os'
 import type { TimedSchedule, ProactiveConfig, ProactiveItem, ChannelsConfig } from '../backends/types.js'
@@ -161,12 +161,28 @@ export class Scheduler {
 
     for (const { schedule: s, type } of allTimed) {
       if (this.running.has(s.name)) continue
-      if (this.lastFired.get(s.name) === key) continue
       if ((s.days ?? 'daily') === 'weekday' && isWeekend) continue
-      if (s.time !== 'hourly' && s.time !== hhmm) continue
-      if (s.time === 'hourly' && now.getMinutes() !== 0) continue
 
-      this.lastFired.set(s.name, key)
+      // Determine if this schedule should fire
+      const intervalMatch = s.time.match(/^every(\d+)m$/)
+      let shouldFire = false
+
+      if (intervalMatch) {
+        // Interval-based: fire if enough time elapsed since last run
+        const intervalMs = parseInt(intervalMatch[1]) * 60_000
+        const lastKey = this.lastFired.get(s.name)
+        const lastTime = lastKey ? new Date(lastKey).getTime() : 0
+        shouldFire = (Date.now() - lastTime) >= intervalMs
+      } else if (s.time === 'hourly') {
+        shouldFire = now.getMinutes() === 0 && this.lastFired.get(s.name) !== key
+      } else {
+        // Fixed time "HH:MM"
+        shouldFire = s.time === hhmm && this.lastFired.get(s.name) !== key
+      }
+
+      if (!shouldFire) continue
+
+      this.lastFired.set(s.name, now.toISOString())
       this.fireTimed(s, type).catch(err =>
         process.stderr.write(`cc-bot scheduler: ${s.name} failed: ${err}\n`),
       )
@@ -254,20 +270,32 @@ export class Scheduler {
       return
     }
 
-    // Non-interactive: spawn claude -p with lock file to prevent cross-process duplicates
+    // Non-interactive: spawn claude -p with atomic lock file to prevent cross-process duplicates
     const lockFile = join(tmpdir(), `claude2bot-${schedule.name}.lock`)
     const LOCK_TIMEOUT_MS = 10 * 60 * 1000 // 10 minutes
+
+    // Check stale lock
     if (existsSync(lockFile)) {
       try {
-        const lockAge = Date.now() - require('fs').statSync(lockFile).mtimeMs
+        const lockAge = Date.now() - statSync(lockFile).mtimeMs
         if (lockAge < LOCK_TIMEOUT_MS) {
-          process.stderr.write(`cc-bot scheduler: ${schedule.name} skipped (lock file exists, age ${Math.round(lockAge / 1000)}s)\n`)
+          process.stderr.write(`cc-bot scheduler: ${schedule.name} skipped (lock age ${Math.round(lockAge / 1000)}s)\n`)
           return
         }
         process.stderr.write(`cc-bot scheduler: ${schedule.name} stale lock (${Math.round(lockAge / 1000)}s), overriding\n`)
+        try { unlinkSync(lockFile) } catch { /* ignore */ }
       } catch { /* stat failed, proceed */ }
     }
-    try { writeFileSync(lockFile, `${process.pid}\n${Date.now()}`) } catch { /* ignore */ }
+
+    // Atomic lock creation (O_CREAT | O_EXCL = fail if exists)
+    try {
+      const fd = openSync(lockFile, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY)
+      writeFileSync(fd, `${process.pid}\n${Date.now()}`)
+      closeSync(fd)
+    } catch {
+      process.stderr.write(`cc-bot scheduler: ${schedule.name} skipped (lock race lost)\n`)
+      return
+    }
 
     this.running.add(schedule.name)
     const proc = spawn('claude', ['-p', '--dangerously-skip-permissions'])

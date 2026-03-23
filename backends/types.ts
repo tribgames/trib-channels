@@ -193,7 +193,7 @@ export interface PluginConfig {
 export interface TimedSchedule {
   /** Unique name (kebab-case), also used as prompt filename */
   name: string
-  /** "HH:MM" (24h) or "hourly" for every-hour execution */
+  /** "HH:MM" (24h), "hourly", or interval like "every5m", "every10m", "every30m" */
   time: string
   /** "daily" or "weekday" (Mon-Fri, skips weekends). Default: "daily" */
   days?: 'daily' | 'weekday'
