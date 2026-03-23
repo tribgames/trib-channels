@@ -7,8 +7,9 @@
  */
 
 import { spawn } from 'child_process'
-import { readFileSync, existsSync } from 'fs'
+import { readFileSync, writeFileSync, unlinkSync, existsSync } from 'fs'
 import { join, isAbsolute } from 'path'
+import { tmpdir } from 'os'
 import type { TimedSchedule, ProactiveConfig, ProactiveItem, ChannelsConfig } from '../backends/types.js'
 import { DATA_DIR } from './config.js'
 
@@ -120,6 +121,11 @@ export class Scheduler {
     if (timed) {
       if (this.running.has(name)) return `"${name}" is already running`
       const isNonInteractive = this.nonInteractive.includes(timed)
+      // Set lastFired to prevent duplicate with automatic tick
+      const now = new Date()
+      const hhmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
+      const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+      this.lastFired.set(name, `${dateStr}T${hhmm}`)
       await this.fireTimed(timed, isNonInteractive ? 'non-interactive' : 'interactive')
       return `triggered "${name}"`
     }
@@ -248,18 +254,29 @@ export class Scheduler {
       return
     }
 
-    // Non-interactive: spawn claude -p
+    // Non-interactive: spawn claude -p with lock file to prevent cross-process duplicates
+    const lockFile = join(tmpdir(), `claude2bot-${schedule.name}.lock`)
+    if (existsSync(lockFile)) {
+      process.stderr.write(`cc-bot scheduler: ${schedule.name} skipped (lock file exists)\n`)
+      return
+    }
+    try { writeFileSync(lockFile, String(process.pid)) } catch { /* ignore */ }
+
     this.running.add(schedule.name)
     const proc = spawn('claude', ['-p', '--dangerously-skip-permissions'])
     proc.stdin.write(prompt)
     proc.stdin.end()
 
-    proc.on('close', (code: number | null) => {
+    const cleanup = () => {
       this.running.delete(schedule.name)
+      try { unlinkSync(lockFile) } catch { /* ignore */ }
+    }
+    proc.on('close', (code: number | null) => {
+      cleanup()
       process.stderr.write(`cc-bot scheduler: ${schedule.name} exited (${code})\n`)
     })
     proc.on('error', (err: Error) => {
-      this.running.delete(schedule.name)
+      cleanup()
       process.stderr.write(`cc-bot scheduler: ${schedule.name} error: ${err}\n`)
     })
   }
