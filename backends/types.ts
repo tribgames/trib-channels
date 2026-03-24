@@ -122,6 +122,13 @@ export interface ChannelBackend {
    * Callback invoked when a Discord interaction (button click, select menu) occurs.
    */
   onInteraction: ((interaction: { type: string; customId: string; userId: string; channelId: string; values?: string[]; message?: { id: string } }) => void) | null
+
+  /**
+   * Callback invoked when a Discord slash command is received.
+   * Set by the MCP server to handle /claude subcommands.
+   * Only meaningful for Discord backend; other backends should set to null.
+   */
+  onSlashCommand: ((interaction: any) => void) | null
 }
 
 // ── Channel types ─────────────────────────────────────────────────────

@@ -20,7 +20,9 @@ import * as path from 'path'
 import { loadConfig, createBackend } from './lib/config.js'
 import { loadSettings } from './lib/settings.js'
 import { Scheduler } from './lib/scheduler.js'
+import { handleSlashCommand, type SlashCommandContext } from './lib/slash-commands.js'
 import type { InboundMessage } from './backends/types.js'
+import type { ChatInputCommandInteraction } from 'discord.js'
 
 // ── Bootstrap ──────────────────────────────────────────────────────────
 
@@ -171,6 +173,33 @@ backend.onInteraction = (interaction) => {
       },
     },
   })
+}
+
+// ── Slash command handling ────────────────────────────────────────────
+
+const slashCtx: SlashCommandContext = {
+  config,
+  scheduler,
+  notify: (channelId: string, user: string, text: string) => {
+    void mcp.notification({
+      method: 'notifications/claude/channel',
+      params: {
+        content: text,
+        meta: {
+          chat_id: channelId,
+          user,
+          user_id: 'system',
+          ts: new Date().toISOString(),
+        },
+      },
+    })
+  },
+  serverProcess: process,
+}
+
+backend.onSlashCommand = (interaction) => {
+  scheduler.noteActivity()
+  void handleSlashCommand(interaction as ChatInputCommandInteraction, slashCtx)
 }
 
 // ── Voice transcription ───────────────────────────────────────────────

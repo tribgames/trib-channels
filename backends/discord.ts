@@ -13,6 +13,7 @@ import {
   ChannelType,
   type Message,
   type Attachment,
+  type ChatInputCommandInteraction,
 } from 'discord.js'
 import { randomBytes } from 'crypto'
 import {
@@ -112,6 +113,7 @@ export class DiscordBackend implements ChannelBackend {
 
   onMessage: ((msg: InboundMessage) => void) | null = null
   onInteraction: ((interaction: { type: string; customId: string; userId: string; channelId: string; values?: string[]; message?: { id: string } }) => void) | null = null
+  onSlashCommand: ((interaction: ChatInputCommandInteraction) => void) | null = null
 
   private client: Client
   private stateDir: string
@@ -165,6 +167,14 @@ export class DiscordBackend implements ChannelBackend {
 
     this.client.on('interactionCreate', async (interaction) => {
       try {
+        // Slash commands — /claude stop, /claude status, etc.
+        if (interaction.isChatInputCommand()) {
+          if (this.onSlashCommand) {
+            this.onSlashCommand(interaction)
+          }
+          return
+        }
+
         if (interaction.isButton() || interaction.isStringSelectMenu() || interaction.isRoleSelectMenu() || interaction.isUserSelectMenu() || interaction.isChannelSelectMenu()) {
           await interaction.deferUpdate().catch(() => {})
 
@@ -184,8 +194,15 @@ export class DiscordBackend implements ChannelBackend {
       }
     })
 
-    this.client.once('ready', c => {
+    this.client.once('ready', async c => {
       process.stderr.write(`claude2bot discord: gateway connected as ${c.user.tag}\n`)
+      // Register slash commands on ready
+      try {
+        const { registerSlashCommands } = await import('../lib/slash-commands.js')
+        await registerSlashCommands(this.client, this.token)
+      } catch (err) {
+        process.stderr.write(`claude2bot discord: slash command registration failed: ${err}\n`)
+      }
     })
 
     await this.client.login(this.token)
