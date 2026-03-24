@@ -1,8 +1,8 @@
 if (process.env.CLAUDE2BOT_NO_CONNECT) process.exit(0);
 /**
- * 1. Update reaction: work emoji → ✅
- * 2. Append ✅ to log message
- * 3. Forward assistant text if reply wasn't used
+ * claude2bot Stop hook
+ * 1. Remove reaction
+ * 2. Forward assistant text to Discord
  */
 const https = require('https');
 const fs = require('fs');
@@ -12,19 +12,6 @@ const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA;
 if (!DATA_DIR) process.exit(0);
 
 const STATE_FILE = path.join(require('os').tmpdir(), 'claude2bot-status.json');
-
-function discordApi(method, apiPath, token, body) {
-  return new Promise((resolve) => {
-    const data = body ? JSON.stringify(body) : '';
-    const headers = { 'Authorization': 'Bot ' + token, 'Content-Type': 'application/json' };
-    if (data) headers['Content-Length'] = Buffer.byteLength(data);
-    const req = https.request({ hostname: 'discord.com', path: apiPath, method: method, headers: headers },
-      res => { let out = ''; res.on('data', d => { out += d; }); res.on('end', () => resolve()); });
-    req.on('error', resolve);
-    if (data) req.write(data);
-    req.end();
-  });
-}
 
 function discordReact(method, channelId, messageId, emoji, token) {
   return new Promise((resolve) => {
@@ -56,8 +43,7 @@ let input = '';
 process.stdin.on('data', d => { input += d; });
 process.stdin.on('end', async () => {
   try {
-    const data = JSON.parse(input); fs.appendFileSync("/tmp/claude2bot-stop-dump.json", JSON.stringify({agent_id: data.agent_id, stop_hook_active: data.stop_hook_active, msg_len: (data.last_assistant_message || "").length, msg_preview: (data.last_assistant_message || "").substring(0, 100)}) + "
-");
+    const data = JSON.parse(input);
     if (data.agent_id) process.exit(0);
     if (data.stop_hook_active) process.exit(0);
 
@@ -74,20 +60,16 @@ process.stdin.on('end', async () => {
     let state = {};
     try { state = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); } catch {}
 
-    // 1. Remove reaction (clean up)
+    // 1. Remove reaction
     if (state.userMessageId && state.channelId === channelId && state.emoji) {
       await discordReact('DELETE', channelId, state.userMessageId, state.emoji, token);
     }
 
-    // Clean state
-    // Keep state file for subsequent turns (teammate messages etc)
-
-    // 3. Forward assistant text (always — no reply check needed)
+    // 2. Forward assistant text
     const msg = (data.last_assistant_message || '').trim();
     if (!msg || msg.includes('No response requested')) process.exit(0);
 
-    const pad = 'ㅤ
-';
+    const pad = '\u3164\n';
     const padded = pad + msg;
     const text = padded.length > 1900 ? padded.substring(0, 1900) + '...' : padded;
     await discordSend(channelId, text, token);
