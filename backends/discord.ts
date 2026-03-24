@@ -125,6 +125,7 @@ export class DiscordBackend implements ChannelBackend {
   private bootAccess: Access | null = null
   private recentSentIds = new Set<string>()
   private approvalTimer: ReturnType<typeof setInterval> | null = null
+  private typingIntervals = new Map<string, NodeJS.Timeout>()
 
   constructor(config: DiscordBackendConfig, stateDir: string) {
     this.token = config.token
@@ -221,12 +222,25 @@ export class DiscordBackend implements ChannelBackend {
       clearInterval(this.approvalTimer)
       this.approvalTimer = null
     }
+    for (const interval of this.typingIntervals.values()) {
+      clearInterval(interval)
+    }
+    this.typingIntervals.clear()
     this.client.destroy()
+  }
+
+  private stopTyping(channelId: string): void {
+    const interval = this.typingIntervals.get(channelId)
+    if (interval) {
+      clearInterval(interval)
+      this.typingIntervals.delete(channelId)
+    }
   }
 
   // ── Outbound operations ────────────────────────────────────────────
 
   async sendMessage(chatId: string, text: string, opts?: SendOptions): Promise<SendResult> {
+    this.stopTyping(chatId)
     const ch = await this.fetchAllowedChannel(chatId)
     if (!('send' in ch)) throw new Error('channel is not sendable')
 
@@ -468,9 +482,16 @@ export class DiscordBackend implements ChannelBackend {
       return
     }
 
-    // Typing indicator
+    // Typing indicator — repeat every 9s until reply
+    this.stopTyping(msg.channelId)
     if ('sendTyping' in msg.channel) {
       void msg.channel.sendTyping().catch(() => {})
+      const interval = setInterval(() => {
+        if ('sendTyping' in msg.channel) {
+          msg.channel.sendTyping().catch(() => {})
+        }
+      }, 9000)
+      this.typingIntervals.set(msg.channelId, interval)
     }
 
     // Ack reaction

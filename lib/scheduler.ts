@@ -166,6 +166,15 @@ export class Scheduler {
     }
   }
 
+  restart(): void {
+    if (this.tickTimer) {
+      clearInterval(this.tickTimer)
+      this.tickTimer = null
+    }
+    try { unlinkSync(Scheduler.SCHEDULER_LOCK) } catch {}
+    this.start()
+  }
+
   getStatus() {
     const result: Array<{
       name: string; time: string; days: string; type: string

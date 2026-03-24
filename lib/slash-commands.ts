@@ -196,6 +196,12 @@ const i18n: Record<string, Record<Lang, string>> = {
     ja: '追加失敗: {error}',
     zh: '添加失败: {error}',
   },
+  'schedule.restarted': {
+    en: 'Scheduler restarted.',
+    ko: '스케줄러가 재시작되었습니다.',
+    ja: 'スケジューラーを再起動しました。',
+    zh: '调度器已重启。',
+  },
   // doctor
   'doctor.config_exists': {
     en: '[PASS] Config file exists',
@@ -524,6 +530,7 @@ function buildCommands(): SlashCommandBuilder {
             { name: 'add', value: 'add' },
             { name: 'remove', value: 'remove' },
             { name: 'toggle', value: 'toggle' },
+            { name: 'restart', value: 'restart' },
           ),
       )
       .addStringOption(opt =>
@@ -994,6 +1001,12 @@ async function handleSchedule(
           flags: 64,
         })
       }
+      return
+    }
+
+    case 'restart': {
+      ctx.scheduler.restart()
+      await interaction.reply({ content: t('schedule.restarted', interaction.locale), flags: 64 })
       return
     }
   }
