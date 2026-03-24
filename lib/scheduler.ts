@@ -43,6 +43,9 @@ export class Scheduler {
   private injectFn: InjectFn | null = null
   private sendFn: SendFn | null = null
 
+  // Activity tracking
+  private lastActivity = 0                          // timestamp of last inbound message
+
   // Proactive state
   private proactiveSlots: number[] = []             // minute-of-day slots for today
   private proactiveSlotsDate = ''                   // "YYYY-MM-DD" when slots were generated
@@ -69,6 +72,10 @@ export class Scheduler {
 
   setSendHandler(fn: SendFn): void {
     this.sendFn = fn
+  }
+
+  noteActivity(): void {
+    this.lastActivity = Date.now()
   }
 
   private static SCHEDULER_LOCK = join(tmpdir(), 'claude2bot-scheduler.lock')
@@ -158,6 +165,10 @@ export class Scheduler {
       const topic = name.replace(/^proactive:/, '')
       const item = this.proactive.items.find(i => i.topic === topic)
       if (item) {
+        // Check active conversation guard even for manual triggers
+        if (this.lastActivity > 0 && (Date.now() - this.lastActivity) < 2 * 60_000) {
+          return `skipped proactive "${topic}" — conversation active (last activity ${Math.floor((Date.now() - this.lastActivity) / 1000)}s ago)`
+        }
         this.fireProactive(item)
         return `triggered proactive "${topic}"`
       }
@@ -235,6 +246,9 @@ export class Scheduler {
     const { idleMinutes } = FREQUENCY_MAP[freq]
     const elapsed = (Date.now() - this.proactiveLastFire) / 60_000
     if (this.proactiveLastFire > 0 && elapsed < idleMinutes) return
+
+    // Active conversation guard — don't interrupt if user messaged recently
+    if (this.lastActivity > 0 && (Date.now() - this.lastActivity) < idleMinutes * 60_000) return
 
     // Pick a random topic
     const items = this.proactive.items

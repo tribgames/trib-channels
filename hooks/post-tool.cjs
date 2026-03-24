@@ -92,7 +92,8 @@ process.stdin.on('end', async () => {
     }
     if (!summary) process.exit(0);
 
-    let toolLine = '-# ' + tool + ' (' + summary + ')';
+    const displayName = tool.replace(/^mcp__plugin_claude2bot_claude2bot__/, '');
+    let toolLine = '-# ' + displayName + ' (' + summary + ')';
     if (!isSearchTool && detail && detail !== summary) toolLine += '\n```\n' + detail.substring(0, 300) + '\n```';
 
     const emoji = '\u{1F6E0}\uFE0F';

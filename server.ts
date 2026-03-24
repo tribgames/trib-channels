@@ -13,6 +13,10 @@ import {
   CallToolRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js'
 import { spawn } from 'child_process'
+import * as fs from 'fs'
+import * as https from 'https'
+import * as os from 'os'
+import * as path from 'path'
 import { loadConfig, createBackend } from './lib/config.js'
 import { loadSettings } from './lib/settings.js'
 import { Scheduler } from './lib/scheduler.js'
@@ -79,7 +83,78 @@ scheduler.setSendHandler(async (channelId: string, text: string) => {
   await backend.sendMessage(channelId, text)
 })
 
+// ── Discord REST helper (for permission button responses) ─────────────
+
+function editDiscordMessage(channelId: string, messageId: string, label: string): void {
+  const token = config.discord?.token
+  if (!token) return
+
+  const body = JSON.stringify({
+    content: `🔐 **권한 요청** — ${label}`,
+    components: [],
+  })
+
+  const req = https.request({
+    hostname: 'discord.com',
+    path: `/api/v10/channels/${channelId}/messages/${messageId}`,
+    method: 'PATCH',
+    headers: {
+      'Authorization': `Bot ${token}`,
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(body),
+    },
+  }, res => { res.resume(); res.on('end', () => {}); })
+  req.on('error', (err: Error) => {
+    process.stderr.write(`claude2bot: editDiscordMessage failed: ${err}\n`)
+  })
+  req.write(body)
+  req.end()
+}
+
+// ── Interaction handling ──────────────────────────────────────────────
+
 backend.onInteraction = (interaction) => {
+  scheduler.noteActivity()
+
+  // ── Permission button handling (perm-{uuid}-{action}) ──
+  if (interaction.customId?.startsWith('perm-')) {
+    const match = interaction.customId.match(/^perm-([0-9a-f]{32})-(allow|session|deny)$/)
+    if (!match) return
+    const [, uuid, action] = match
+
+    // User authorization check — only allowFrom users can approve
+    const access = (() => {
+      try {
+        const stateDir = config.discord?.stateDir ?? path.join(process.env.CLAUDE_PLUGIN_DATA ?? '', 'discord')
+        const raw = fs.readFileSync(path.join(stateDir, 'access.json'), 'utf8')
+        return JSON.parse(raw)
+      } catch { return null }
+    })()
+
+    // access.json이 없으면 Discord 권한 처리 불가 → 무시
+    if (!access) return
+
+    if (access.allowFrom && !access.allowFrom.includes(interaction.userId)) {
+      process.stderr.write(`claude2bot: perm button rejected — user ${interaction.userId} not in allowFrom\n`)
+      return
+    }
+
+    // Write result file (idempotent — skip if already exists)
+    const resultPath = path.join(os.tmpdir(), `perm-${uuid}.result`)
+    if (!fs.existsSync(resultPath)) {
+      fs.writeFileSync(resultPath, action)
+    }
+
+    // Edit Discord message — disable buttons + show result
+    const labels: Record<string, string> = { allow: '승인됨', session: '세션 승인됨', deny: '거부됨' }
+    if (interaction.message?.id && interaction.channelId) {
+      editDiscordMessage(interaction.channelId, interaction.message.id, labels[action] || action)
+    }
+
+    return  // do NOT forward to notification
+  }
+
+  // ── Default: forward interaction as MCP notification ──
   void mcp.notification({
     method: 'notifications/claude/channel',
     params: {
@@ -364,6 +439,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
 // ── Inbound message bridge ─────────────────────────────────────────────
 
 backend.onMessage = (msg) => {
+  scheduler.noteActivity()
   void handleInbound(msg)
 }
 

@@ -26,6 +26,23 @@ function discordReact(method, channelId, messageId, emoji, token) {
   });
 }
 
+
+function chunk(text, limit) {
+  if (text.length <= limit) return [text];
+  const out = [];
+  let rest = text;
+  while (rest.length > limit) {
+    const para = rest.lastIndexOf('\n\n', limit);
+    const line = rest.lastIndexOf('\n', limit);
+    const space = rest.lastIndexOf(' ', limit);
+    const cut = para > limit / 2 ? para : line > limit / 2 ? line : space > 0 ? space : limit;
+    out.push(rest.slice(0, cut));
+    rest = rest.slice(cut).replace(/^\n+/, '');
+  }
+  if (rest) out.push(rest);
+  return out;
+}
+
 function discordSend(channelId, text, token) {
   return new Promise((resolve) => {
     const body = JSON.stringify({ content: text });
@@ -69,10 +86,12 @@ process.stdin.on('end', async () => {
     const msg = (data.last_assistant_message || '').trim();
     if (!msg || msg.includes('No response requested')) process.exit(0);
 
-    const pad = '\u3164\n';
+    const pad = (state && state.sentCount > 0) ? '\u3164\n' : '';
     const padded = pad + msg;
-    const text = padded.length > 1900 ? padded.substring(0, 1900) + '...' : padded;
-    await discordSend(channelId, text, token);
+    const chunks = chunk(padded, 2000);
+    for (const c of chunks) {
+      await discordSend(channelId, c, token);
+    }
     process.exit(0);
   } catch { process.exit(0); }
 });
