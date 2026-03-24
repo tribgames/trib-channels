@@ -50,7 +50,7 @@ process.stdin.on('end', async () => {
     // Skip internal/search tools — only show action tools
     if (tool === 'ToolSearch') process.exit(0);
     if (tool.includes('plugin_claude2bot_claude2bot__')) process.exit(0);
-    if (tool === 'Read' || tool === 'Grep' || tool === 'Glob') process.exit(0);
+    if (tool === 'Read' || tool === 'Grep' || tool === 'Glob' || tool === 'SendMessage') process.exit(0);
 
     // Build tool summary
     const desc = (toolInput.description || '').substring(0, 50);

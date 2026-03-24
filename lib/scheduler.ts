@@ -311,7 +311,10 @@ export class Scheduler {
 
     proc.on('close', (code: number | null) => {
       this.running.delete(schedule.name)
-      const result = stdout.trim()
+      // Only relay the last portion of stdout (skip internal tool logs, keep final result)
+      const lines = stdout.trim().split('\n')
+      // Take last 30 lines max, truncate to 1900 chars
+      const result = lines.slice(-30).join('\n').substring(0, 1900)
       if (result && this.sendFn) {
         this.sendFn(channelId, result).catch(err =>
           process.stderr.write(`claude2bot scheduler: ${schedule.name} relay failed: ${err}\n`),

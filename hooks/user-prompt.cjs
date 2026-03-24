@@ -85,9 +85,11 @@ process.stdin.on('end', async () => {
       const channelId = mainLabel && channels && channels[mainLabel] && channels[mainLabel].id;
 
       if (token && channelId) {
-        const msgs = await discordApi('GET', '/api/v10/channels/' + channelId + '/messages?limit=1', token);
-        if (Array.isArray(msgs) && msgs.length > 0) {
-          const mid = msgs[0].id;
+        const msgs = await discordApi('GET', '/api/v10/channels/' + channelId + '/messages?limit=5', token);
+        // Find latest non-bot message (user message)
+        const userMsg = Array.isArray(msgs) && msgs.find(m => !m.author || !m.author.bot);
+        if (userMsg) {
+          const mid = userMsg.id;
           fs.writeFileSync(STATE_FILE, JSON.stringify({
             channelId: channelId,
             userMessageId: mid,

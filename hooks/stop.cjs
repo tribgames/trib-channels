@@ -79,7 +79,7 @@ process.stdin.on('end', async () => {
     }
 
     // Clean state
-    try { fs.unlinkSync(STATE_FILE); } catch {}
+    // Keep state file for subsequent turns (teammate messages etc)
 
     // 3. Forward assistant text (always — no reply check needed)
     const msg = (data.last_assistant_message || '').trim();
