@@ -51,6 +51,8 @@ export class Scheduler {
   private proactiveSlotsDate = ''                   // "YYYY-MM-DD" when slots were generated
   private proactiveLastFire = 0                     // timestamp of last proactive fire
   private proactiveFiredToday = 0                   // count of proactive fires today
+  private deferred = new Map<string, number>()       // name -> deferred-until timestamp
+  private skippedToday = new Set<string>()           // names skipped for today
 
   constructor(
     nonInteractive: TimedSchedule[],
@@ -76,6 +78,57 @@ export class Scheduler {
 
   noteActivity(): void {
     this.lastActivity = Date.now()
+  }
+
+  /** Defer a schedule by N minutes from now */
+  defer(name: string, minutes: number): void {
+    this.deferred.set(name, Date.now() + minutes * 60_000)
+  }
+
+  /** Skip a schedule for the rest of today */
+  skipToday(name: string): void {
+    this.skippedToday.add(name)
+  }
+
+  /** Check if a schedule should be skipped (deferred or skipped today) */
+  shouldSkip(name: string): boolean {
+    if (this.skippedToday.has(name)) return true
+    const until = this.deferred.get(name)
+    if (until && Date.now() < until) return true
+    if (until && Date.now() >= until) this.deferred.delete(name)
+    return false
+  }
+
+  /** Get current session state based on activity */
+  getSessionState(): 'idle' | 'active' | 'recent' {
+    if (this.lastActivity === 0) return 'idle'
+    const elapsed = Date.now() - this.lastActivity
+    if (elapsed < 2 * 60_000) return 'active'       // within 2 minutes
+    if (elapsed < 5 * 60_000) return 'recent'        // within 5 minutes
+    return 'idle'
+  }
+
+  /** Get time context for prompt enrichment */
+  getTimeContext(): { hour: number; dayOfWeek: string; isWeekend: boolean } {
+    const now = new Date()
+    const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+    const dow = now.getDay()
+    return {
+      hour: now.getHours(),
+      dayOfWeek: days[dow],
+      isWeekend: dow === 0 || dow === 6,
+    }
+  }
+
+  /** Wrap prompt with session context metadata */
+  wrapPrompt(name: string, prompt: string, type: 'interactive' | 'proactive'): string {
+    const state = this.getSessionState()
+    const time = this.getTimeContext()
+    const header = [
+      `[schedule: ${name} | type: ${type} | session: ${state}]`,
+      `[time: ${time.dayOfWeek} ${String(time.hour).padStart(2, '0')}:${String(new Date().getMinutes()).padStart(2, '0')} | weekend: ${time.isWeekend}]`,
+    ].join('\n')
+    return `${header}\n\n${prompt}`
   }
 
   private static SCHEDULER_LOCK = join(tmpdir(), 'claude2bot-scheduler.lock')
@@ -166,7 +219,7 @@ export class Scheduler {
       const item = this.proactive.items.find(i => i.topic === topic)
       if (item) {
         // Check active conversation guard even for manual triggers
-        if (this.lastActivity > 0 && (Date.now() - this.lastActivity) < 2 * 60_000) {
+        if (this.lastActivity > 0 && (Date.now() - this.lastActivity) < 5 * 60_000) {
           return `skipped proactive "${topic}" — conversation active (last activity ${Math.floor((Date.now() - this.lastActivity) / 1000)}s ago)`
         }
         this.fireProactive(item)
@@ -214,6 +267,7 @@ export class Scheduler {
       }
 
       if (!shouldFire) continue
+      if (this.shouldSkip(s.name)) continue
 
       this.lastFired.set(s.name, now.toISOString())
       this.fireTimed(s, type).catch(err =>
@@ -241,18 +295,19 @@ export class Scheduler {
     const minuteOfDay = now.getHours() * 60 + now.getMinutes()
     if (!this.proactiveSlots.includes(minuteOfDay)) return
 
-    // Idle guard check
+    // Session state guard — only fire when idle (no activity for 5+ minutes)
+    if (this.getSessionState() !== 'idle') return
+
+    // Frequency-based cooldown
     const freq = Math.max(1, Math.min(5, this.proactive.frequency))
     const { idleMinutes } = FREQUENCY_MAP[freq]
     const elapsed = (Date.now() - this.proactiveLastFire) / 60_000
     if (this.proactiveLastFire > 0 && elapsed < idleMinutes) return
 
-    // Active conversation guard — don't interrupt if user messaged recently
-    if (this.lastActivity > 0 && (Date.now() - this.lastActivity) < idleMinutes * 60_000) return
-
-    // Pick a random topic
+    // Pick a random topic, skip if deferred/skipped
     const items = this.proactive.items
     const item = items[Math.floor(Math.random() * items.length)]
+    if (this.shouldSkip(`proactive:${item.topic}`)) return
     this.fireProactive(item)
   }
 
@@ -270,6 +325,8 @@ export class Scheduler {
   private generateDailySlots(dateStr: string): void {
     this.proactiveSlotsDate = dateStr
     this.proactiveFiredToday = 0
+    this.skippedToday.clear()
+    this.deferred.clear()
 
     if (!this.proactive) { this.proactiveSlots = []; return }
 
@@ -302,7 +359,8 @@ export class Scheduler {
     process.stderr.write(`claude2bot scheduler: firing ${schedule.name} (${type})\n`)
 
     if (type === 'interactive') {
-      if (this.injectFn) this.injectFn(this.resolveChannel(schedule.channel), schedule.name, prompt)
+      const wrapped = this.wrapPrompt(schedule.name, prompt, 'interactive')
+      if (this.injectFn) this.injectFn(this.resolveChannel(schedule.channel), schedule.name, wrapped)
       return
     }
 
@@ -370,6 +428,7 @@ export class Scheduler {
     this.proactiveFiredToday++
     this.lastFired.set(`proactive:${item.topic}`, new Date().toISOString().slice(0, 16))
 
+    prompt = this.wrapPrompt(`proactive:${item.topic}`, prompt, 'proactive')
     if (this.injectFn) this.injectFn(this.resolveChannel(item.channel), `proactive:${item.topic}`, prompt)
   }
 

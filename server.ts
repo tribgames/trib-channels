@@ -374,6 +374,19 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['name'],
       },
     },
+    {
+      name: 'schedule_control',
+      description: 'Defer or skip a schedule. Use "defer" to suppress for N minutes (default 30), or "skip_today" to suppress for the rest of the day.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          name: { type: 'string', description: 'Schedule name (e.g. "mail-briefing" or "proactive:chat")' },
+          action: { type: 'string', enum: ['defer', 'skip_today'], description: 'Action to take' },
+          minutes: { type: 'number', description: 'Defer duration in minutes (default 30, only for defer action)' },
+        },
+        required: ['name', 'action'],
+      },
+    },
   ],
 }))
 
@@ -462,6 +475,19 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
       case 'trigger_schedule': {
         const result = await scheduler.triggerManual(args.name as string)
         return { content: [{ type: 'text', text: result }] }
+      }
+      case 'schedule_control': {
+        const name = args.name as string
+        const action = args.action as string
+        if (action === 'defer') {
+          const minutes = (args.minutes as number) ?? 30
+          scheduler.defer(name, minutes)
+          return { content: [{ type: 'text', text: `deferred "${name}" for ${minutes} minutes` }] }
+        } else if (action === 'skip_today') {
+          scheduler.skipToday(name)
+          return { content: [{ type: 'text', text: `skipped "${name}" for today` }] }
+        }
+        return { content: [{ type: 'text', text: `unknown action: ${action}` }], isError: true }
       }
       default:
         return {

@@ -198,15 +198,47 @@ process.stdin.on('end', async () => {
       await discordReact('DELETE', channelId, state.userMessageId, state.emoji, token);
     }
 
-    // 2. Forward assistant text
-    const msg = (data.last_assistant_message || '').trim();
-    if (!msg || msg.includes('No response requested')) process.exit(0);
+    // 2. Forward assistant text — only unsent portion via transcript
+    const tp = state.transcriptPath || '';
+    if (tp && fs.existsSync(tp)) {
+      const transcript = fs.readFileSync(tp, 'utf8');
+      const tLines = transcript.trim().split('\n');
+      const lastIdx = state.transcriptIdx != null ? state.transcriptIdx : 0;
+      const newLines = tLines.slice(lastIdx);
 
-    const pad = (state && state.sentCount > 0) ? '\u3164\n' : '';
-    const padded = pad + escapeNestedCodeBlocks(convertMarkdownTables(msg));
-    const chunks = chunk(padded, 2000);
-    for (const c of chunks) {
-      await discordSend(channelId, c, token);
+      let newText = '';
+      for (const l of newLines) {
+        try {
+          const entry = JSON.parse(l);
+          if (entry.type === 'assistant' && entry.message && entry.message.content) {
+            const texts = entry.message.content
+              .filter(c => c.type === 'text')
+              .map(c => c.text)
+              .join('\n');
+            if (texts.trim()) newText += texts.trim() + '\n';
+          }
+        } catch {}
+      }
+
+      if (newText.trim()) {
+        const pad = (state && state.sentCount > 0) ? '\u3164\n' : '';
+        const padded = pad + escapeNestedCodeBlocks(convertMarkdownTables(newText.trim()));
+        const chunks = chunk(padded, 2000);
+        for (const c of chunks) {
+          await discordSend(channelId, c, token);
+        }
+      }
+    } else {
+      // fallback: transcriptPath 없으면 last_assistant_message 사용
+      const msg = (data.last_assistant_message || '').trim();
+      if (msg && !msg.includes('No response requested')) {
+        const pad = (state && state.sentCount > 0) ? '\u3164\n' : '';
+        const padded = pad + escapeNestedCodeBlocks(convertMarkdownTables(msg));
+        const chunks = chunk(padded, 2000);
+        for (const c of chunks) {
+          await discordSend(channelId, c, token);
+        }
+      }
     }
     process.exit(0);
   } catch { process.exit(0); }

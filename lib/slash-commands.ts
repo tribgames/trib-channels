@@ -13,6 +13,234 @@ import type { PluginConfig, ChannelsConfig } from '../backends/types.js'
 import type { Scheduler } from './scheduler.js'
 import { DATA_DIR } from './config.js'
 
+// ── i18n ─────────────────────────────────────────────────────────────
+
+type Lang = 'en' | 'ko' | 'ja' | 'zh'
+
+function getLang(locale: string): Lang {
+  if (locale === 'ko') return 'ko'
+  if (locale === 'ja') return 'ja'
+  if (locale.startsWith('zh')) return 'zh'
+  return 'en'
+}
+
+const i18n: Record<string, Record<Lang, string>> = {
+  // stop
+  'stop.not_found': {
+    en: 'Parent process not found.',
+    ko: '부모 프로세스를 찾을 수 없습니다.',
+    ja: '親プロセスが見つかりません。',
+    zh: '找不到父进程。',
+  },
+  'stop.sent': {
+    en: 'SIGINT sent (PID: {pid})',
+    ko: 'SIGINT 전송 완료 (PID: {pid})',
+    ja: 'SIGINT送信完了 (PID: {pid})',
+    zh: '已发送SIGINT (PID: {pid})',
+  },
+  'stop.failed': {
+    en: 'Failed to send SIGINT: {error}',
+    ko: 'SIGINT 전송 실패: {error}',
+    ja: 'SIGINT送信失敗: {error}',
+    zh: '发送SIGINT失败: {error}',
+  },
+  // status
+  'status.checking': {
+    en: 'Checking status...',
+    ko: '상태 확인 중...',
+    ja: 'ステータス確認中...',
+    zh: '正在检查状态...',
+  },
+  // config
+  'config.loading': {
+    en: 'Loading config...',
+    ko: '설정 불러오는 중...',
+    ja: '設定を読み込み中...',
+    zh: '正在加载配置...',
+  },
+  // model
+  'model.switched': {
+    en: 'Model switch request: **{model}** (forwarded to session)',
+    ko: '모델 전환 요청: **{model}** (세션에 전달됨)',
+    ja: 'モデル切替リクエスト: **{model}** (セッションに転送済み)',
+    zh: '模型切换请求: **{model}** (已转发到会话)',
+  },
+  // compact
+  'compact.forwarded': {
+    en: 'Compact request forwarded to session.',
+    ko: '컨텍스트 압축 요청이 세션에 전달되었습니다.',
+    ja: '圧縮リクエストをセッションに転送しました。',
+    zh: '压缩请求已转发到会话。',
+  },
+  // clear
+  'clear.forwarded': {
+    en: 'Clear request forwarded to session.',
+    ko: '대화 초기화 요청이 세션에 전달되었습니다.',
+    ja: 'クリアリクエストをセッションに転送しました。',
+    zh: '清除请求已转发到会话。',
+  },
+  // new
+  'new.forwarded': {
+    en: 'New session request forwarded to session.',
+    ko: '새 세션 시작 요청이 세션에 전달되었습니다.',
+    ja: '新しいセッションリクエストをセッションに転送しました。',
+    zh: '新建会话请求已转发到会话。',
+  },
+  // resume
+  'resume.forwarded': {
+    en: 'Resume request forwarded to session.',
+    ko: '세션 이어하기 요청이 세션에 전달되었습니다.',
+    ja: 'セッション再開リクエストを転送しました。',
+    zh: '恢复会话请求已转发到会话。',
+  },
+  // schedule
+  'schedule.no_schedules': {
+    en: 'No schedules registered.',
+    ko: '등록된 스케줄이 없습니다.',
+    ja: '登録済みスケジュールはありません。',
+    zh: '没有已注册的计划。',
+  },
+  'schedule.name_required_remove': {
+    en: 'Please specify a schedule name. (`/claude schedule remove [name]`)',
+    ko: '스케줄 이름을 지정해주세요. (`/claude schedule remove [name]`)',
+    ja: 'スケジュール名を指定してください。(`/claude schedule remove [name]`)',
+    zh: '请指定计划名称。(`/claude schedule remove [name]`)',
+  },
+  'schedule.name_required_toggle': {
+    en: 'Please specify a schedule name. (`/claude schedule toggle [name]`)',
+    ko: '스케줄 이름을 지정해주세요. (`/claude schedule toggle [name]`)',
+    ja: 'スケジュール名を指定してください。(`/claude schedule toggle [name]`)',
+    zh: '请指定计划名称。(`/claude schedule toggle [name]`)',
+  },
+  'schedule.name_required_add': {
+    en: 'Please specify a schedule name. (`/claude schedule add [name]`)',
+    ko: '스케줄 이름을 지정해주세요. (`/claude schedule add [name]`)',
+    ja: 'スケジュール名を指定してください。(`/claude schedule add [name]`)',
+    zh: '请指定计划名称。(`/claude schedule add [name]`)',
+  },
+  'schedule.not_found': {
+    en: 'Schedule "{name}" not found.',
+    ko: '스케줄 "{name}"을 찾을 수 없습니다.',
+    ja: 'スケジュール「{name}」が見つかりません。',
+    zh: '找不到计划「{name}」。',
+  },
+  'schedule.removed': {
+    en: 'Schedule "{name}" removed (effective from next tick).',
+    ko: '스케줄 "{name}" 삭제 완료 (다음 틱부터 적용).',
+    ja: 'スケジュール「{name}」を削除しました (次のティックから適用)。',
+    zh: '计划「{name}」已删除 (下次执行时生效)。',
+  },
+  'schedule.remove_failed': {
+    en: 'Remove failed: {error}',
+    ko: '삭제 실패: {error}',
+    ja: '削除失敗: {error}',
+    zh: '删除失败: {error}',
+  },
+  'schedule.toggled': {
+    en: 'Schedule "{name}" -> **{state}** (effective from next tick)',
+    ko: '스케줄 "{name}" -> **{state}** (다음 틱부터 적용)',
+    ja: 'スケジュール「{name}」-> **{state}** (次のティックから適用)',
+    zh: '计划「{name}」-> **{state}** (下次执行时生效)',
+  },
+  'schedule.toggle_failed': {
+    en: 'Toggle failed: {error}',
+    ko: '토글 실패: {error}',
+    ja: 'トグル失敗: {error}',
+    zh: '切换失败: {error}',
+  },
+  'schedule.add_missing_options': {
+    en: 'Missing required options. Usage: `/claude schedule add name:<name> time:<HH:MM> channel:<label> prompt:<text>`',
+    ko: '필수 옵션이 누락되었습니다. 사용법: `/claude schedule add name:<이름> time:<HH:MM> channel:<채널> prompt:<텍스트>`',
+    ja: '必須オプションが不足しています。使い方: `/claude schedule add name:<名前> time:<HH:MM> channel:<チャンネル> prompt:<テキスト>`',
+    zh: '缺少必填选项。用法: `/claude schedule add name:<名称> time:<HH:MM> channel:<频道> prompt:<文本>`',
+  },
+  'schedule.already_exists': {
+    en: 'Schedule "{name}" already exists.',
+    ko: '스케줄 "{name}"이(가) 이미 존재합니다.',
+    ja: 'スケジュール「{name}」は既に存在します。',
+    zh: '计划「{name}」已存在。',
+  },
+  'schedule.added': {
+    en: 'Schedule "{name}" added (time: {time}, channel: {channel}). Prompt saved to {name}.md.',
+    ko: '스케줄 "{name}" 추가 완료 (시간: {time}, 채널: {channel}). 프롬프트가 {name}.md에 저장되었습니다.',
+    ja: 'スケジュール「{name}」を追加しました (時間: {time}, チャンネル: {channel})。プロンプトを{name}.mdに保存しました。',
+    zh: '计划「{name}」已添加 (时间: {time}, 频道: {channel})。提示已保存到{name}.md。',
+  },
+  'schedule.add_failed': {
+    en: 'Add failed: {error}',
+    ko: '추가 실패: {error}',
+    ja: '追加失敗: {error}',
+    zh: '添加失败: {error}',
+  },
+  // doctor
+  'doctor.config_exists': {
+    en: '[PASS] Config file exists',
+    ko: '[PASS] Config 파일 존재',
+    ja: '[PASS] 設定ファイルあり',
+    zh: '[PASS] 配置文件存在',
+  },
+  'doctor.config_missing': {
+    en: '[FAIL] Config file missing',
+    ko: '[FAIL] Config 파일 없음',
+    ja: '[FAIL] 設定ファイルなし',
+    zh: '[FAIL] 配置文件缺失',
+  },
+  'doctor.token_ok': {
+    en: '[PASS] Bot token configured',
+    ko: '[PASS] 봇 토큰 설정됨',
+    ja: '[PASS] ボットトークン設定済み',
+    zh: '[PASS] 机器人令牌已配置',
+  },
+  'doctor.token_missing': {
+    en: '[FAIL] Bot token missing',
+    ko: '[FAIL] 봇 토큰 없음',
+    ja: '[FAIL] ボットトークンなし',
+    zh: '[FAIL] 机器人令牌缺失',
+  },
+  'doctor.access_parse_failed': {
+    en: '[WARN] access.json parse failed',
+    ko: '[WARN] access.json 파싱 실패',
+    ja: '[WARN] access.json解析失敗',
+    zh: '[WARN] access.json解析失败',
+  },
+  'doctor.access_missing': {
+    en: '[WARN] access.json missing -- configure with /claude2bot:access',
+    ko: '[WARN] access.json 없음 -- /claude2bot:access 로 설정',
+    ja: '[WARN] access.jsonなし -- /claude2bot:accessで設定',
+    zh: '[WARN] access.json缺失 -- 使用/claude2bot:access配置',
+  },
+  'doctor.channels_not_set': {
+    en: '[WARN] channelsConfig not set',
+    ko: '[WARN] channelsConfig 미설정',
+    ja: '[WARN] channelsConfig未設定',
+    zh: '[WARN] channelsConfig未设置',
+  },
+  'doctor.voice_enabled': {
+    en: '[INFO] Voice enabled',
+    ko: '[INFO] Voice 활성화',
+    ja: '[INFO] 音声有効',
+    zh: '[INFO] 语音已启用',
+  },
+  // common
+  'unknown_command': {
+    en: 'Unknown command: {cmd}',
+    ko: '알 수 없는 명령: {cmd}',
+    ja: '不明なコマンド: {cmd}',
+    zh: '未知命令: {cmd}',
+  },
+}
+
+function t(key: string, locale: string, vars?: Record<string, string | number>): string {
+  const lang = getLang(locale)
+  let text = i18n[key]?.[lang] ?? i18n[key]?.en ?? key
+  if (vars) {
+    for (const [k, v] of Object.entries(vars)) {
+      text = text.replace(new RegExp(`\\{${k}\\}`, 'g'), String(v))
+    }
+  }
+  return text
+}
+
 // ── Types ────────────────────────────────────────────────────────────
 
 export type NotifyFn = (channelId: string, user: string, text: string) => void
@@ -32,35 +260,91 @@ function buildCommands(): SlashCommandBuilder {
   const claude = new SlashCommandBuilder()
     .setName('claude')
     .setDescription('Claude Code session control')
+    .setDescriptionLocalizations({
+      ko: 'Claude Code 세션 제어',
+      ja: 'Claude Code セッション制御',
+      'zh-CN': 'Claude Code 会话控制',
+      'zh-TW': 'Claude Code 工作階段控制',
+      'pt-BR': 'Controle de sessao Claude Code',
+      'es-ES': 'Control de sesion Claude Code',
+    })
 
   // /claude stop
   claude.addSubcommand(sub =>
-    sub.setName('stop').setDescription('Stop current task (SIGINT)'),
+    sub.setName('stop').setDescription('Stop current task')
+      .setDescriptionLocalizations({
+        ko: '현재 작업 중단',
+        ja: '現在のタスクを停止',
+        'zh-CN': '停止当前任务',
+        'zh-TW': '停止目前任務',
+        'pt-BR': 'Parar tarefa atual',
+        'es-ES': 'Detener tarea actual',
+      }),
   )
 
   // /claude status
   claude.addSubcommand(sub =>
-    sub.setName('status').setDescription('Show session status'),
+    sub.setName('status').setDescription('Show session status')
+      .setDescriptionLocalizations({
+        ko: '세션 상태 확인',
+        ja: 'セッション状態確認',
+        'zh-CN': '查看会话状态',
+        'zh-TW': '查看工作階段狀態',
+        'pt-BR': 'Ver status da sessao',
+        'es-ES': 'Ver estado de la sesion',
+      }),
   )
 
   // /claude config
   claude.addSubcommand(sub =>
-    sub.setName('config').setDescription('Show configuration'),
+    sub.setName('config').setDescription('Show configuration')
+      .setDescriptionLocalizations({
+        ko: '설정 확인',
+        ja: '設定確認',
+        'zh-CN': '查看配置',
+        'zh-TW': '查看設定',
+        'pt-BR': 'Ver configuracao',
+        'es-ES': 'Ver configuracion',
+      }),
   )
 
   // /claude compact
   claude.addSubcommand(sub =>
-    sub.setName('compact').setDescription('Compact conversation'),
+    sub.setName('compact').setDescription('Compact conversation')
+      .setDescriptionLocalizations({
+        ko: '대화 압축',
+        ja: '会話を圧縮',
+        'zh-CN': '压缩对话',
+        'zh-TW': '壓縮對話',
+        'pt-BR': 'Compactar conversa',
+        'es-ES': 'Compactar conversacion',
+      }),
   )
 
   // /claude clear
   claude.addSubcommand(sub =>
-    sub.setName('clear').setDescription('Clear conversation'),
+    sub.setName('clear').setDescription('Clear conversation')
+      .setDescriptionLocalizations({
+        ko: '대화 초기화',
+        ja: '会話をクリア',
+        'zh-CN': '清除对话',
+        'zh-TW': '清除對話',
+        'pt-BR': 'Limpar conversa',
+        'es-ES': 'Limpiar conversacion',
+      }),
   )
 
   // /claude new
   claude.addSubcommand(sub =>
-    sub.setName('new').setDescription('Start new session'),
+    sub.setName('new').setDescription('Start new session')
+      .setDescriptionLocalizations({
+        ko: '새 세션 시작',
+        ja: '新しいセッションを開始',
+        'zh-CN': '新建会话',
+        'zh-TW': '新建工作階段',
+        'pt-BR': 'Iniciar nova sessao',
+        'es-ES': 'Iniciar nueva sesion',
+      }),
   )
 
   // /claude model [name]
@@ -68,10 +352,26 @@ function buildCommands(): SlashCommandBuilder {
     sub
       .setName('model')
       .setDescription('Switch model')
+      .setDescriptionLocalizations({
+        ko: '모델 전환',
+        ja: 'モデル切替',
+        'zh-CN': '切换模型',
+        'zh-TW': '切換模型',
+        'pt-BR': 'Trocar modelo',
+        'es-ES': 'Cambiar modelo',
+      })
       .addStringOption(opt =>
         opt
           .setName('name')
           .setDescription('Model to switch to')
+          .setDescriptionLocalizations({
+            ko: '전환할 모델',
+            ja: '切り替えるモデル',
+            'zh-CN': '要切换的模型',
+            'zh-TW': '要切換的模型',
+            'pt-BR': 'Modelo para trocar',
+            'es-ES': 'Modelo a cambiar',
+          })
           .setRequired(true)
           .addChoices(
             { name: 'sonnet', value: 'sonnet' },
@@ -82,7 +382,15 @@ function buildCommands(): SlashCommandBuilder {
 
   // /claude resume
   claude.addSubcommand(sub =>
-    sub.setName('resume').setDescription('Resume previous session'),
+    sub.setName('resume').setDescription('Resume previous session')
+      .setDescriptionLocalizations({
+        ko: '이전 세션 이어하기',
+        ja: '前のセッションを再開',
+        'zh-CN': '恢复上一个会话',
+        'zh-TW': '恢復上一個工作階段',
+        'pt-BR': 'Retomar sessao anterior',
+        'es-ES': 'Reanudar sesion anterior',
+      }),
   )
 
   // /claude schedule [action]
@@ -90,10 +398,26 @@ function buildCommands(): SlashCommandBuilder {
     sub
       .setName('schedule')
       .setDescription('Manage schedules')
+      .setDescriptionLocalizations({
+        ko: '스케줄 관리',
+        ja: 'スケジュール管理',
+        'zh-CN': '管理计划任务',
+        'zh-TW': '管理排程任務',
+        'pt-BR': 'Gerenciar agendamentos',
+        'es-ES': 'Gestionar programaciones',
+      })
       .addStringOption(opt =>
         opt
           .setName('action')
           .setDescription('Action to perform')
+          .setDescriptionLocalizations({
+            ko: '수행할 작업',
+            ja: '実行するアクション',
+            'zh-CN': '要执行的操作',
+            'zh-TW': '要執行的操作',
+            'pt-BR': 'Acao a realizar',
+            'es-ES': 'Accion a realizar',
+          })
           .setRequired(true)
           .addChoices(
             { name: 'list', value: 'list' },
@@ -106,31 +430,84 @@ function buildCommands(): SlashCommandBuilder {
         opt
           .setName('name')
           .setDescription('Schedule name (required for add/remove/toggle)')
+          .setDescriptionLocalizations({
+            ko: '스케줄 이름 (add/remove/toggle 시 필수)',
+            ja: 'スケジュール名 (add/remove/toggle時必須)',
+            'zh-CN': '计划名称 (add/remove/toggle时必填)',
+            'zh-TW': '排程名稱 (add/remove/toggle時必填)',
+            'pt-BR': 'Nome do agendamento (obrigatorio para add/remove/toggle)',
+            'es-ES': 'Nombre de programacion (requerido para add/remove/toggle)',
+          })
           .setRequired(false),
       )
       .addStringOption(opt =>
         opt
           .setName('time')
           .setDescription('Time in HH:MM format (required for add)')
+          .setDescriptionLocalizations({
+            ko: 'HH:MM 형식 시간 (add 시 필수)',
+            ja: 'HH:MM形式の時間 (add時必須)',
+            'zh-CN': 'HH:MM格式时间 (add时必填)',
+            'zh-TW': 'HH:MM格式時間 (add時必填)',
+            'pt-BR': 'Horario no formato HH:MM (obrigatorio para add)',
+            'es-ES': 'Hora en formato HH:MM (requerido para add)',
+          })
           .setRequired(false),
       )
       .addStringOption(opt =>
         opt
           .setName('channel')
           .setDescription('Target channel label (required for add)')
+          .setDescriptionLocalizations({
+            ko: '대상 채널 라벨 (add 시 필수)',
+            ja: '対象チャンネルラベル (add時必須)',
+            'zh-CN': '目标频道标签 (add时必填)',
+            'zh-TW': '目標頻道標籤 (add時必填)',
+            'pt-BR': 'Rotulo do canal alvo (obrigatorio para add)',
+            'es-ES': 'Etiqueta del canal destino (requerido para add)',
+          })
           .setRequired(false),
       )
       .addStringOption(opt =>
         opt
           .setName('prompt')
           .setDescription('Prompt text for the schedule (required for add)')
+          .setDescriptionLocalizations({
+            ko: '스케줄 프롬프트 텍스트 (add 시 필수)',
+            ja: 'スケジュールのプロンプト (add時必須)',
+            'zh-CN': '计划任务的提示文本 (add时必填)',
+            'zh-TW': '排程任務的提示文本 (add時必填)',
+            'pt-BR': 'Texto do prompt do agendamento (obrigatorio para add)',
+            'es-ES': 'Texto del prompt de programacion (requerido para add)',
+          })
           .setRequired(false),
       ),
   )
 
   // /claude doctor
   claude.addSubcommand(sub =>
-    sub.setName('doctor').setDescription('System diagnostics'),
+    sub.setName('doctor').setDescription('System diagnostics')
+      .setDescriptionLocalizations({
+        ko: '시스템 진단',
+        ja: 'システム診断',
+        'zh-CN': '系统诊断',
+        'zh-TW': '系統診斷',
+        'pt-BR': 'Diagnostico do sistema',
+        'es-ES': 'Diagnostico del sistema',
+      }),
+  )
+
+  // /claude help
+  claude.addSubcommand(sub =>
+    sub.setName('help').setDescription('Show available commands')
+      .setDescriptionLocalizations({
+        ko: '도움말',
+        ja: 'ヘルプ',
+        'zh-CN': '帮助',
+        'zh-TW': '說明',
+        'pt-BR': 'Mostrar comandos disponiveis',
+        'es-ES': 'Mostrar comandos disponibles',
+      }),
   )
 
   return claude
@@ -188,6 +565,8 @@ export async function handleSlashCommand(
       return handleSchedule(interaction, ctx)
     case 'doctor':
       return handleDoctor(interaction, ctx)
+    case 'help':
+      return handleHelp(interaction)
     default:
       await interaction.reply({ content: `Unknown command: ${sub}`, flags: 64 })
   }
@@ -502,4 +881,119 @@ async function handleDoctor(
   lines.push(`[INFO] PID ${process.pid}, uptime ${Math.floor(process.uptime() / 60)}m`)
 
   await interaction.reply({ content: '```\n' + lines.join('\n') + '\n```', flags: 64 })
+}
+
+// ── Help (locale-aware) ──────────────────────────────────────────────
+
+const HELP_EN = [
+  '**Claude Bot Help**',
+  '',
+  '**Chat** -- Send a message in the channel and Claude will respond. Task progress is shown in real time.',
+  '**Voice** -- Send a voice message and it will be automatically transcribed.',
+  '**Permissions** -- When a tool runs, [Approve] [Session Approve] [Deny] buttons appear.',
+  '**Schedules** -- Tasks run automatically at set times. Interactive schedules run within the current session, non-interactive ones run in a separate session, and proactive ones let Claude start conversations on its own.',
+  '',
+  '**Commands**',
+  '`/claude stop` -- Stop current task immediately',
+  '`/claude status` -- Check model, tokens, session status',
+  '`/claude config` -- View current configuration',
+  '`/claude model [sonnet|opus]` -- Switch AI model',
+  '`/claude compact` -- Compact conversation (free up context)',
+  '`/claude clear` -- Clear conversation (keep session)',
+  '`/claude new` -- Start new session',
+  '`/claude resume` -- Resume previous session',
+  '`/claude schedule list` -- List registered schedules',
+  '`/claude schedule add` -- Add new schedule',
+  '`/claude schedule remove` -- Remove schedule',
+  '`/claude schedule toggle` -- Enable/disable schedule',
+  '`/claude doctor` -- System diagnostics (connections, hooks, config)',
+].join('\n')
+
+const HELP_KO = [
+  '**Claude Bot 도움말**',
+  '',
+  '**대화** -- 채널에 메시지를 보내면 Claude가 응답합니다. 작업 진행 상황은 실시간으로 표시됩니다.',
+  '**음성** -- 음성 메시지를 보내면 자동으로 텍스트 변환됩니다.',
+  '**권한** -- 도구 실행 시 [승인] [세션승인] [거부] 버튼이 나타납니다.',
+  '**스케줄** -- 정해진 시간에 자동으로 작업을 실행합니다. 대화형(interactive)은 현재 세션에서 진행되고, 비대화형(non-interactive)은 별도 세션에서 실행됩니다. 자율형(proactive)은 Claude가 먼저 대화를 시작합니다.',
+  '',
+  '**명령어**',
+  '`/claude stop` -- 현재 작업 즉시 중단',
+  '`/claude status` -- 모델, 토큰, 세션 상태 확인',
+  '`/claude config` -- 현재 설정 확인',
+  '`/claude model [sonnet|opus]` -- AI 모델 전환',
+  '`/claude compact` -- 대화 기록 압축 (컨텍스트 확보)',
+  '`/claude clear` -- 대화 초기화 (세션 유지)',
+  '`/claude new` -- 새 세션 시작',
+  '`/claude resume` -- 이전 세션 이어하기',
+  '`/claude schedule list` -- 등록된 스케줄 목록',
+  '`/claude schedule add` -- 새 스케줄 추가',
+  '`/claude schedule remove` -- 스케줄 삭제',
+  '`/claude schedule toggle` -- 스케줄 켜기/끄기',
+  '`/claude doctor` -- 시스템 진단 (연결, 훅, 설정 상태)',
+].join('\n')
+
+const HELP_JA = [
+  '**Claude Bot ヘルプ**',
+  '',
+  '**チャット** -- チャンネルにメッセージを送るとClaudeが応答します。タスクの進行状況はリアルタイムで表示されます。',
+  '**音声** -- 音声メッセージを送ると自動的にテキストに変換されます。',
+  '**権限** -- ツール実行時に[承認] [セッション承認] [拒否]ボタンが表示されます。',
+  '**スケジュール** -- 設定した時間に自動でタスクを実行します。対話型(interactive)は現在のセッションで進行し、非対話型(non-interactive)は別セッションで実行されます。自律型(proactive)はClaudeが自ら会話を開始します。',
+  '',
+  '**コマンド**',
+  '`/claude stop` -- 現在のタスクを即座に停止',
+  '`/claude status` -- モデル、トークン、セッション状態確認',
+  '`/claude config` -- 現在の設定確認',
+  '`/claude model [sonnet|opus]` -- AIモデル切替',
+  '`/claude compact` -- 会話履歴を圧縮 (コンテキスト確保)',
+  '`/claude clear` -- 会話をクリア (セッション維持)',
+  '`/claude new` -- 新しいセッション開始',
+  '`/claude resume` -- 前のセッションを再開',
+  '`/claude schedule list` -- 登録済みスケジュール一覧',
+  '`/claude schedule add` -- 新しいスケジュール追加',
+  '`/claude schedule remove` -- スケジュール削除',
+  '`/claude schedule toggle` -- スケジュール有効/無効切替',
+  '`/claude doctor` -- システム診断 (接続、フック、設定状態)',
+].join('\n')
+
+const HELP_ZH = [
+  '**Claude Bot 帮助**',
+  '',
+  '**聊天** -- 在频道发送消息，Claude会自动回复。任务进度实时显示。',
+  '**语音** -- 发送语音消息会自动转换为文字。',
+  '**权限** -- 工具执行时会显示[批准] [会话批准] [拒绝]按钮。',
+  '**计划任务** -- 在设定时间自动执行任务。交互式(interactive)在当前会话中运行，非交互式(non-interactive)在独立会话中运行，主动式(proactive)由Claude主动发起对话。',
+  '',
+  '**命令**',
+  '`/claude stop` -- 立即停止当前任务',
+  '`/claude status` -- 查看模型、令牌、会话状态',
+  '`/claude config` -- 查看当前配置',
+  '`/claude model [sonnet|opus]` -- 切换AI模型',
+  '`/claude compact` -- 压缩对话记录 (释放上下文)',
+  '`/claude clear` -- 清除对话 (保持会话)',
+  '`/claude new` -- 开始新会话',
+  '`/claude resume` -- 恢复上一个会话',
+  '`/claude schedule list` -- 查看已注册的计划',
+  '`/claude schedule add` -- 添加新计划',
+  '`/claude schedule remove` -- 删除计划',
+  '`/claude schedule toggle` -- 启用/禁用计划',
+  '`/claude doctor` -- 系统诊断 (连接、钩子、配置状态)',
+].join('\n')
+
+async function handleHelp(
+  interaction: ChatInputCommandInteraction,
+): Promise<void> {
+  const locale = interaction.locale
+  let content: string
+  if (locale === 'ko') {
+    content = HELP_KO
+  } else if (locale === 'ja') {
+    content = HELP_JA
+  } else if (locale.startsWith('zh')) {
+    content = HELP_ZH
+  } else {
+    content = HELP_EN
+  }
+  await interaction.reply({ content, flags: 64 })
 }
