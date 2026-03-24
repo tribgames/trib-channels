@@ -142,6 +142,7 @@ export class Scheduler {
     // Check timed schedules
     const timed = [...this.nonInteractive, ...this.interactive].find(e => e.name === name)
     if (timed) {
+      if (this.running.has(name)) return `"${name}" is already running`
       const isNonInteractive = this.nonInteractive.includes(timed)
       // Set lastFired to prevent duplicate with automatic tick
       const now = new Date()

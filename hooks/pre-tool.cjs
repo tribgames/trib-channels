@@ -1,5 +1,5 @@
+if (process.env.CLAUDE2BOT_NO_CONNECT) process.exit(0);
 /**
- * claude2bot PreToolUse hook
  * Extracts new assistant text from transcript since last check.
  * Saves to state.pendingText for PostToolUse to combine with tool log.
  */
@@ -27,7 +27,8 @@ process.stdin.on('end', () => {
     if (!tp || !fs.existsSync(tp)) process.exit(0);
 
     const transcript = fs.readFileSync(tp, 'utf8');
-    const lines = transcript.trim().split('\n');
+    const lines = transcript.trim().split('
+');
     const lastIdx = state.transcriptIdx != null ? state.transcriptIdx : lines.length;
     const newLines = lines.slice(lastIdx);
     state.transcriptIdx = lines.length;
@@ -41,14 +42,18 @@ process.stdin.on('end', () => {
           const texts = entry.message.content
             .filter(c => c.type === 'text')
             .map(c => c.text)
-            .join('\n');
-          if (texts.trim()) newText += texts.trim() + '\n';
+            .join('
+');
+          if (texts.trim()) newText += texts.trim() + '
+';
         }
       } catch {}
     }
 
     if (newText.trim()) {
-      state.pendingText = (state.pendingText || '') + (state.pendingText ? '\n\n' : '') + newText.trim();
+      state.pendingText = (state.pendingText || '') + (state.pendingText ? '
+
+' : '') + newText.trim();
     }
 
     fs.writeFileSync(STATE_FILE, JSON.stringify(state));

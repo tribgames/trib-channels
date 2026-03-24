@@ -1,5 +1,5 @@
+if (process.env.CLAUDE2BOT_NO_CONNECT) process.exit(0);
 /**
- * claude2bot Stop hook
  * 1. Update reaction: work emoji → ✅
  * 2. Append ✅ to log message
  * 3. Forward assistant text if reply wasn't used
@@ -56,7 +56,8 @@ let input = '';
 process.stdin.on('data', d => { input += d; });
 process.stdin.on('end', async () => {
   try {
-    const data = JSON.parse(input); fs.appendFileSync("/tmp/claude2bot-stop-dump.json", JSON.stringify({agent_id: data.agent_id, stop_hook_active: data.stop_hook_active, msg_len: (data.last_assistant_message || "").length, msg_preview: (data.last_assistant_message || "").substring(0, 100)}) + "\n");
+    const data = JSON.parse(input); fs.appendFileSync("/tmp/claude2bot-stop-dump.json", JSON.stringify({agent_id: data.agent_id, stop_hook_active: data.stop_hook_active, msg_len: (data.last_assistant_message || "").length, msg_preview: (data.last_assistant_message || "").substring(0, 100)}) + "
+");
     if (data.agent_id) process.exit(0);
     if (data.stop_hook_active) process.exit(0);
 
@@ -85,7 +86,8 @@ process.stdin.on('end', async () => {
     const msg = (data.last_assistant_message || '').trim();
     if (!msg || msg.includes('No response requested')) process.exit(0);
 
-    const pad = '\u3164\n';
+    const pad = 'ㅤ
+';
     const padded = pad + msg;
     const text = padded.length > 1900 ? padded.substring(0, 1900) + '...' : padded;
     await discordSend(channelId, text, token);
