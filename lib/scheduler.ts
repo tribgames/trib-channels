@@ -39,6 +39,7 @@ export class Scheduler {
   private promptsDir: string
   private tickTimer: ReturnType<typeof setInterval> | null = null
   private lastFired = new Map<string, string>()    // name -> "YYYY-MM-DDTHH:MM"
+  private running = new Set<string>()
   private injectFn: InjectFn | null = null
   private sendFn: SendFn | null = null
 
@@ -290,11 +291,14 @@ export class Scheduler {
       return
     }
 
-    // Non-interactive: spawn claude -p, capture stdout, relay via main bot
+    // Skip if already running (prevent duplicate from manual + auto trigger)
+    if (this.running.has(schedule.name)) return
+    this.running.add(schedule.name)
+
     const channelId = this.resolveChannel(schedule.channel)
 
     // CLAUDE2BOT_NO_CONNECT prevents child from connecting Discord bot (avoids WebSocket conflict)
-    const proc = spawn('claude', ['-p', '--dangerously-skip-permissions'], {
+    const proc = spawn('claude', ['-p', '--dangerously-skip-permissions', '--no-session-persistence'], {
       env: { ...process.env, CLAUDE2BOT_NO_CONNECT: '1' },
     })
 
@@ -306,6 +310,7 @@ export class Scheduler {
     if (proc.stdout) proc.stdout.on('data', (d: Buffer) => { stdout += d })
 
     proc.on('close', (code: number | null) => {
+      this.running.delete(schedule.name)
       const result = stdout.trim()
       if (result && this.sendFn) {
         this.sendFn(channelId, result).catch(err =>
@@ -315,6 +320,7 @@ export class Scheduler {
       process.stderr.write(`claude2bot scheduler: ${schedule.name} exited (${code})\n`)
     })
     proc.on('error', (err: Error) => {
+      this.running.delete(schedule.name)
       process.stderr.write(`claude2bot scheduler: ${schedule.name} error: ${err}\n`)
     })
   }

@@ -29,7 +29,7 @@ const settings = loadSettings(config.contextFiles)
 // Only 3 lines added (channel communication rules in settings.default.md).
 
 const BASE_INSTRUCTIONS = [
-  'The sender reads their messaging app, not this session. Anything you want them to see must go through the reply tool — your transcript output never reaches their chat.',
+  'The sender reads their messaging app, not this session. Your terminal text output is automatically forwarded to Discord via the Stop hook. The reply tool is optional — use it for immediate responses or when attaching files/embeds.',
   '',
   'Messages arrive as <channel source="claude2bot" chat_id="..." message_id="..." user="..." ts="...">. If the tag has attachment_count, the attachments attribute lists name/type/size — call download_attachment(chat_id, message_id) to fetch them. Reply with the reply tool — pass chat_id back. Use reply_to (set to a message_id) only when replying to an earlier message; the latest message doesn\'t need a quote-reply, omit reply_to for normal responses.',
   '',

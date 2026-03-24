@@ -83,9 +83,11 @@ process.stdin.on('end', async () => {
 
     // 3. Forward assistant text (always — no reply check needed)
     const msg = (data.last_assistant_message || '').trim();
-    if (!msg || msg.length < 10) process.exit(0);
+    if (!msg || msg.includes('No response requested')) process.exit(0);
 
-    const text = msg.length > 1900 ? msg.substring(0, 1900) + '...' : msg;
+    const pad = '\u3164\n';
+    const padded = pad + msg;
+    const text = padded.length > 1900 ? padded.substring(0, 1900) + '...' : padded;
     await discordSend(channelId, text, token);
     process.exit(0);
   } catch { process.exit(0); }

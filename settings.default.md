@@ -5,9 +5,10 @@ Override in `settings.local.md` (placed in the plugin data directory).
 
 ## Channel Communication
 
-- All responses MUST use the reply tool. Terminal output never reaches the user.
-- Split messages exceeding the platform limit (Discord: 2000, Telegram: 4096 chars).
+- Terminal text output is automatically forwarded to Discord via the Stop hook. The reply tool is optional — use it for immediate responses or when attaching files/embeds.
+- Split long messages exceeding the platform limit (Discord: 2000, Telegram: 4096 chars).
 - Respond immediately to channel messages. Never wait for the user to ask.
+- When there is nothing to respond to, output nothing. Do not output filler like "No response requested" — just stay silent.
 
 ## Schedule Handling
 

@@ -1,7 +1,7 @@
 /**
  * claude2bot PostToolUse hook
  * 1. Update reaction on user message
- * 2. Append tool activity to a running log message (single message, edit to append)
+ * 2. Send pending text (from PreToolUse) + tool log as one message
  */
 const https = require('https');
 const fs = require('fs');
@@ -47,11 +47,12 @@ process.stdin.on('end', async () => {
 
     const tool = data.tool_name || '';
     const toolInput = data.tool_input || {};
-    // Skip ToolSearch and claude2bot own tools (reply, fetch, schedule etc) — show all others including MCP
+    // Skip internal/search tools — only show action tools
     if (tool === 'ToolSearch') process.exit(0);
     if (tool.includes('plugin_claude2bot_claude2bot__')) process.exit(0);
+    if (tool === 'Read' || tool === 'Grep' || tool === 'Glob') process.exit(0);
 
-    // Build summary (short) + detail (full, spoiler)
+    // Build tool summary
     const desc = (toolInput.description || '').substring(0, 50);
     let summary = '';
     let detail = '';
@@ -70,33 +71,29 @@ process.stdin.on('end', async () => {
       detail = toolInput.file_path || '';
     } else if (tool === 'Grep') {
       summary = '"' + (toolInput.pattern || '') + '"';
-      detail = 'path: ' + (toolInput.path || '.') + ', pattern: ' + (toolInput.pattern || '');
     } else if (tool === 'Glob') {
       summary = toolInput.pattern || 'Glob';
-      detail = 'path: ' + (toolInput.path || '.');
     } else if (tool === 'Agent') {
       summary = toolInput.name || toolInput.subagent_type || 'agent';
       detail = (toolInput.prompt || '').substring(0, 200);
     } else if (tool === 'TaskCreate') {
       summary = (toolInput.subject || '').substring(0, 50);
-      detail = toolInput.description || '';
     } else if (tool === 'SendMessage') {
       summary = '\u2192 ' + (toolInput.to || '');
-      detail = (toolInput.summary || toolInput.message || '').substring(0, 200);
+    } else if (tool === 'TeamCreate') {
+      summary = toolInput.team_name || '';
+      detail = toolInput.description || '';
     } else {
-      summary = tool;
-      detail = JSON.stringify(toolInput).substring(0, 200);
+      summary = tool.replace(/mcp__\w+__/, '');
     }
     if (!summary) process.exit(0);
 
-    // Format: ⏳ Tool (summary) + code block for detail
-    let line = '\u23F3 ' + tool + ' (' + summary + ')';
-    if (detail && detail !== summary) line += '\n```\n' + detail.substring(0, 400) + '\n```';
+    // Tool line: -# subtext for compact display
+    let toolLine = '-# ' + tool + ' (' + summary + ')';
+    if (detail && detail !== summary) toolLine += '\n```\n' + detail.substring(0, 300) + '\n```';
 
-    // Single work emoji for all tools
     const emoji = '\u{1F6E0}\uFE0F'; // 🛠️
 
-    // Read state + config
     let state = {};
     try { state = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); } catch { process.exit(0); }
     if (!state.channelId) process.exit(0);
@@ -109,7 +106,7 @@ process.stdin.on('end', async () => {
 
     const ch = state.channelId;
 
-    // 1. Update reaction on user message
+    // 1. Update reaction
     if (state.userMessageId) {
       if (state.emoji && state.emoji !== emoji) {
         await discordReact('DELETE', ch, state.userMessageId, state.emoji, token);
@@ -118,9 +115,21 @@ process.stdin.on('end', async () => {
       state.emoji = emoji;
     }
 
-    // 2. Send new message for each tool call
-    const msgContent = line.length > 1900 ? line.substring(0, 1900) : line;
-    await discordApi('POST', '/api/v10/channels/' + ch + '/messages', token, { content: msgContent });
+    // 2. Build message: pendingText + tool log
+    // First message in turn: no top padding. Second+: add padding.
+    const pad = state.sentCount > 0 ? '\u3164\n' : '';
+    let msg = '';
+    if (state.pendingText) {
+      msg = pad + state.pendingText.trim() + '\n\n' + toolLine;
+      state.pendingText = '';
+    } else {
+      msg = pad + toolLine;
+    }
+    state.sentCount = (state.sentCount || 0) + 1;
+
+    const content = msg.length > 1900 ? msg.substring(0, 1900) : msg;
+    await discordApi('POST', '/api/v10/channels/' + ch + '/messages', token, { content: content });
+
     fs.writeFileSync(STATE_FILE, JSON.stringify(state));
     process.exit(0);
   } catch { process.exit(0); }

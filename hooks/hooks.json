@@ -1,5 +1,5 @@
 {
-  "description": "claude2bot plugin hooks — full CLI mirroring to Discord",
+  "description": "claude2bot plugin hooks \u2014 full CLI mirroring to Discord",
   "hooks": {
     "SessionStart": [
       {
@@ -17,6 +17,16 @@
           {
             "type": "command",
             "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/user-prompt.cjs"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/pre-tool.cjs"
           }
         ]
       }
