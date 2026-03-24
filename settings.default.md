@@ -1,6 +1,6 @@
-# cc-bot Default Settings
+# claude2bot Default Settings
 
-Default behavioral rules for cc-bot channel mode.
+Default behavioral rules for claude2bot channel mode.
 Override in `settings.local.md` (placed in the plugin data directory).
 
 ## Channel Communication

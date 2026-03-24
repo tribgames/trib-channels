@@ -1,5 +1,5 @@
 /**
- * cc-bot user-prompt hook
+ * claude2bot user-prompt hook
  *
  * Extracts "Response Rules" section from settings.local.md and
  * injects it as a system reminder on every user prompt.
@@ -39,7 +39,7 @@ try {
     process.stdout.write(JSON.stringify({
       hookSpecificOutput: {
         hookEventName: 'UserPromptSubmit',
-        additionalContext: `## cc-bot Response Rules\n${rules}`
+        additionalContext: `## claude2bot Response Rules\n${rules}`
       }
     }));
   }

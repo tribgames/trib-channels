@@ -79,6 +79,10 @@ scheduler.setInjectHandler((channelId: string, name: string, prompt: string) => 
   })
 })
 
+scheduler.setSendHandler(async (channelId: string, text: string) => {
+  await backend.sendMessage(channelId, text)
+})
+
 // ── Voice transcription ───────────────────────────────────────────────
 
 function isVoiceAttachment(contentType: string): boolean {
@@ -390,7 +394,11 @@ async function handleInbound(msg: InboundMessage): Promise<void> {
 // ── Start ──────────────────────────────────────────────────────────────
 
 await mcp.connect(new StdioServerTransport())
-await backend.connect()
-scheduler.start()
 
-process.stderr.write(`claude2bot: running with ${backend.name} backend\n`)
+if (process.env.CLAUDE2BOT_NO_CONNECT) {
+  process.stderr.write('claude2bot: NO_CONNECT mode — skipping backend connection and scheduler\n')
+} else {
+  await backend.connect()
+  scheduler.start()
+  process.stderr.write(`claude2bot: running with ${backend.name} backend\n`)
+}

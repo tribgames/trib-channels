@@ -1,5 +1,5 @@
 ---
-description: Install voice transcription dependencies (whisper.cpp + ffmpeg) for cc-bot.
+description: Install voice transcription dependencies (whisper.cpp + ffmpeg) for claude2bot.
 allowed-tools:
   - AskUserQuestion
   - Read
@@ -15,7 +15,7 @@ allowed-tools:
   - Bash(mkdir *)
 ---
 
-# cc-bot Voice Setup
+# claude2bot Voice Setup
 
 Install and verify voice transcription dependencies.
 

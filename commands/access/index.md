@@ -1,5 +1,5 @@
 ---
-description: Manage cc-bot access control — approve pairings, edit allowlists, set DM/group policy.
+description: Manage claude2bot access control — approve pairings, edit allowlists, set DM/group policy.
 args: "[pair|allow|deny|policy|channel|show] [value]"
 allowed-tools:
   - AskUserQuestion
@@ -7,7 +7,7 @@ allowed-tools:
   - Write
 ---
 
-# cc-bot Access Control
+# claude2bot Access Control
 
 Manage who can communicate with the bot through the messaging channel.
 

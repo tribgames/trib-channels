@@ -1,5 +1,5 @@
 ---
-description: Manage cc-bot schedules — list, add, remove, or trigger scheduled tasks.
+description: Manage claude2bot schedules — list, add, remove, or trigger scheduled tasks.
 args: "[list|add|remove|trigger] [name]"
 allowed-tools:
   - AskUserQuestion
@@ -9,7 +9,7 @@ allowed-tools:
   - mcp__plugin_claude2bot_claude2bot__trigger_schedule
 ---
 
-# cc-bot Schedule Management
+# claude2bot Schedule Management
 
 Manage the built-in scheduler. Parse the command arguments to determine the action.
 

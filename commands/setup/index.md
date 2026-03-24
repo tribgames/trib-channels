@@ -1,5 +1,5 @@
 ---
-description: Interactive first-time setup for cc-bot — configure backend, token, channels, and profile.
+description: Interactive first-time setup for claude2bot — configure backend, token, channels, and profile.
 allowed-tools:
   - AskUserQuestion
   - Read
@@ -8,9 +8,9 @@ allowed-tools:
   - Bash(mkdir *)
 ---
 
-# cc-bot Setup
+# claude2bot Setup
 
-Walk the user through initial cc-bot configuration.
+Walk the user through initial claude2bot configuration.
 
 **Plugin root**: `${CLAUDE_PLUGIN_ROOT}`
 **Data directory**: `${CLAUDE_PLUGIN_DATA}`

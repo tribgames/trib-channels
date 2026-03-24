@@ -148,7 +148,7 @@ export class DiscordBackend implements ChannelBackend {
     if (this.isStatic) {
       const a = this.readAccessFile()
       if (a.dmPolicy === 'pairing') {
-        process.stderr.write('cc-bot discord: static mode — dmPolicy "pairing" downgraded to "allowlist"\n')
+        process.stderr.write('claude2bot discord: static mode — dmPolicy "pairing" downgraded to "allowlist"\n')
         a.dmPolicy = 'allowlist'
       }
       a.pending = {}
@@ -158,12 +158,12 @@ export class DiscordBackend implements ChannelBackend {
     this.client.on('messageCreate', msg => {
       if (msg.author.bot) return
       this.handleInbound(msg).catch(e =>
-        process.stderr.write(`cc-bot discord: handleInbound failed: ${e}\n`),
+        process.stderr.write(`claude2bot discord: handleInbound failed: ${e}\n`),
       )
     })
 
     this.client.once('ready', c => {
-      process.stderr.write(`cc-bot discord: gateway connected as ${c.user.tag}\n`)
+      process.stderr.write(`claude2bot discord: gateway connected as ${c.user.tag}\n`)
     })
 
     await this.client.login(this.token)
@@ -303,7 +303,7 @@ export class DiscordBackend implements ChannelBackend {
       try {
         renameSync(this.accessFile, `${this.accessFile}.corrupt-${Date.now()}`)
       } catch {}
-      process.stderr.write('cc-bot discord: access.json corrupt, moved aside. Starting fresh.\n')
+      process.stderr.write('claude2bot discord: access.json corrupt, moved aside. Starting fresh.\n')
       return defaultAccess()
     }
   }
@@ -416,7 +416,7 @@ export class DiscordBackend implements ChannelBackend {
       try {
         await msg.reply(`${lead} — run in Claude Code:\n\n/discord:access pair ${result.code}`)
       } catch (err) {
-        process.stderr.write(`cc-bot discord: failed to send pairing code: ${err}\n`)
+        process.stderr.write(`claude2bot discord: failed to send pairing code: ${err}\n`)
       }
       return
     }
@@ -489,7 +489,7 @@ export class DiscordBackend implements ChannelBackend {
           }
           rmSync(file, { force: true })
         } catch (err) {
-          process.stderr.write(`cc-bot discord: approval confirm failed: ${err}\n`)
+          process.stderr.write(`claude2bot discord: approval confirm failed: ${err}\n`)
           rmSync(file, { force: true })
         }
       })()

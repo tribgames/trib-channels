@@ -7,7 +7,7 @@
  */
 
 import { spawn } from 'child_process'
-import { readFileSync, writeFileSync, unlinkSync, existsSync, openSync, closeSync, constants as fsConstants, statSync } from 'fs'
+import { readFileSync, writeFileSync, unlinkSync, existsSync } from 'fs'
 import { join, isAbsolute } from 'path'
 import { tmpdir } from 'os'
 import type { TimedSchedule, ProactiveConfig, ProactiveItem, ChannelsConfig } from '../backends/types.js'
@@ -17,6 +17,9 @@ const TICK_INTERVAL = 60_000 // 1 minute
 
 /** Callback to inject a prompt into the current session */
 export type InjectFn = (channelId: string, name: string, promptContent: string) => void
+
+/** Callback to send a message via the main session's backend */
+export type SendFn = (channelId: string, text: string) => Promise<void>
 
 // ── Frequency → daily count / idle guard mapping ─────────────────────
 
@@ -36,8 +39,8 @@ export class Scheduler {
   private promptsDir: string
   private tickTimer: ReturnType<typeof setInterval> | null = null
   private lastFired = new Map<string, string>()    // name -> "YYYY-MM-DDTHH:MM"
-  private running = new Set<string>()
   private injectFn: InjectFn | null = null
+  private sendFn: SendFn | null = null
 
   // Proactive state
   private proactiveSlots: number[] = []             // minute-of-day slots for today
@@ -63,15 +66,34 @@ export class Scheduler {
     this.injectFn = fn
   }
 
+  setSendHandler(fn: SendFn): void {
+    this.sendFn = fn
+  }
+
+  private static SCHEDULER_LOCK = join(tmpdir(), 'claude2bot-scheduler.lock')
+
   start(): void {
     if (this.tickTimer) return
     const total = this.nonInteractive.length + this.interactive.length
       + (this.proactive?.items.length ?? 0)
     if (total === 0) {
-      process.stderr.write('cc-bot scheduler: no schedules configured\n')
+      process.stderr.write('claude2bot scheduler: no schedules configured\n')
       return
     }
-    process.stderr.write(`cc-bot scheduler: ${this.nonInteractive.length} non-interactive, ${this.interactive.length} interactive, ${this.proactive?.items.length ?? 0} proactive\n`)
+
+    // Scheduler-level lock: only one session runs the scheduler
+    if (existsSync(Scheduler.SCHEDULER_LOCK)) {
+      try {
+        const content = readFileSync(Scheduler.SCHEDULER_LOCK, 'utf8')
+        const pid = parseInt(content.split('\n')[0])
+        // Check if the process is still alive
+        try { process.kill(pid, 0); process.stderr.write(`claude2bot scheduler: another session (PID ${pid}) owns the scheduler, skipping\n`); return } catch { /* dead, take over */ }
+      } catch { /* can't read, take over */ }
+    }
+    writeFileSync(Scheduler.SCHEDULER_LOCK, `${process.pid}\n${Date.now()}`)
+    process.on('exit', () => { try { unlinkSync(Scheduler.SCHEDULER_LOCK) } catch { /* ignore */ } })
+
+    process.stderr.write(`claude2bot scheduler: ${this.nonInteractive.length} non-interactive, ${this.interactive.length} interactive, ${this.proactive?.items.length ?? 0} proactive\n`)
     this.tick()
     this.tickTimer = setInterval(() => this.tick(), TICK_INTERVAL)
   }
@@ -92,7 +114,7 @@ export class Scheduler {
     for (const s of this.nonInteractive) {
       result.push({
         name: s.name, time: s.time, days: s.days ?? 'daily',
-        type: 'non-interactive', running: this.running.has(s.name),
+        type: 'non-interactive', running: false,
         lastFired: this.lastFired.get(s.name) ?? null,
       })
     }
@@ -119,7 +141,6 @@ export class Scheduler {
     // Check timed schedules
     const timed = [...this.nonInteractive, ...this.interactive].find(e => e.name === name)
     if (timed) {
-      if (this.running.has(name)) return `"${name}" is already running`
       const isNonInteractive = this.nonInteractive.includes(timed)
       // Set lastFired to prevent duplicate with automatic tick
       const now = new Date()
@@ -160,7 +181,6 @@ export class Scheduler {
     ]
 
     for (const { schedule: s, type } of allTimed) {
-      if (this.running.has(s.name)) continue
       if ((s.days ?? 'daily') === 'weekday' && isWeekend) continue
 
       // Determine if this schedule should fire
@@ -184,7 +204,7 @@ export class Scheduler {
 
       this.lastFired.set(s.name, now.toISOString())
       this.fireTimed(s, type).catch(err =>
-        process.stderr.write(`cc-bot scheduler: ${s.name} failed: ${err}\n`),
+        process.stderr.write(`claude2bot scheduler: ${s.name} failed: ${err}\n`),
       )
     }
 
@@ -248,7 +268,7 @@ export class Scheduler {
       slots.add(start + Math.floor(Math.random() * (end - start)))
     }
     this.proactiveSlots = [...slots].sort((a, b) => a - b)
-    process.stderr.write(`cc-bot scheduler: proactive slots for ${dateStr}: ${this.proactiveSlots.map(m => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`).join(', ')}\n`)
+    process.stderr.write(`claude2bot scheduler: proactive slots for ${dateStr}: ${this.proactiveSlots.map(m => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`).join(', ')}\n`)
   }
 
   // ── Fire timed schedule ─────────────────────────────────────────────
@@ -259,60 +279,43 @@ export class Scheduler {
   ): Promise<void> {
     const prompt = this.loadPrompt(schedule.prompt ?? `${schedule.name}.md`)
     if (!prompt) {
-      process.stderr.write(`cc-bot scheduler: prompt not found for "${schedule.name}"\n`)
+      process.stderr.write(`claude2bot scheduler: prompt not found for "${schedule.name}"\n`)
       return
     }
 
-    process.stderr.write(`cc-bot scheduler: firing ${schedule.name} (${type})\n`)
+    process.stderr.write(`claude2bot scheduler: firing ${schedule.name} (${type})\n`)
 
     if (type === 'interactive') {
       if (this.injectFn) this.injectFn(this.resolveChannel(schedule.channel), schedule.name, prompt)
       return
     }
 
-    // Non-interactive: spawn claude -p with atomic lock file to prevent cross-process duplicates
-    const lockFile = join(tmpdir(), `claude2bot-${schedule.name}.lock`)
-    const LOCK_TIMEOUT_MS = 10 * 60 * 1000 // 10 minutes
+    // Non-interactive: spawn claude -p, capture stdout, relay via main bot
+    const channelId = this.resolveChannel(schedule.channel)
 
-    // Check stale lock
-    if (existsSync(lockFile)) {
-      try {
-        const lockAge = Date.now() - statSync(lockFile).mtimeMs
-        if (lockAge < LOCK_TIMEOUT_MS) {
-          process.stderr.write(`cc-bot scheduler: ${schedule.name} skipped (lock age ${Math.round(lockAge / 1000)}s)\n`)
-          return
-        }
-        process.stderr.write(`cc-bot scheduler: ${schedule.name} stale lock (${Math.round(lockAge / 1000)}s), overriding\n`)
-        try { unlinkSync(lockFile) } catch { /* ignore */ }
-      } catch { /* stat failed, proceed */ }
-    }
+    // CLAUDE2BOT_NO_CONNECT prevents child from connecting Discord bot (avoids WebSocket conflict)
+    const proc = spawn('claude', ['-p', '--dangerously-skip-permissions'], {
+      env: { ...process.env, CLAUDE2BOT_NO_CONNECT: '1' },
+    })
 
-    // Atomic lock creation (O_CREAT | O_EXCL = fail if exists)
-    try {
-      const fd = openSync(lockFile, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY)
-      writeFileSync(fd, `${process.pid}\n${Date.now()}`)
-      closeSync(fd)
-    } catch {
-      process.stderr.write(`cc-bot scheduler: ${schedule.name} skipped (lock race lost)\n`)
-      return
-    }
-
-    this.running.add(schedule.name)
-    const proc = spawn('claude', ['-p', '--dangerously-skip-permissions'])
-    proc.stdin.write(prompt)
+    const wrappedPrompt = prompt + '\n\nIMPORTANT: Output your final result as plain text to stdout. Do NOT use any reply, messaging, or channel tools. Just print the result.'
+    proc.stdin.write(wrappedPrompt)
     proc.stdin.end()
 
-    const cleanup = () => {
-      this.running.delete(schedule.name)
-      try { unlinkSync(lockFile) } catch { /* ignore */ }
-    }
+    let stdout = ''
+    if (proc.stdout) proc.stdout.on('data', (d: Buffer) => { stdout += d })
+
     proc.on('close', (code: number | null) => {
-      cleanup()
-      process.stderr.write(`cc-bot scheduler: ${schedule.name} exited (${code})\n`)
+      const result = stdout.trim()
+      if (result && this.sendFn) {
+        this.sendFn(channelId, result).catch(err =>
+          process.stderr.write(`claude2bot scheduler: ${schedule.name} relay failed: ${err}\n`),
+        )
+      }
+      process.stderr.write(`claude2bot scheduler: ${schedule.name} exited (${code})\n`)
     })
     proc.on('error', (err: Error) => {
-      cleanup()
-      process.stderr.write(`cc-bot scheduler: ${schedule.name} error: ${err}\n`)
+      process.stderr.write(`claude2bot scheduler: ${schedule.name} error: ${err}\n`)
     })
   }
 
@@ -321,7 +324,7 @@ export class Scheduler {
   private fireProactive(item: ProactiveItem): void {
     const topicPrompt = this.loadPrompt(`${item.topic}.md`)
     if (!topicPrompt) {
-      process.stderr.write(`cc-bot scheduler: proactive prompt not found for "${item.topic}"\n`)
+      process.stderr.write(`claude2bot scheduler: proactive prompt not found for "${item.topic}"\n`)
       return
     }
 
@@ -338,7 +341,7 @@ export class Scheduler {
       }
     }
 
-    process.stderr.write(`cc-bot scheduler: firing proactive "${item.topic}"\n`)
+    process.stderr.write(`claude2bot scheduler: firing proactive "${item.topic}"\n`)
     this.proactiveLastFire = Date.now()
     this.proactiveFiredToday++
     this.lastFired.set(`proactive:${item.topic}`, new Date().toISOString().slice(0, 16))
@@ -363,4 +366,5 @@ export class Scheduler {
       return existsSync(path) ? readFileSync(path, 'utf8') : null
     } catch { return null }
   }
+
 }
