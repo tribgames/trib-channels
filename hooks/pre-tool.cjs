@@ -33,6 +33,14 @@ function getDisplayWidth(str) {
   return width;
 }
 
+function replaceEmojiInCodeBlock(text) {
+  return text
+    .replace(/✅/g, '[O]')
+    .replace(/❌/g, '[X]')
+    .replace(/⭕/g, '[O]')
+    .replace(/🔴/g, '[X]');
+}
+
 function convertMarkdownTables(text) {
   const lines = text.split('\n');
   const result = [];
@@ -76,7 +84,8 @@ function convertMarkdownTables(text) {
         outLines.push(allRows[r].map((c, ci) => padCell(c, widths[ci])).join('  '));
       }
 
-      result[headerIdx] = '```\n' + outLines.join('\n') + '\n```';
+      const tableText = replaceEmojiInCodeBlock(outLines.join('\n'));
+      result[headerIdx] = '```\n' + tableText + '\n```';
       i = j;
       continue;
     }
@@ -191,15 +200,18 @@ process.stdin.on('end', async () => {
         if (token) {
           const pad = state.sentCount > 0 ? '\u3164\n' : '';
           const chunks = chunk(pad + escapeNestedCodeBlocks(convertMarkdownTables(newText.trim())), 2000);
+          state.sentCount = (state.sentCount || 0) + chunks.length;
+          state.pendingText = '';
+          fs.writeFileSync(STATE_FILE, JSON.stringify(state));
           for (const c of chunks) {
             await discordSend(state.channelId, c, token);
           }
-          state.sentCount = (state.sentCount || 0) + chunks.length;
         }
       }
+    } else {
+      state.pendingText = '';
+      fs.writeFileSync(STATE_FILE, JSON.stringify(state));
     }
-    state.pendingText = '';
-    fs.writeFileSync(STATE_FILE, JSON.stringify(state));
   } catch {}
   process.exit(0);
 });

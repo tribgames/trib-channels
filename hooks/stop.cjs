@@ -7,6 +7,7 @@ if (process.env.CLAUDE2BOT_NO_CONNECT) process.exit(0);
 const https = require('https');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA;
 if (!DATA_DIR) process.exit(0);
@@ -51,6 +52,14 @@ function getDisplayWidth(str) {
     }
   }
   return width;
+}
+
+function replaceEmojiInCodeBlock(text) {
+  return text
+    .replace(/✅/g, '[O]')
+    .replace(/❌/g, '[X]')
+    .replace(/⭕/g, '[O]')
+    .replace(/🔴/g, '[X]');
 }
 
 function convertMarkdownTables(text) {
@@ -100,7 +109,8 @@ function convertMarkdownTables(text) {
       }
 
       // Replace header in result (already pushed) with code block
-      result[headerIdx] = '```\n' + outLines.join('\n') + '\n```';
+      const tableText = replaceEmojiInCodeBlock(outLines.join('\n'));
+      result[headerIdx] = '```\n' + tableText + '\n```';
       // Skip separator and data rows
       i = j;
       continue;
@@ -223,6 +233,10 @@ process.stdin.on('end', async () => {
       if (newText.trim()) {
         const pad = (state && state.sentCount > 0) ? '\u3164\n' : '';
         const padded = pad + escapeNestedCodeBlocks(convertMarkdownTables(newText.trim()));
+        const hash = crypto.createHash('md5').update(padded).digest('hex');
+        if (state.lastSentHash === hash) process.exit(0);
+        state.lastSentHash = hash;
+        fs.writeFileSync(STATE_FILE, JSON.stringify(state));
         const chunks = chunk(padded, 2000);
         for (const c of chunks) {
           await discordSend(channelId, c, token);
@@ -234,6 +248,10 @@ process.stdin.on('end', async () => {
       if (msg && !msg.includes('No response requested')) {
         const pad = (state && state.sentCount > 0) ? '\u3164\n' : '';
         const padded = pad + escapeNestedCodeBlocks(convertMarkdownTables(msg));
+        const hash = crypto.createHash('md5').update(padded).digest('hex');
+        if (state.lastSentHash === hash) process.exit(0);
+        state.lastSentHash = hash;
+        fs.writeFileSync(STATE_FILE, JSON.stringify(state));
         const chunks = chunk(padded, 2000);
         for (const c of chunks) {
           await discordSend(channelId, c, token);
