@@ -20,7 +20,6 @@ process.stdin.on('end', () => {
     if (tool === 'ToolSearch') process.exit(0);
     if (tool.includes('plugin_claude2bot_claude2bot__')) process.exit(0);
     // For Read/Grep/Glob: update transcriptIdx (discard accumulated text) but don't save pendingText
-    const isSearchTool = (tool === 'Read' || tool === 'Grep' || tool === 'Glob');
 
     let state = {};
     try { state = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); } catch { process.exit(0); }

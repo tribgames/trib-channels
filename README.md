@@ -96,6 +96,21 @@ Requires [whisper.cpp](https://github.com/ggerganov/whisper.cpp) and `ffmpeg`.
 | **interactive** | Injects prompt into current session | Yes |
 | **proactive** | Random-interval session inject with idle guard | Yes |
 
+## CLI Mirroring
+
+All tool activity and assistant text is automatically forwarded to Discord via plugin hooks:
+
+| Hook | Purpose |
+|------|---------|
+| `UserPromptSubmit` | Saves transcript offset, adds reaction to user message |
+| `PreToolUse` | Extracts intermediate assistant text from transcript |
+| `PostToolUse` | Sends tool log + pending text to Discord |
+| `Stop` | Forwards final assistant text, removes reaction |
+
+- Action tools (Bash, Edit, Write, Agent, Team) show with `-#` subtext + code block
+- Search tools (Read, Grep, Glob) show as `-#` one-liner
+- Voice messages are auto-transcribed by the server — no manual processing needed
+
 ## License
 
 Apache License 2.0

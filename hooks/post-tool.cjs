@@ -66,8 +66,8 @@ process.stdin.on('end', async () => {
     } else if (tool === 'Read') {
       const fname = (toolInput.file_path || '').split('/').pop() || '';
       const ext = fname.split('.').pop().toLowerCase();
-      if (['png','jpg','jpeg','gif','webp','svg'].includes(ext)) summary = fname + ' 확인 중...';
-      else if (['ogg','mp3','wav','m4a'].includes(ext)) summary = fname + ' 처리 중...';
+      if (['png','jpg','jpeg','gif','webp','svg'].includes(ext)) summary = fname;
+      else if (['ogg','mp3','wav','m4a'].includes(ext)) summary = fname;
       else summary = fname;
     } else if (tool === 'Grep') {
       summary = '"' + (toolInput.pattern || '').substring(0, 25) + '"';
