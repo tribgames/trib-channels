@@ -7,6 +7,32 @@ const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA;
 if (!DATA_DIR) process.exit(0);
 const STATE_FILE = path.join(require('os').tmpdir(), 'claude2bot-status.json');
 
+function getDisplayWidth(str) {
+  let width = 0;
+  for (const ch of str) {
+    const code = ch.codePointAt(0);
+    if (
+      (code >= 0x1100 && code <= 0x115F) ||
+      (code >= 0x2E80 && code <= 0x303E) ||
+      (code >= 0x3040 && code <= 0x33BF) ||
+      (code >= 0x3400 && code <= 0x4DBF) ||
+      (code >= 0x4E00 && code <= 0x9FFF) ||
+      (code >= 0xAC00 && code <= 0xD7AF) ||
+      (code >= 0xF900 && code <= 0xFAFF) ||
+      (code >= 0xFE30 && code <= 0xFE4F) ||
+      (code >= 0xFF00 && code <= 0xFF60) ||
+      (code >= 0xFFE0 && code <= 0xFFE6) ||
+      (code >= 0x20000 && code <= 0x2FA1F) ||
+      (code >= 0x1F300 && code <= 0x1F9FF)
+    ) {
+      width += 2;
+    } else {
+      width += 1;
+    }
+  }
+  return width;
+}
+
 function convertMarkdownTables(text) {
   const lines = text.split('\n');
   const result = [];
@@ -32,20 +58,20 @@ function convertMarkdownTables(text) {
       for (let c = 0; c < colCount; c++) {
         let max = 2;
         for (const row of allRows) {
-          const cellLen = row[c] ? [...row[c]].length : 0;
+          const cellLen = row[c] ? getDisplayWidth(row[c]) : 0;
           if (cellLen > max) max = cellLen;
         }
         widths.push(max);
       }
 
       const padCell = (str, w) => {
-        const visLen = [...(str || '')].length;
+        const visLen = getDisplayWidth(str || '');
         return (str || '') + ' '.repeat(Math.max(0, w - visLen));
       };
 
       const outLines = [];
       outLines.push(allRows[0].map((c, ci) => padCell(c, widths[ci])).join('  '));
-      outLines.push(widths.map(w => '─'.repeat(w)).join('  '));
+      outLines.push(widths.map(w => '-'.repeat(w)).join('  '));
       for (let r = 1; r < allRows.length; r++) {
         outLines.push(allRows[r].map((c, ci) => padCell(c, widths[ci])).join('  '));
       }
@@ -60,15 +86,41 @@ function convertMarkdownTables(text) {
   return result.join('\n');
 }
 
+function escapeNestedCodeBlocks(text) {
+  let inBlock = false;
+  const lines = text.split('\n');
+  return lines.map(line => {
+    if (line.startsWith('```')) {
+      inBlock = !inBlock;
+      return line;
+    }
+    if (inBlock && line.includes('```')) {
+      return line.replace(/```/g, '`\u200B``');
+    }
+    return line;
+  }).join('\n');
+}
+
 function chunk(text, limit) {
   if (text.length <= limit) return [text];
   const out = [];
   let rest = text;
   while (rest.length > limit) {
-    const para = rest.lastIndexOf('\n\n', limit);
-    const line = rest.lastIndexOf('\n', limit);
-    const space = rest.lastIndexOf(' ', limit);
-    let cut = para > limit / 2 ? para : line > limit / 2 ? line : space > 0 ? space : limit;
+    let cut = -1;
+    // Prefer splitting after a closed code block
+    const cbEnd1 = rest.lastIndexOf('\n```\n', limit);
+    const cbEnd2 = rest.lastIndexOf('\n```', limit);
+    if (cbEnd1 > limit / 2) {
+      cut = cbEnd1 + 4; // split after '\n```\n'
+    } else if (cbEnd2 > limit / 2) {
+      cut = cbEnd2 + 4; // split after '\n```'
+    }
+    if (cut <= 0 || cut > limit) {
+      const para = rest.lastIndexOf('\n\n', limit);
+      const line = rest.lastIndexOf('\n', limit);
+      const space = rest.lastIndexOf(' ', limit);
+      cut = para > limit / 2 ? para : line > limit / 2 ? line : space > 0 ? space : limit;
+    }
     let part = rest.slice(0, cut);
     rest = rest.slice(cut).replace(/^\n+/, '');
     const backtickCount = (part.match(/```/g) || []).length;
@@ -138,7 +190,7 @@ process.stdin.on('end', async () => {
         const token = config.discord && config.discord.token;
         if (token) {
           const pad = state.sentCount > 0 ? '\u3164\n' : '';
-          const chunks = chunk(pad + convertMarkdownTables(newText.trim()), 2000);
+          const chunks = chunk(pad + escapeNestedCodeBlocks(convertMarkdownTables(newText.trim())), 2000);
           for (const c of chunks) {
             await discordSend(state.channelId, c, token);
           }

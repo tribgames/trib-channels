@@ -158,6 +158,10 @@ export class DiscordBackend implements ChannelBackend {
       this.bootAccess = a
     }
 
+    this.client.on('error', err => {
+      process.stderr.write(`claude2bot discord: client error: ${err}\n`)
+    })
+
     this.client.on('messageCreate', msg => {
       if (msg.author.bot) return
       this.handleInbound(msg).catch(e =>

@@ -24,6 +24,13 @@ import { handleSlashCommand, type SlashCommandContext } from './lib/slash-comman
 import type { InboundMessage } from './backends/types.js'
 import type { ChatInputCommandInteraction } from 'discord.js'
 
+process.on('unhandledRejection', err => {
+  process.stderr.write(`claude2bot: unhandled rejection: ${err}\n`)
+})
+process.on('uncaughtException', err => {
+  process.stderr.write(`claude2bot: uncaught exception: ${err}\n`)
+})
+
 // ── Bootstrap ──────────────────────────────────────────────────────────
 
 const config = loadConfig()
@@ -78,6 +85,8 @@ scheduler.setInjectHandler((channelId: string, name: string, prompt: string) => 
         ts: new Date().toISOString(),
       },
     },
+  }).catch(e => {
+    process.stderr.write(`claude2bot: notification failed: ${e}\n`)
   })
 })
 
@@ -172,6 +181,8 @@ backend.onInteraction = (interaction) => {
         ...(interaction.message ? { message_id: interaction.message.id } : {}),
       },
     },
+  }).catch(e => {
+    process.stderr.write(`claude2bot: notification failed: ${e}\n`)
   })
 }
 
@@ -192,6 +203,8 @@ const slashCtx: SlashCommandContext = {
           ts: new Date().toISOString(),
         },
       },
+    }).catch(e => {
+      process.stderr.write(`claude2bot: notification failed: ${e}\n`)
     })
   },
   serverProcess: process,
@@ -520,6 +533,8 @@ async function handleInbound(msg: InboundMessage): Promise<void> {
         ...(msg.imagePath ? { image_path: msg.imagePath } : {}),
       },
     },
+  }).catch(e => {
+    process.stderr.write(`claude2bot: notification failed: ${e}\n`)
   })
 }
 
@@ -534,3 +549,16 @@ if (process.env.CLAUDE2BOT_NO_CONNECT) {
   scheduler.start()
   process.stderr.write(`claude2bot: running with ${backend.name} backend\n`)
 }
+
+let shuttingDown = false
+function shutdown(): void {
+  if (shuttingDown) return
+  shuttingDown = true
+  process.stderr.write('claude2bot: shutting down\n')
+  setTimeout(() => process.exit(0), 2000)
+  void backend.disconnect().finally(() => process.exit(0))
+}
+process.stdin.on('end', shutdown)
+process.stdin.on('close', shutdown)
+process.on('SIGTERM', shutdown)
+process.on('SIGINT', shutdown)
