@@ -141,7 +141,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: 'reply',
       description:
-        'Reply on the messaging channel. Pass chat_id from the inbound message. Optionally pass reply_to (message_id) for threading, and files (absolute paths) to attach.',
+        'Reply on the messaging channel. Pass chat_id from the inbound message. Optionally pass reply_to (message_id) for threading, files (absolute paths) to attach, and embeds for rich Discord embeds.',
       inputSchema: {
         type: 'object' as const,
         properties: {
@@ -155,6 +155,11 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: 'array',
             items: { type: 'string' },
             description: 'Absolute file paths to attach (images, logs, etc). Max 10 files, 25MB each.',
+          },
+          embeds: {
+            type: 'array',
+            items: { type: 'object' },
+            description: 'Discord embed objects. Fields: title, description, color (int), fields [{name, value, inline}], footer {text}, timestamp.',
           },
         },
         required: ['chat_id', 'text'],
@@ -248,6 +253,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           {
             replyTo: args.reply_to as string | undefined,
             files: (args.files as string[] | undefined) ?? [],
+            embeds: (args.embeds as Record<string, unknown>[] | undefined) ?? [],
           },
         )
         const text =

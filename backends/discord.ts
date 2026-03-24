@@ -212,8 +212,10 @@ export class DiscordBackend implements ChannelBackend {
           replyTo != null &&
           replyMode !== 'off' &&
           (replyMode === 'all' || i === 0)
+        const embeds = i === 0 ? (opts?.embeds ?? []) : []
         const sent = await ch.send({
           content: chunks[i],
+          ...(embeds.length > 0 ? { embeds } : {}),
           ...(i === 0 && files.length > 0 ? { files } : {}),
           ...(shouldReplyTo
             ? { reply: { messageReference: replyTo, failIfNotExists: false } }

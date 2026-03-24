@@ -34,6 +34,8 @@ export interface SendOptions {
   replyTo?: string
   /** Absolute file paths to attach */
   files?: string[]
+  /** Discord embed objects (passed directly to Discord API) */
+  embeds?: Record<string, unknown>[]
 }
 
 export interface SendResult {
