@@ -114,6 +114,7 @@ function safeName(s: string | undefined): string | undefined {
 export class TelegramBackend implements ChannelBackend {
   readonly name = 'telegram'
   onMessage: ((msg: InboundMessage) => void) | null = null
+  onInteraction: ((interaction: { type: string; customId: string; userId: string; channelId: string; values?: string[]; message?: { id: string } }) => void) | null = null
 
   private bot: Bot
   private botUsername = ''

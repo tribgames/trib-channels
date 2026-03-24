@@ -36,6 +36,8 @@ export interface SendOptions {
   files?: string[]
   /** Discord embed objects (passed directly to Discord API) */
   embeds?: Record<string, unknown>[]
+  /** Discord message components (Action Row, Button, Select Menu, etc.) */
+  components?: Record<string, unknown>[]
 }
 
 export interface SendResult {
@@ -115,6 +117,11 @@ export interface ChannelBackend {
    * Set by the MCP server to route messages as notifications.
    */
   onMessage: ((msg: InboundMessage) => void) | null
+
+  /**
+   * Callback invoked when a Discord interaction (button click, select menu) occurs.
+   */
+  onInteraction: ((interaction: { type: string; customId: string; userId: string; channelId: string; values?: string[]; message?: { id: string } }) => void) | null
 }
 
 // ── Channel types ─────────────────────────────────────────────────────

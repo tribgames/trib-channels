@@ -13,6 +13,9 @@ import {
   CallToolRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js'
 import { spawn } from 'child_process'
+import { tmpdir } from 'os'
+import { writeFileSync } from 'fs'
+import { join } from 'path'
 import { loadConfig, createBackend } from './lib/config.js'
 import { loadSettings } from './lib/settings.js'
 import { Scheduler } from './lib/scheduler.js'
@@ -83,6 +86,25 @@ scheduler.setSendHandler(async (channelId: string, text: string) => {
   await backend.sendMessage(channelId, text)
 })
 
+backend.onInteraction = (interaction) => {
+  void mcp.notification({
+    method: 'notifications/claude/channel',
+    params: {
+      content: `[interaction] ${interaction.type}: ${interaction.customId}${interaction.values ? ' values=' + interaction.values.join(',') : ''}`,
+      meta: {
+        chat_id: interaction.channelId,
+        user: `interaction:${interaction.type}`,
+        user_id: interaction.userId,
+        ts: new Date().toISOString(),
+        interaction_type: interaction.type,
+        custom_id: interaction.customId,
+        ...(interaction.values ? { values: interaction.values.join(',') } : {}),
+        ...(interaction.message ? { message_id: interaction.message.id } : {}),
+      },
+    },
+  })
+}
+
 // ── Voice transcription ───────────────────────────────────────────────
 
 function isVoiceAttachment(contentType: string): boolean {
@@ -141,7 +163,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: 'reply',
       description:
-        'Reply on the messaging channel. Pass chat_id from the inbound message. Optionally pass reply_to (message_id) for threading, files (absolute paths) to attach, and embeds for rich Discord embeds.',
+        'Reply on the messaging channel. Pass chat_id from the inbound message. Optionally pass reply_to, files, embeds, and components (buttons, selects, etc).',
       inputSchema: {
         type: 'object' as const,
         properties: {
@@ -160,6 +182,11 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: 'array',
             items: { type: 'object' },
             description: 'Discord embed objects. Fields: title, description, color (int), fields [{name, value, inline}], footer {text}, timestamp.',
+          },
+          components: {
+            type: 'array',
+            items: { type: 'object' },
+            description: 'Discord message components. Use Action Rows containing Buttons, Select Menus, etc. See Discord Components V2 docs.',
           },
         },
         required: ['chat_id', 'text'],
@@ -237,6 +264,17 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['name'],
       },
     },
+    {
+      name: 'restart',
+      description: 'Restart the claude2bot session. Creates a restart flag file so the wrapper script can auto-restart. The current process will exit.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          reason: { type: 'string', description: 'Reason for restart (optional)' },
+        },
+        required: [],
+      },
+    },
   ],
 }))
 
@@ -254,6 +292,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
             replyTo: args.reply_to as string | undefined,
             files: (args.files as string[] | undefined) ?? [],
             embeds: (args.embeds as Record<string, unknown>[] | undefined) ?? [],
+            components: (args.components as Record<string, unknown>[] | undefined) ?? [],
           },
         )
         const text =
@@ -324,6 +363,14 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
       case 'trigger_schedule': {
         const result = await scheduler.triggerManual(args.name as string)
         return { content: [{ type: 'text', text: result }] }
+      }
+      case 'restart': {
+        const reason = (args.reason as string) || 'manual restart'
+        const flagFile = join(tmpdir(), 'claude2bot-restart')
+        writeFileSync(flagFile, reason)
+        process.stderr.write(`claude2bot: restart requested (${reason})\n`)
+        setTimeout(() => process.exit(0), 1000)
+        return { content: [{ type: 'text', text: `restart flag set. Session will restart shortly.` }] }
       }
       default:
         return {

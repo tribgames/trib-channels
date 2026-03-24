@@ -111,6 +111,7 @@ export class DiscordBackend implements ChannelBackend {
   readonly name = 'discord'
 
   onMessage: ((msg: InboundMessage) => void) | null = null
+  onInteraction: ((interaction: { type: string; customId: string; userId: string; channelId: string; values?: string[]; message?: { id: string } }) => void) | null = null
 
   private client: Client
   private stateDir: string
@@ -160,6 +161,27 @@ export class DiscordBackend implements ChannelBackend {
       this.handleInbound(msg).catch(e =>
         process.stderr.write(`claude2bot discord: handleInbound failed: ${e}\n`),
       )
+    })
+
+    this.client.on('interactionCreate', async (interaction) => {
+      try {
+        if (interaction.isButton() || interaction.isStringSelectMenu() || interaction.isRoleSelectMenu() || interaction.isUserSelectMenu() || interaction.isChannelSelectMenu()) {
+          await interaction.deferUpdate().catch(() => {})
+
+          if (this.onInteraction) {
+            this.onInteraction({
+              type: interaction.isButton() ? 'button' : 'select',
+              customId: interaction.customId,
+              userId: interaction.user.id,
+              channelId: interaction.channelId,
+              values: interaction.isStringSelectMenu() ? interaction.values : undefined,
+              message: interaction.message ? { id: interaction.message.id } : undefined,
+            })
+          }
+        }
+      } catch (err) {
+        process.stderr.write(`claude2bot discord: interaction error: ${err}\n`)
+      }
     })
 
     this.client.once('ready', c => {
@@ -213,9 +235,11 @@ export class DiscordBackend implements ChannelBackend {
           replyMode !== 'off' &&
           (replyMode === 'all' || i === 0)
         const embeds = i === 0 ? (opts?.embeds ?? []) : []
+        const components = i === 0 ? (opts?.components ?? []) : []
         const sent = await ch.send({
           content: chunks[i],
           ...(embeds.length > 0 ? { embeds } : {}),
+          ...(components.length > 0 ? { components: components as any } : {}),
           ...(i === 0 && files.length > 0 ? { files } : {}),
           ...(shouldReplyTo
             ? { reply: { messageReference: replyTo, failIfNotExists: false } }
