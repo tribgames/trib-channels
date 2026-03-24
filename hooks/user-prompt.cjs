@@ -82,7 +82,7 @@ process.stdin.on('end', async () => {
         const userMsg = Array.isArray(msgs) && msgs.find(m => !m.author || !m.author.bot);
         if (userMsg) {
           const mid = userMsg.id;
-          fs.writeFileSync(STATE_FILE, JSON.stringify({
+          const oldState = {}; try { Object.assign(oldState, JSON.parse(fs.readFileSync(STATE_FILE, "utf8"))); } catch {} fs.writeFileSync(STATE_FILE, JSON.stringify({ ...oldState,
             channelId: channelId,
             userMessageId: mid,
             emoji: '\u{1F914}',
