@@ -4,40 +4,15 @@ if (process.env.CLAUDE2BOT_NO_CONNECT) process.exit(0);
  * 1. Update reaction on user message
  * 2. Send pending text (from PreToolUse) + tool log as one message
  */
-const https = require('https');
 const fs = require('fs');
 const path = require('path');
+
+const { chunk, formatForDiscord, discordApi, discordReact } = require('./lib/format.cjs');
 
 const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA;
 if (!DATA_DIR) process.exit(0);
 
 const STATE_FILE = path.join(require('os').tmpdir(), 'claude2bot-status.json');
-
-function discordApi(method, apiPath, token, body) {
-  return new Promise((resolve, reject) => {
-    const data = body ? JSON.stringify(body) : '';
-    const headers = { 'Authorization': 'Bot ' + token, 'Content-Type': 'application/json' };
-    if (data) headers['Content-Length'] = Buffer.byteLength(data);
-    const req = https.request({ hostname: 'discord.com', path: apiPath, method: method, headers: headers },
-      res => { let out = ''; res.on('data', d => { out += d; }); res.on('end', () => { try { resolve(JSON.parse(out)); } catch { resolve({}); } }); });
-    req.on('error', reject);
-    if (data) req.write(data);
-    req.end();
-  });
-}
-
-function discordReact(method, channelId, messageId, emoji, token) {
-  return new Promise((resolve) => {
-    const req = https.request({
-      hostname: 'discord.com',
-      path: '/api/v10/channels/' + channelId + '/messages/' + messageId + '/reactions/' + encodeURIComponent(emoji) + '/@me',
-      method: method,
-      headers: { 'Authorization': 'Bot ' + token, 'Content-Length': 0 },
-    }, res => { res.resume(); res.on('end', resolve); });
-    req.on('error', resolve);
-    req.end();
-  });
-}
 
 let input = '';
 process.stdin.on('data', d => { input += d; });
@@ -121,15 +96,17 @@ process.stdin.on('end', async () => {
     const pad = state.sentCount > 0 ? '\u3164\n' : '';
     let msg = '';
     if (state.pendingText) {
-      msg = pad + state.pendingText.trim() + '\n\n' + toolLine;
+      msg = pad + formatForDiscord(state.pendingText.trim()) + '\n\n' + toolLine;
       state.pendingText = '';
     } else {
       msg = pad + toolLine;
     }
     state.sentCount = (state.sentCount || 0) + 1;
 
-    const content = msg.length > 1900 ? msg.substring(0, 1900) : msg;
-    await discordApi('POST', '/api/v10/channels/' + ch + '/messages', token, { content: content });
+    const chunks = chunk(msg, 2000);
+    for (const c of chunks) {
+      await discordApi('POST', '/api/v10/channels/' + ch + '/messages', token, { content: c });
+    }
 
     fs.writeFileSync(STATE_FILE, JSON.stringify(state));
     process.exit(0);
