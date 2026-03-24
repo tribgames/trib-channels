@@ -61,8 +61,6 @@ process.stdin.on('end', async () => {
 
     if (tool === 'Bash' || tool.includes('Bash')) {
       const cmd = (toolInput.command || '');
-      // Skip voice processing commands (ffmpeg, whisper)
-      if (cmd.includes('whisper') || cmd.includes('ffmpeg')) process.exit(0);
       summary = desc || 'Bash';
       detail = isSearchTool ? '' : cmd.substring(0, 500);
     } else if (tool === 'Read') {

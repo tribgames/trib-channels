@@ -26,6 +26,6 @@ Override in `settings.local.md` (placed in the plugin data directory).
 
 ## Voice Messages
 
-- When a voice attachment arrives, download and transcribe it before responding.
-- Treat the transcription as the user's message and respond accordingly.
+- Voice messages are automatically transcribed by the server. The text in the channel message IS the transcription.
+- Do NOT manually download or re-transcribe voice attachments. Just respond to the text directly.
 
