@@ -48,7 +48,7 @@ process.stdin.on('end', () => {
     }
 
     if (newText.trim()) {
-      state.pendingText = (state.pendingText || '') + newText.trim();
+      state.pendingText = (state.pendingText || '') + (state.pendingText ? '\n\n' : '') + newText.trim();
     }
 
     fs.writeFileSync(STATE_FILE, JSON.stringify(state));

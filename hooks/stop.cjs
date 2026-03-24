@@ -56,7 +56,7 @@ let input = '';
 process.stdin.on('data', d => { input += d; });
 process.stdin.on('end', async () => {
   try {
-    const data = JSON.parse(input);
+    const data = JSON.parse(input); fs.appendFileSync("/tmp/claude2bot-stop-dump.json", JSON.stringify({agent_id: data.agent_id, stop_hook_active: data.stop_hook_active, msg_len: (data.last_assistant_message || "").length, msg_preview: (data.last_assistant_message || "").substring(0, 100)}) + "\n");
     if (data.agent_id) process.exit(0);
     if (data.stop_hook_active) process.exit(0);
 
