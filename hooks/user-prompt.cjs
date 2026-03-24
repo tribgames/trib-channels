@@ -58,7 +58,24 @@ try {
       discordApi('GET', '/api/v10/channels/' + channelId + '/messages?limit=1', token)
         .then(msgs => {
           if (Array.isArray(msgs) && msgs.length > 0) {
-            fs.writeFileSync(STATE_FILE, JSON.stringify({ channelId: channelId, userMessageId: msgs[0].id }));
+            const mid = msgs[0].id;
+            fs.writeFileSync(STATE_FILE, JSON.stringify({ channelId: channelId, userMessageId: mid, emoji: '\u{1F914}' }));
+            // Add 🤔 reaction
+            const req = https.request({
+              hostname: 'discord.com',
+              path: '/api/v10/channels/' + channelId + '/messages/' + mid + '/reactions/' + encodeURIComponent('\u{1F914}') + '/@me',
+              method: 'PUT',
+              headers: { 'Authorization': 'Bot ' + token, 'Content-Length': 0 },
+            }, res => { res.resume(); res.on('end', () => {
+              if (hookOutput) process.stdout.write(JSON.stringify(hookOutput));
+              process.exit(0);
+            }); });
+            req.on('error', () => {
+              if (hookOutput) process.stdout.write(JSON.stringify(hookOutput));
+              process.exit(0);
+            });
+            req.end();
+            return;
           }
           if (hookOutput) process.stdout.write(JSON.stringify(hookOutput));
           process.exit(0);

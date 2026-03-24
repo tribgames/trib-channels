@@ -47,45 +47,54 @@ process.stdin.on('end', async () => {
 
     const tool = data.tool_name || '';
     const toolInput = data.tool_input || {};
-    if (tool.includes('reply') || tool === 'ToolSearch') process.exit(0);
+    // Skip ToolSearch and claude2bot own tools (reply, fetch, schedule etc) — show all others including MCP
+    if (tool === 'ToolSearch') process.exit(0);
+    if (tool.includes('plugin_claude2bot_claude2bot__')) process.exit(0);
 
-    // Build line for log (no emoji — emoji is on user's reaction only)
-    let line = '';
+    // Build summary (short) + detail (full, spoiler)
+    const desc = (toolInput.description || '').substring(0, 50);
+    let summary = '';
+    let detail = '';
+
     if (tool === 'Bash' || tool.includes('Bash')) {
-      const cmd = (toolInput.command || '').split('\n')[0].substring(0, 50);
-      line = cmd;
+      summary = desc || 'Bash';
+      detail = (toolInput.command || '').substring(0, 500);
     } else if (tool === 'Read') {
-      line = (toolInput.file_path || '').split('/').pop() || '';
+      summary = (toolInput.file_path || '').split('/').pop() || 'Read';
+      detail = toolInput.file_path || '';
     } else if (tool === 'Write') {
-      line = (toolInput.file_path || '').split('/').pop() || '';
+      summary = (toolInput.file_path || '').split('/').pop() || 'Write';
+      detail = toolInput.file_path || '';
     } else if (tool === 'Edit') {
-      line = (toolInput.file_path || '').split('/').pop() || '';
+      summary = (toolInput.file_path || '').split('/').pop() || 'Edit';
+      detail = toolInput.file_path || '';
     } else if (tool === 'Grep') {
-      line = '"' + (toolInput.pattern || '').substring(0, 25) + '"';
+      summary = '"' + (toolInput.pattern || '') + '"';
+      detail = 'path: ' + (toolInput.path || '.') + ', pattern: ' + (toolInput.pattern || '');
     } else if (tool === 'Glob') {
-      line = (toolInput.pattern || '').substring(0, 25);
+      summary = toolInput.pattern || 'Glob';
+      detail = 'path: ' + (toolInput.path || '.');
     } else if (tool === 'Agent') {
-      line = (toolInput.name || toolInput.subagent_type || 'agent');
+      summary = toolInput.name || toolInput.subagent_type || 'agent';
+      detail = (toolInput.prompt || '').substring(0, 200);
     } else if (tool === 'TaskCreate') {
-      line = (toolInput.subject || '').substring(0, 35);
+      summary = (toolInput.subject || '').substring(0, 50);
+      detail = toolInput.description || '';
     } else if (tool === 'SendMessage') {
-      line = '\u2192 ' + (toolInput.to || '');
-    } else if (tool.includes('chrome') || tool.includes('navigate')) {
-      line = (toolInput.url || toolInput.action || '').substring(0, 35);
-    } else if (tool.includes('WebFetch') || tool.includes('WebSearch')) {
-      line = (toolInput.query || toolInput.url || '').substring(0, 35);
+      summary = '\u2192 ' + (toolInput.to || '');
+      detail = (toolInput.summary || toolInput.message || '').substring(0, 200);
     } else {
-      line = '\u2699\uFE0F ' + tool.replace(/mcp__\w+__/, '');
+      summary = tool;
+      detail = JSON.stringify(toolInput).substring(0, 200);
     }
-    if (!line) process.exit(0);
+    if (!summary) process.exit(0);
 
-    // Pick emoji for reaction
-    let emoji = '\u{1F527}'; // 🔧
-    if (tool === 'Read') emoji = '\u{1F4D6}';
-    else if (tool === 'Write' || tool === 'Edit') emoji = '\u270F\uFE0F';
-    else if (tool === 'Grep' || tool === 'Glob') emoji = '\u{1F50D}';
-    else if (tool === 'Agent') emoji = '\u{1F916}';
-    else if (tool.includes('Web') || tool.includes('chrome')) emoji = '\u{1F310}';
+    // Format: ⏳ Tool (summary) + code block for detail
+    let line = '\u23F3 ' + tool + ' (' + summary + ')';
+    if (detail && detail !== summary) line += '\n```\n' + detail.substring(0, 400) + '\n```';
+
+    // Single work emoji for all tools
+    const emoji = '\u{1F6E0}\uFE0F'; // 🛠️
 
     // Read state + config
     let state = {};
@@ -109,18 +118,9 @@ process.stdin.on('end', async () => {
       state.emoji = emoji;
     }
 
-    // 2. Append tool line to log message (tool activity only, no transcript text)
-    const log = (state.log || '') + (state.log ? '\n' : '') + line;
-    if (state.logMessageId) {
-      // Edit existing log message
-      const truncLog = log.length > 1900 ? log.substring(log.length - 1900) : log;
-      await discordApi('PATCH', '/api/v10/channels/' + ch + '/messages/' + state.logMessageId, token, { content: truncLog });
-    } else {
-      // Create log message
-      const res = await discordApi('POST', '/api/v10/channels/' + ch + '/messages', token, { content: log });
-      if (res.id) state.logMessageId = res.id;
-    }
-    state.log = log;
+    // 2. Send new message for each tool call
+    const msgContent = line.length > 1900 ? line.substring(0, 1900) : line;
+    await discordApi('POST', '/api/v10/channels/' + ch + '/messages', token, { content: msgContent });
     fs.writeFileSync(STATE_FILE, JSON.stringify(state));
     process.exit(0);
   } catch { process.exit(0); }

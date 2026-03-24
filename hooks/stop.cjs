@@ -73,34 +73,17 @@ process.stdin.on('end', async () => {
     let state = {};
     try { state = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); } catch {}
 
-    // 1. Update reaction → ✅
-    if (state.userMessageId && state.channelId === channelId) {
-      if (state.emoji) await discordReact('DELETE', channelId, state.userMessageId, state.emoji, token);
-      await discordReact('PUT', channelId, state.userMessageId, '\u2705', token);
-    }
-
-    // 2. Append ✅ to log message
-    if (state.logMessageId && state.log) {
-      const finalLog = state.log + '\n\u2705 완료';
-      const truncLog = finalLog.length > 1900 ? finalLog.substring(finalLog.length - 1900) : finalLog;
-      await discordApi('PATCH', '/api/v10/channels/' + channelId + '/messages/' + state.logMessageId, token, { content: truncLog });
+    // 1. Remove reaction (clean up)
+    if (state.userMessageId && state.channelId === channelId && state.emoji) {
+      await discordReact('DELETE', channelId, state.userMessageId, state.emoji, token);
     }
 
     // Clean state
     try { fs.unlinkSync(STATE_FILE); } catch {}
 
-    // 3. Forward assistant text if reply wasn't used
+    // 3. Forward assistant text (always — no reply check needed)
     const msg = (data.last_assistant_message || '').trim();
     if (!msg || msg.length < 10) process.exit(0);
-
-    try {
-      const transcript = fs.readFileSync(data.transcript_path, 'utf8');
-      const lines = transcript.trim().split('\n');
-      const recent = lines.slice(-3).join('');
-      if (recent.includes('"tool_use"') && recent.includes('plugin_claude2bot_claude2bot__reply')) {
-        process.exit(0);
-      }
-    } catch {}
 
     const text = msg.length > 1900 ? msg.substring(0, 1900) + '...' : msg;
     await discordSend(channelId, text, token);
