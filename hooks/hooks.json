@@ -1,5 +1,5 @@
 {
-  "description": "claude2bot plugin hooks — settings injection, response rules, and auto-forward",
+  "description": "claude2bot plugin hooks — full CLI mirroring to Discord",
   "hooks": {
     "SessionStart": [
       {
@@ -17,6 +17,26 @@
           {
             "type": "command",
             "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/user-prompt.cjs"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/post-tool.cjs"
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/notification.cjs"
           }
         ]
       }
