@@ -10,9 +10,10 @@ import { createHash } from 'crypto'
 import { formatForDiscord, chunk } from './format.js'
 
 export interface ForwarderCallbacks {
-  send(channelId: string, text: string): Promise<void>
+  send(channelId: string, text: string): Promise<string>  // returns message ID
   react(channelId: string, messageId: string, emoji: string): Promise<void>
   removeReaction(channelId: string, messageId: string, emoji: string): Promise<void>
+  editMessage(channelId: string, messageId: string, text: string): Promise<void>
 }
 
 const STATUS_FILE = join(tmpdir(), 'claude2bot-status.json')
@@ -50,6 +51,8 @@ export class OutputForwarder {
   private watchingPath = ''
   private idleTimer: ReturnType<typeof setTimeout> | null = null
   private onIdleCallback: (() => void) | null = null
+  private pendingExplorerTargets: string[] = []
+  private explorerMessageId = ''
 
   constructor(private cb: ForwarderCallbacks) {}
 
@@ -136,39 +139,37 @@ export class OutputForwarder {
         }
 
         if (entry.type === 'assistant' && entry.message?.content) {
-          const parts: string[] = []
-          const explorerTargets: string[] = []
           const SEARCH_TOOLS = new Set(['Read', 'Grep', 'Glob'])
-
-          const flushExplorer = () => {
-            if (explorerTargets.length > 0) {
-              if (parts.length > 0) parts.push('\u3164')
-              parts.push('-# Explorer (' + explorerTargets.join(', ') + ')')
-              explorerTargets.length = 0
-            }
-          }
+          const parts: string[] = []
 
           for (const c of entry.message.content) {
             if (c.type === 'text' && c.text?.trim()) {
-              flushExplorer()
+              // 텍스트가 나오면 Explorer 버퍼 플러시
+              if (this.pendingExplorerTargets.length > 0) {
+                this.pendingExplorerTargets = []
+                this.explorerMessageId = ''
+              }
               parts.push(c.text.trim())
             } else if (c.type === 'tool_use') {
-              // Track for tool_result matching
               this.lastToolName = c.name || ''
-              // Skip hidden tools entirely
               if (OutputForwarder.isHidden(c.name)) continue
 
-              // Group Read/Grep/Glob as "Explorer"
+              // Read/Grep/Glob → Explorer 누적 (edit_message로 업데이트)
               if (SEARCH_TOOLS.has(c.name)) {
                 let target = ''
                 if (c.name === 'Read') target = (c.input?.file_path || '').split('/').pop() || ''
                 else if (c.name === 'Grep') target = '"' + (c.input?.pattern || '').substring(0, 25) + '"'
                 else if (c.name === 'Glob') target = (c.input?.pattern || '').substring(0, 25)
-                if (target) explorerTargets.push(target)
+                if (target) this.pendingExplorerTargets.push(target)
+                // Explorer 메시지 전송/업데이트는 forwardNewText에서 처리
                 continue
               }
 
-              flushExplorer()
+              // 비검색 도구 → Explorer 버퍼 리셋
+              if (this.pendingExplorerTargets.length > 0) {
+                this.pendingExplorerTargets = []
+                this.explorerMessageId = ''
+              }
               const toolLine = OutputForwarder.buildToolLine(c.name, c.input)
               if (toolLine) {
                 if (parts.length > 0) parts.push('\u3164')
@@ -176,7 +177,6 @@ export class OutputForwarder {
               }
             }
           }
-          flushExplorer()
           if (parts.length) newText += parts.join('\n') + '\n'
         }
       } catch {}
@@ -188,6 +188,24 @@ export class OutputForwarder {
   async forwardNewText(): Promise<void> {
     if (!this.channelId) return
     const newText = this.extractNewText()
+
+    // Explorer edit_message 처리 (검색 도구 누적)
+    if (this.pendingExplorerTargets.length > 0) {
+      const explorerLine = '-# Explorer (' + this.pendingExplorerTargets.join(', ') + ')'
+      if (this.explorerMessageId) {
+        // 기존 Explorer 메시지 업데이트
+        try { await this.cb.editMessage(this.channelId, this.explorerMessageId, explorerLine) } catch {}
+      } else {
+        // 새 Explorer 메시지 전송
+        const pad = this.sentCount > 0 ? '\u3164\n' : ''
+        try {
+          const msgId = await this.cb.send(this.channelId, pad + explorerLine)
+          if (msgId) this.explorerMessageId = msgId
+          this.sentCount++
+        } catch {}
+      }
+    }
+
     // Filter out internal/system responses
     const SKIP_TEXTS = ['No response requested.', 'No response requested', '유저 응답 대기.', '유저 응답 대기']
     if (!newText || SKIP_TEXTS.includes(newText.trim())) {

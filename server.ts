@@ -133,9 +133,10 @@ if (!fs.existsSync(STATUS_FILE)) {
 // ── Output Forwarder ──────────────────────────────────────────────────
 
 const forwarder = new OutputForwarder({
-  send: (ch, text) => backend.sendMessage(ch, text).then(() => {}),
+  send: (ch, text) => backend.sendMessage(ch, text).then(r => (r as any)?.id || ''),
   react: (ch, mid, emoji) => backend.react(ch, mid, emoji),
   removeReaction: (ch, mid, emoji) => backend.removeReaction(ch, mid, emoji),
+  editMessage: (ch, mid, text) => backend.editMessage(ch, mid, text).then(() => {}),
 })
 
 // Wire up forwarder's idle detection to server idle handling
