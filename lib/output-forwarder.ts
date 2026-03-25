@@ -160,7 +160,7 @@ export class OutputForwarder {
                   else if (c.name === 'Grep') target = '"' + (c.input?.pattern || '').substring(0, 25) + '"'
                   else if (c.name === 'Glob') target = (c.input?.pattern || '').substring(0, 25)
                   if (parts.length > 0) parts.push('\u3164')
-                  parts.push('-# Explorer (' + (target || c.name) + ')')
+                  parts.push('● **Explorer** (' + (target || c.name) + ')')
                 }
                 // 연속 검색은 무시
                 continue
@@ -360,10 +360,10 @@ export class OutputForwarder {
     }
 
     if (!summary) return null
-    // displayName과 summary가 같으면 중복 표시 방지
+    // ● **Name** (summary) 포맷
     let toolLine = (displayName === summary)
-      ? '-# ' + displayName
-      : '-# ' + displayName + ' (' + summary + ')'
+      ? '● **' + displayName + '**'
+      : '● **' + displayName + '** (' + summary + ')'
     if (!isSearchTool && detail && detail !== summary) {
       // 5줄 제한
       const lines = detail.substring(0, 500).split('\n')
