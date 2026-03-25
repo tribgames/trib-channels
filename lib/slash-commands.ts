@@ -776,7 +776,7 @@ export async function handleSlashCommand(
         if (existsSync(sessionPath)) {
           const data = JSON.parse(readFileSync(sessionPath, 'utf-8'))
           const model = data.model?.display_name ?? data.model?.id ?? 'unknown'
-          const fmtTime = (ts: number) => new Date(ts * 1000).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+          const fmtTime = (ts: number) => new Date(ts * 1000).toLocaleString(undefined, { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
           const lines: string[] = []
           lines.push(`**Model** ${model}`)
           const ctxPct = data.context_window?.used_percentage
