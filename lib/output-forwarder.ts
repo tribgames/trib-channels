@@ -137,14 +137,38 @@ export class OutputForwarder {
 
         if (entry.type === 'assistant' && entry.message?.content) {
           const parts: string[] = []
+          const explorerTargets: string[] = []
+          const SEARCH_TOOLS = new Set(['Read', 'Grep', 'Glob'])
+
+          const flushExplorer = () => {
+            if (explorerTargets.length > 0) {
+              if (parts.length > 0) parts.push('\u3164')
+              parts.push('-# Explorer (' + explorerTargets.join(', ') + ')')
+              explorerTargets.length = 0
+            }
+          }
+
           for (const c of entry.message.content) {
             if (c.type === 'text' && c.text?.trim()) {
+              flushExplorer()
               parts.push(c.text.trim())
             } else if (c.type === 'tool_use') {
               // Track for tool_result matching
               this.lastToolName = c.name || ''
               // Skip hidden tools entirely
               if (OutputForwarder.isHidden(c.name)) continue
+
+              // Group Read/Grep/Glob as "Explorer"
+              if (SEARCH_TOOLS.has(c.name)) {
+                let target = ''
+                if (c.name === 'Read') target = (c.input?.file_path || '').split('/').pop() || ''
+                else if (c.name === 'Grep') target = '"' + (c.input?.pattern || '').substring(0, 25) + '"'
+                else if (c.name === 'Glob') target = (c.input?.pattern || '').substring(0, 25)
+                if (target) explorerTargets.push(target)
+                continue
+              }
+
+              flushExplorer()
               const toolLine = OutputForwarder.buildToolLine(c.name, c.input)
               if (toolLine) {
                 if (parts.length > 0) parts.push('\u3164')
@@ -152,6 +176,7 @@ export class OutputForwarder {
               }
             }
           }
+          flushExplorer()
           if (parts.length) newText += parts.join('\n') + '\n'
         }
       } catch {}
@@ -164,7 +189,8 @@ export class OutputForwarder {
     if (!this.channelId) return
     const newText = this.extractNewText()
     // Filter out internal/system responses
-    if (!newText || newText === 'No response requested.' || newText === 'No response requested') {
+    const SKIP_TEXTS = ['No response requested.', 'No response requested', '유저 응답 대기.', '유저 응답 대기']
+    if (!newText || SKIP_TEXTS.includes(newText.trim())) {
       this.persistState()
       return
     }
