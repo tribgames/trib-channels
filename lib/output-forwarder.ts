@@ -118,8 +118,8 @@ export class OutputForwarder {
       try {
         const entry = JSON.parse(l)
 
-        // 에이전트 엔트리 필터링 — 현재 안정적 구분 방법 없음, 필터 비활성화
-        // TODO: Claude Code가 에이전트 엔트리를 구분하는 필드 추가 시 활성화
+        // 에이전트 엔트리 필터링 — teamName이 있으면 에이전트 출력
+        if (entry.teamName) continue
 
         // tool_result: show Edit diff from toolUseResult, skip the rest
         if (entry.type === 'user' && entry.message?.content?.some((c: any) => c.type === 'tool_result')) {
