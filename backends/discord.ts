@@ -219,9 +219,8 @@ export class DiscordBackend implements ChannelBackend {
           const needsModal = interaction.isButton() && (
             interaction.customId === 'sched_add_next' ||
             interaction.customId === 'sched_edit_next' ||
-            interaction.customId.startsWith('quiet_set') ||
-            interaction.customId.startsWith('autotalk_freq') ||
-            interaction.customId === 'activity_add' ||
+            interaction.customId === 'quiet_set_next' ||
+            interaction.customId === 'activity_add_next' ||
             interaction.customId === 'profile_edit'
           )
 

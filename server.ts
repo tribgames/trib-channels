@@ -70,8 +70,8 @@ const mcp = new Server(
 
 let typingChannelId: string | null = null
 
-// ── Pending schedule setup (Select Menu → Modal 2-step flow) ─────────
-const pendingScheduleSetup = new Map<string, { period?: string; exec?: string; mode?: string; editName?: string }>()
+// ── Pending setup state (Select Menu → Modal 2-step flow) ────────────
+const pendingSetup = new Map<string, Record<string, string>>()
 
 function startServerTyping(channelId: string): void {
   if (typingChannelId && typingChannelId !== channelId) {
@@ -205,7 +205,7 @@ backend.onModalRequest = async (rawInteraction: any) => {
   const customId = rawInteraction.customId
 
   if (customId === 'sched_add_next') {
-    const pending = pendingScheduleSetup.get(rawInteraction.user.id)
+    const pending = pendingSetup.get(rawInteraction.user.id)
     const hasScript = pending?.exec?.includes('script')
     const modal = new ModalBuilder().setCustomId('modal_sched_add').setTitle('스케줄 추가')
     const rows: any[] = [
@@ -218,13 +218,7 @@ backend.onModalRequest = async (rawInteraction: any) => {
     }
     ;(modal as any).addComponents(...rows)
     await rawInteraction.showModal(modal)
-  } else if (customId === 'autotalk_freq') {
-    const modal = new ModalBuilder().setCustomId('modal_autotalk').setTitle('자율대화 빈도')
-    ;(modal as any).addComponents(
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('freq').setLabel('빈도 (1~5)').setStyle(TextInputStyle.Short).setValue('3').setRequired(true)),
-    )
-    await rawInteraction.showModal(modal)
-  } else if (customId === 'quiet_set') {
+  } else if (customId === 'quiet_set_next') {
     const modal = new ModalBuilder().setCustomId('modal_quiet').setTitle('방해금지 설정')
     ;(modal as any).addComponents(
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('schedule').setLabel('스케줄 방해금지 (예: 23:00-07:00)').setStyle(TextInputStyle.Short)),
@@ -232,7 +226,7 @@ backend.onModalRequest = async (rawInteraction: any) => {
     )
     await rawInteraction.showModal(modal)
   } else if (customId === 'sched_edit_next') {
-    const pending = pendingScheduleSetup.get(rawInteraction.user.id)
+    const pending = pendingSetup.get(rawInteraction.user.id)
     const hasScript = pending?.exec?.includes('script')
     const name = pending?.editName ?? '스케줄'
     const modal = new ModalBuilder().setCustomId('modal_sched_edit').setTitle(`${name} 편집`)
@@ -246,12 +240,11 @@ backend.onModalRequest = async (rawInteraction: any) => {
     }
     ;(modal as any).addComponents(...rows)
     await rawInteraction.showModal(modal)
-  } else if (customId === 'activity_add') {
+  } else if (customId === 'activity_add_next') {
     const modal = new ModalBuilder().setCustomId('modal_activity_add').setTitle('활동 채널 추가')
     ;(modal as any).addComponents(
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('name').setLabel('채널 이름').setStyle(TextInputStyle.Short).setRequired(true)),
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('id').setLabel('채널 ID').setStyle(TextInputStyle.Short).setRequired(true)),
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('mode').setLabel('모드 (interactive / monitor)').setStyle(TextInputStyle.Short).setValue('interactive').setRequired(false)),
     )
     await rawInteraction.showModal(modal)
   } else if (customId === 'profile_edit') {
@@ -342,7 +335,7 @@ backend.onInteraction = (interaction: any) => {
 
   // ── Schedule add: Step 1 — Select Menu 전송 ──
   if (interaction.customId === 'sched_add') {
-    pendingScheduleSetup.set(interaction.userId, {})
+    pendingSetup.set(interaction.userId, {})
     void (async () => {
       await backend.sendMessage(interaction.channelId, '**스케줄 추가** — 옵션을 선택하세요', {
         components: [
@@ -371,7 +364,7 @@ backend.onInteraction = (interaction: any) => {
   // ── Schedule edit: Step 1 — Select Menu 전송 ──
   if (interaction.customId?.startsWith('sched_edit:') && interaction.type === 'button') {
     const name = interaction.customId.split(':')[1]
-    pendingScheduleSetup.set(interaction.userId, { editName: name })
+    pendingSetup.set(interaction.userId, { editName: name })
     void (async () => {
       await backend.sendMessage(interaction.channelId, `**${name} 편집** — 변경할 옵션을 선택하세요`, {
         components: [
@@ -403,10 +396,91 @@ backend.onInteraction = (interaction: any) => {
     const [, , key] = schedSelectMatch
     const val = interaction.values?.[0]
     if (key && val) {
-      const pending = pendingScheduleSetup.get(interaction.userId) ?? {}
+      const pending = pendingSetup.get(interaction.userId) ?? {}
       ;(pending as any)[key] = val
-      pendingScheduleSetup.set(interaction.userId, pending)
+      pendingSetup.set(interaction.userId, pending)
     }
+    return
+  }
+
+  // ── Autotalk freq: Select Menu (1~5) ──
+  if (interaction.customId === 'autotalk_freq') {
+    void (async () => {
+      await backend.sendMessage(interaction.channelId, '**자율대화 빈도** — 선택하세요', {
+        components: [
+          { type: 1, components: [{ type: 3, custom_id: 'autotalk_freq_select', placeholder: '빈도 (1~5)', options: [
+            { label: '1 — 최소', value: '1' },
+            { label: '2 — 낮음', value: '2' },
+            { label: '3 — 보통', value: '3', default: true },
+            { label: '4 — 높음', value: '4' },
+            { label: '5 — 최대', value: '5' },
+          ]}]},
+        ] as any,
+      })
+    })()
+    return
+  }
+
+  if (interaction.customId === 'autotalk_freq_select' && interaction.values?.length) {
+    const freq = interaction.values[0]
+    void (async () => {
+      const cmdCtx: CommandContext = { channelId: interaction.channelId, userId: interaction.userId, lang: 'ko', scheduler }
+      const result = await routeCustomCommand(`/bot(autotalk, freq=${freq})`, cmdCtx)
+      if (interaction.channelId) await backend.sendMessage(interaction.channelId, result?.text ?? 'done')
+    })()
+    return
+  }
+
+  // ── Quiet set: Select Menu (holidays) + Modal (DND) ──
+  if (interaction.customId === 'quiet_set') {
+    pendingSetup.set(interaction.userId, {})
+    void (async () => {
+      await backend.sendMessage(interaction.channelId, '**방해금지 설정** — 공휴일 국가를 선택하세요', {
+        components: [
+          { type: 1, components: [{ type: 3, custom_id: 'quiet_holidays_select', placeholder: '공휴일 국가 (선택사항)', options: [
+            { label: '없음', value: 'none' },
+            { label: '🇰🇷 한국', value: 'KR' },
+            { label: '🇯🇵 일본', value: 'JP' },
+            { label: '🇺🇸 미국', value: 'US' },
+            { label: '🇨🇳 중국', value: 'CN' },
+            { label: '🇬🇧 영국', value: 'GB' },
+            { label: '🇩🇪 독일', value: 'DE' },
+          ]}]},
+          { type: 1, components: [{ type: 2, style: 1, label: '다음 →', custom_id: 'quiet_set_next' }]},
+        ] as any,
+      })
+    })()
+    return
+  }
+
+  if (interaction.customId === 'quiet_holidays_select' && interaction.values?.length) {
+    const pending = pendingSetup.get(interaction.userId) ?? {}
+    pending.holidays = interaction.values[0]
+    pendingSetup.set(interaction.userId, pending)
+    return
+  }
+
+  // ── Activity add: Select Menu (mode) + Modal (name/id) ──
+  if (interaction.customId === 'activity_add') {
+    pendingSetup.set(interaction.userId, {})
+    void (async () => {
+      await backend.sendMessage(interaction.channelId, '**활동 채널 추가** — 모드를 선택하세요', {
+        components: [
+          { type: 1, components: [{ type: 3, custom_id: 'activity_mode_select', placeholder: '모드 선택', options: [
+            { label: 'Interactive — 대화 참여', value: 'interactive' },
+            { label: 'Monitor — 읽기 전용', value: 'monitor' },
+          ]}]},
+          { type: 1, components: [{ type: 2, style: 1, label: '다음 →', custom_id: 'activity_add_next' }]},
+        ] as any,
+      })
+    })()
+    return
+  }
+
+  if (interaction.customId === 'activity_mode_select' && interaction.values?.length) {
+    const pending = pendingSetup.get(interaction.userId) ?? {}
+    pending.activityMode = interaction.values[0]
+    pendingSetup.set(interaction.userId, pending)
     return
   }
 
@@ -432,12 +506,12 @@ backend.onInteraction = (interaction: any) => {
       const cmdCtx: CommandContext = { channelId: interaction.channelId, userId: interaction.userId, lang: 'ko', scheduler }
 
       if (interaction.customId === 'modal_sched_add') {
-        const pending = pendingScheduleSetup.get(interaction.userId) ?? {}
+        const pending = pendingSetup.get(interaction.userId) ?? {}
         const { name, time, channel, script } = interaction.fields!
         const period = pending.period || 'daily'
         const exec = pending.exec || 'prompt'
         const mode = pending.mode || 'non-interactive'
-        pendingScheduleSetup.delete(interaction.userId)
+        pendingSetup.delete(interaction.userId)
         const params = [`time="${time}"`, `channel="${channel || 'general'}"`, `mode="${mode}"`, `period="${period}"`, `exec="${exec}"`]
         if (script) params.push(`script="${script}"`)
         const cmd = `/bot(schedule, add, "${name}", ${params.join(', ')})`
@@ -445,24 +519,22 @@ backend.onInteraction = (interaction: any) => {
         if (interaction.channelId) await backend.sendMessage(interaction.channelId, result?.text ?? 'done')
       }
 
-      if (interaction.customId === 'modal_autotalk') {
-        const freq = interaction.fields!.freq || '3'
-        const result = await routeCustomCommand(`/bot(autotalk, freq=${freq})`, cmdCtx)
-        if (interaction.channelId) await backend.sendMessage(interaction.channelId, result?.text ?? 'done')
-      }
-
       if (interaction.customId === 'modal_quiet') {
+        const pending = pendingSetup.get(interaction.userId) ?? {}
         const schedule = interaction.fields!.schedule || ''
         const autotalk = interaction.fields!.autotalk || ''
+        const holidays = pending.holidays && pending.holidays !== 'none' ? pending.holidays : ''
+        pendingSetup.delete(interaction.userId)
         const cmds: string[] = []
         if (schedule) cmds.push(`/bot(quiet, schedule, "${schedule}")`)
         if (autotalk) cmds.push(`/bot(quiet, autotalk, "${autotalk}")`)
+        if (holidays) cmds.push(`/bot(quiet, holidays, "${holidays}")`)
         for (const cmd of cmds) await routeCustomCommand(cmd, cmdCtx)
         if (interaction.channelId) await backend.sendMessage(interaction.channelId, '방해금지 설정 완료')
       }
 
       if (interaction.customId === 'modal_sched_edit') {
-        const pending = pendingScheduleSetup.get(interaction.userId) ?? {}
+        const pending = pendingSetup.get(interaction.userId) ?? {}
         const name = pending.editName
         if (!name) return
         const params: string[] = []
@@ -473,7 +545,7 @@ backend.onInteraction = (interaction: any) => {
         if (pending.exec) params.push(`exec="${pending.exec}"`)
         if (pending.mode) params.push(`mode="${pending.mode}"`)
         if (script) params.push(`script="${script}"`)
-        pendingScheduleSetup.delete(interaction.userId)
+        pendingSetup.delete(interaction.userId)
         const cmd = `/bot(schedule, edit, "${name}"${params.length ? ', ' + params.join(', ') : ''})`
         const result = await routeCustomCommand(cmd, cmdCtx)
         if (dnd) await routeCustomCommand(`/bot(quiet, schedule, "${dnd}")`, cmdCtx)
@@ -481,8 +553,11 @@ backend.onInteraction = (interaction: any) => {
       }
 
       if (interaction.customId === 'modal_activity_add') {
-        const { name, id, mode } = interaction.fields!
-        const cmd = `/bot(activity, add, "${name}", id="${id}", mode="${mode || 'interactive'}")`
+        const pending = pendingSetup.get(interaction.userId) ?? {}
+        const { name, id } = interaction.fields!
+        const mode = pending.activityMode || 'interactive'
+        pendingSetup.delete(interaction.userId)
+        const cmd = `/bot(activity, add, "${name}", id="${id}", mode="${mode}")`
         const result = await routeCustomCommand(cmd, cmdCtx)
         if (interaction.channelId) await backend.sendMessage(interaction.channelId, result?.text ?? 'done')
       }
