@@ -452,6 +452,7 @@ function buildCommands(): SlashCommandBuilder {
           .addChoices(
             { name: 'sonnet', value: 'sonnet' },
             { name: 'opus', value: 'opus' },
+            { name: 'haiku', value: 'haiku' },
           ),
       ),
   )
