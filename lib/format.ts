@@ -119,18 +119,13 @@ export function formatForDiscord(text: string): string {
   return escapeNestedCodeBlocks(convertMarkdownTables(text))
 }
 
-/** Create a safe code block that won't break even if content contains backticks */
+/** Create a safe code block that won't break even if content contains backticks.
+ * Discord only supports ``` (3 backticks) fences — NOT 4+.
+ * So we escape any ``` inside content with zero-width space. */
 export function safeCodeBlock(content: string, lang = ''): string {
-  // Find the longest consecutive backtick sequence in content
-  let maxTicks = 2
-  const matches = content.match(/`+/g)
-  if (matches) {
-    for (const m of matches) {
-      if (m.length > maxTicks) maxTicks = m.length
-    }
-  }
-  const fence = '`'.repeat(maxTicks + 1)
-  return fence + lang + '\n' + content + '\n' + fence
+  // Escape triple backticks inside content with zero-width space
+  const escaped = content.replace(/```/g, '`\u200B``')
+  return '```' + lang + '\n' + escaped + '\n```'
 }
 
 /** Split text into chunks respecting Discord's 2000 char limit */
