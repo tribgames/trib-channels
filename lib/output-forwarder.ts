@@ -113,21 +113,9 @@ export class OutputForwarder {
       try {
         const entry = JSON.parse(l)
 
-        // tool_result: entries are type=user with content[].type=tool_result
-        if (entry.type === 'user' && entry.message?.content) {
-          let hasToolResult = false
-          for (const c of entry.message.content) {
-            if (c.type === 'tool_result') {
-              hasToolResult = true
-              if (OutputForwarder.isHidden(this.lastToolName)) continue
-              const content = typeof c.content === 'string'
-                ? [{ type: 'text', text: c.content }]
-                : Array.isArray(c.content) ? c.content : []
-              const resultBlock = OutputForwarder.formatToolResult(this.lastToolName, content)
-              if (resultBlock) newText += resultBlock + '\n'
-            }
-          }
-          if (hasToolResult) continue
+        // tool_result: skip entirely (old format — header only, no result blocks)
+        if (entry.type === 'user' && entry.message?.content?.some((c: any) => c.type === 'tool_result')) {
+          continue
         }
 
         if (entry.type === 'assistant' && entry.message?.content) {
