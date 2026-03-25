@@ -770,35 +770,26 @@ export async function handleSlashCommand(
     case 'stop':
       return handleStop(interaction, ctx)
     case 'status': {
-      const fields: EmbedField[] = []
-
+      let desc = ''
       try {
         const sessionPath = '/tmp/claude-session-data.json'
         if (existsSync(sessionPath)) {
           const data = JSON.parse(readFileSync(sessionPath, 'utf-8'))
           const model = data.model?.display_name ?? data.model?.id ?? 'unknown'
-          fields.push({ name: 'Model', value: model, inline: true })
-
-          const ctxPct = data.context_window?.used_percentage
-          if (ctxPct != null) fields.push({ name: 'Context', value: `${Math.round(ctxPct)}%`, inline: true })
-
           const fmtTime = (ts: number) => new Date(ts * 1000).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
-
+          const lines: string[] = []
+          lines.push(`**Model** ${model}`)
+          const ctxPct = data.context_window?.used_percentage
+          if (ctxPct != null) lines.push(`**Context** ${Math.round(ctxPct)}%`)
           const fiveH = data.rate_limits?.five_hour
-          if (fiveH) {
-            fields.push({ name: '5시간', value: `${Math.round(fiveH.used_percentage)}% (리셋 ${fmtTime(fiveH.resets_at)})`, inline: true })
-          }
-
+          if (fiveH) lines.push(`**5시간** ${Math.round(fiveH.used_percentage)}% (리셋 ${fmtTime(fiveH.resets_at)})`)
           const sevenD = data.rate_limits?.seven_day
-          if (sevenD) {
-            fields.push({ name: '주간', value: `${Math.round(sevenD.used_percentage)}% (리셋 ${fmtTime(sevenD.resets_at)})`, inline: true })
-          }
+          if (sevenD) lines.push(`**주간** ${Math.round(sevenD.used_percentage)}% (리셋 ${fmtTime(sevenD.resets_at)})`)
+          desc = lines.join('\n')
         }
       } catch { /* graceful fallback */ }
-
-      if (!fields.length) fields.push({ name: 'Status', value: 'session data unavailable', inline: false })
-
-      await interaction.reply({ embeds: [{ fields, color: EMBED_COLOR }], flags: 64 })
+      if (!desc) desc = 'session data unavailable'
+      await interaction.reply({ embeds: [{ description: desc, color: EMBED_COLOR }], flags: 64 })
       return
     }
     case 'config': {
