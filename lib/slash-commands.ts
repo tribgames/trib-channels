@@ -887,7 +887,7 @@ async function handleStop(
   } catch {}
 
   await interaction.reply({
-    embeds: [{ title: '\u{23f9}\u{fe0f} Stop', description: stopped ? 'Stopped' : 'tmux not found', color: stopped ? 0xED4245 : 0xFEE75C }],
+    embeds: [{ title: 'Stop', description: stopped ? 'Stopped' : 'tmux not found', color: stopped ? 0xED4245 : 0xFEE75C }],
     flags: 64,
   })
 }
@@ -921,7 +921,7 @@ async function handleModel(
     ? t('model.switched', interaction.locale, { model }) + (effort ? ` (effort: ${effort})` : '')
     : 'tmux not found'
   await interaction.reply({
-    embeds: [{ title: '\u{1f916} Model', description: desc, color: ok && effortOk ? EMBED_COLOR : 0xFEE75C }],
+    embeds: [{ title: 'Model', description: desc, color: ok && effortOk ? EMBED_COLOR : 0xFEE75C }],
     flags: 64,
   })
 }
@@ -931,7 +931,7 @@ async function handleCompact(
   _ctx: SlashCommandContext,
 ): Promise<void> {
   const ok = await tmuxSendKeys('/compact')
-  await interaction.reply({ embeds: [{ title: '\u{1f4e6} Compact', description: ok ? t('compact.forwarded', interaction.locale) : 'tmux not found', color: ok ? EMBED_COLOR : 0xFEE75C }], flags: 64 })
+  await interaction.reply({ embeds: [{ title: 'Compact', description: ok ? t('compact.forwarded', interaction.locale) : 'tmux not found', color: ok ? EMBED_COLOR : 0xFEE75C }], flags: 64 })
 }
 
 async function handleClear(
@@ -939,7 +939,7 @@ async function handleClear(
   _ctx: SlashCommandContext,
 ): Promise<void> {
   const ok = await tmuxSendKeys('/clear')
-  await interaction.reply({ embeds: [{ title: '\u{1f9f9} Clear', description: ok ? t('clear.forwarded', interaction.locale) : 'tmux not found', color: ok ? EMBED_COLOR : 0xFEE75C }], flags: 64 })
+  await interaction.reply({ embeds: [{ title: 'Clear', description: ok ? t('clear.forwarded', interaction.locale) : 'tmux not found', color: ok ? EMBED_COLOR : 0xFEE75C }], flags: 64 })
 }
 
 async function handleNew(
@@ -947,7 +947,7 @@ async function handleNew(
   _ctx: SlashCommandContext,
 ): Promise<void> {
   const ok = await tmuxSendKeys('/new')
-  await interaction.reply({ embeds: [{ title: '\u{2728} New Session', description: ok ? t('new.forwarded', interaction.locale) : 'tmux not found', color: ok ? EMBED_COLOR : 0xFEE75C }], flags: 64 })
+  await interaction.reply({ embeds: [{ title: 'New Session', description: ok ? t('new.forwarded', interaction.locale) : 'tmux not found', color: ok ? EMBED_COLOR : 0xFEE75C }], flags: 64 })
 }
 
 async function handleResume(
@@ -955,7 +955,7 @@ async function handleResume(
   _ctx: SlashCommandContext,
 ): Promise<void> {
   const ok = await tmuxSendKeys('/resume')
-  await interaction.reply({ embeds: [{ title: '\u{25b6}\u{fe0f} Resume', description: ok ? t('resume.forwarded', interaction.locale) : 'tmux not found', color: ok ? EMBED_COLOR : 0xFEE75C }], flags: 64 })
+  await interaction.reply({ embeds: [{ title: 'Resume', description: ok ? t('resume.forwarded', interaction.locale) : 'tmux not found', color: ok ? EMBED_COLOR : 0xFEE75C }], flags: 64 })
 }
 
 async function handleLanguage(
@@ -970,10 +970,10 @@ async function handleLanguage(
     const { writeFileSync } = await import('fs')
     writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n')
     invalidateConfigLangCache()
-    await interaction.reply({ embeds: [{ title: '\u{1f310} Language', description: t('language.set', lang), color: EMBED_COLOR }], flags: 64 })
+    await interaction.reply({ embeds: [{ title: 'Language', description: t('language.set', lang), color: EMBED_COLOR }], flags: 64 })
   } catch (err) {
     await interaction.reply({
-      embeds: [{ title: '\u{1f310} Language', description: `Failed: ${err instanceof Error ? err.message : String(err)}`, color: 0xED4245 }],
+      embeds: [{ title: 'Language', description: `Failed: ${err instanceof Error ? err.message : String(err)}`, color: 0xED4245 }],
       flags: 64,
     })
   }
@@ -988,7 +988,7 @@ async function handleAccess(
   const accessPath = join(stateDir, 'access.json')
 
   if (!existsSync(accessPath)) {
-    await interaction.reply({ embeds: [{ title: '\u{1f512} Access', description: t('access.not_found', locale), color: 0xFEE75C }], flags: 64 })
+    await interaction.reply({ embeds: [{ title: 'Access', description: t('access.not_found', locale), color: 0xFEE75C }], flags: 64 })
     return
   }
 
@@ -1008,7 +1008,7 @@ async function handleAccess(
     await interaction.reply({ embeds: [{ description: desc, color: EMBED_COLOR }], flags: 64 })
   } catch (err) {
     await interaction.reply({
-      embeds: [{ title: '\u{1f512} Access', description: t('access.parse_failed', locale, { error: err instanceof Error ? err.message : String(err) }), color: 0xED4245 }],
+      embeds: [{ title: 'Access', description: t('access.parse_failed', locale, { error: err instanceof Error ? err.message : String(err) }), color: 0xED4245 }],
       flags: 64,
     })
   }
@@ -1025,7 +1025,7 @@ async function handleSchedule(
     case 'list': {
       const statuses = ctx.scheduler.getStatus()
       if (statuses.length === 0) {
-        await interaction.reply({ embeds: [{ title: '\u{1f4c5} Schedule', description: t('schedule.no_schedules', interaction.locale), color: 0xFEE75C }], flags: 64 })
+        await interaction.reply({ embeds: [{ title: 'Schedule', description: t('schedule.no_schedules', interaction.locale), color: 0xFEE75C }], flags: 64 })
         return
       }
       const fields: EmbedField[] = statuses.map(s => {
@@ -1033,13 +1033,13 @@ async function handleSchedule(
         const last = s.lastFired ? `\nLast: ${s.lastFired}` : ''
         return { name: `${s.name}${state}`, value: `${s.time} ${s.days} (${s.type})${last}`, inline: false }
       })
-      await interaction.reply({ embeds: [{ title: '\u{1f4c5} Schedule', fields, color: EMBED_COLOR }], flags: 64 })
+      await interaction.reply({ embeds: [{ title: 'Schedule', fields, color: EMBED_COLOR }], flags: 64 })
       return
     }
 
     case 'remove': {
       if (!name) {
-        await interaction.reply({ embeds: [{ title: '\u{1f4c5} Schedule', description: t('schedule.name_required_remove', interaction.locale), color: 0xFEE75C }], flags: 64 })
+        await interaction.reply({ embeds: [{ title: 'Schedule', description: t('schedule.name_required_remove', interaction.locale), color: 0xFEE75C }], flags: 64 })
         return
       }
       try {
@@ -1057,15 +1057,15 @@ async function handleSchedule(
           }
         }
         if (!found) {
-          await interaction.reply({ embeds: [{ title: '\u{1f4c5} Schedule', description: t('schedule.not_found', interaction.locale, { name }), color: 0xFEE75C }], flags: 64 })
+          await interaction.reply({ embeds: [{ title: 'Schedule', description: t('schedule.not_found', interaction.locale, { name }), color: 0xFEE75C }], flags: 64 })
           return
         }
         const { writeFileSync } = await import('fs')
         writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n')
-        await interaction.reply({ embeds: [{ title: '\u{1f4c5} Schedule', description: t('schedule.removed', interaction.locale, { name }), color: 0x57F287 }], flags: 64 })
+        await interaction.reply({ embeds: [{ title: 'Schedule', description: t('schedule.removed', interaction.locale, { name }), color: 0x57F287 }], flags: 64 })
       } catch (err) {
         await interaction.reply({
-          embeds: [{ title: '\u{1f4c5} Schedule', description: t('schedule.remove_failed', interaction.locale, { error: err instanceof Error ? err.message : String(err) }), color: 0xED4245 }],
+          embeds: [{ title: 'Schedule', description: t('schedule.remove_failed', interaction.locale, { error: err instanceof Error ? err.message : String(err) }), color: 0xED4245 }],
           flags: 64,
         })
       }
@@ -1074,7 +1074,7 @@ async function handleSchedule(
 
     case 'add': {
       if (!name) {
-        await interaction.reply({ embeds: [{ title: '\u{1f4c5} Schedule', description: t('schedule.name_required_add', interaction.locale), color: 0xFEE75C }], flags: 64 })
+        await interaction.reply({ embeds: [{ title: 'Schedule', description: t('schedule.name_required_add', interaction.locale), color: 0xFEE75C }], flags: 64 })
         return
       }
       const time = interaction.options.getString('time')
@@ -1082,7 +1082,7 @@ async function handleSchedule(
       const prompt = interaction.options.getString('prompt')
       if (!time || !channel || !prompt) {
         await interaction.reply({
-          embeds: [{ title: '\u{1f4c5} Schedule', description: t('schedule.add_missing_options', interaction.locale), color: 0xFEE75C }],
+          embeds: [{ title: 'Schedule', description: t('schedule.add_missing_options', interaction.locale), color: 0xFEE75C }],
           flags: 64,
         })
         return
@@ -1097,7 +1097,7 @@ async function handleSchedule(
         const existsI = (config.interactive ?? []).find(s => s.name === name)
         const existsN = (config.nonInteractive ?? []).find(s => s.name === name)
         if (existsI || existsN) {
-          await interaction.reply({ embeds: [{ title: '\u{1f4c5} Schedule', description: t('schedule.already_exists', interaction.locale, { name }), color: 0xFEE75C }], flags: 64 })
+          await interaction.reply({ embeds: [{ title: 'Schedule', description: t('schedule.already_exists', interaction.locale, { name }), color: 0xFEE75C }], flags: 64 })
           return
         }
         targetArr.push({ name, time, channel, enabled: true })
@@ -1107,12 +1107,12 @@ async function handleSchedule(
         const promptPath = join(promptsDir, `${name}.md`)
         writeFileSync(promptPath, prompt + '\n', 'utf8')
         await interaction.reply({
-          embeds: [{ title: '\u{1f4c5} Schedule', description: t('schedule.added', interaction.locale, { name, time, channel }), color: 0x57F287 }],
+          embeds: [{ title: 'Schedule', description: t('schedule.added', interaction.locale, { name, time, channel }), color: 0x57F287 }],
           flags: 64,
         })
       } catch (err) {
         await interaction.reply({
-          embeds: [{ title: '\u{1f4c5} Schedule', description: t('schedule.add_failed', interaction.locale, { error: err instanceof Error ? err.message : String(err) }), color: 0xED4245 }],
+          embeds: [{ title: 'Schedule', description: t('schedule.add_failed', interaction.locale, { error: err instanceof Error ? err.message : String(err) }), color: 0xED4245 }],
           flags: 64,
         })
       }
@@ -1121,7 +1121,7 @@ async function handleSchedule(
 
     case 'restart': {
       ctx.scheduler.restart()
-      await interaction.reply({ embeds: [{ title: '\u{1f4c5} Schedule', description: t('schedule.restarted', interaction.locale), color: 0x57F287 }], flags: 64 })
+      await interaction.reply({ embeds: [{ title: 'Schedule', description: t('schedule.restarted', interaction.locale), color: 0x57F287 }], flags: 64 })
       return
     }
   }

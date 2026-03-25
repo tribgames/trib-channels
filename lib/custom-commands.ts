@@ -291,8 +291,7 @@ function handleBotStatus(_ctx: CommandContext): CommandResult {
 
   return {
     embeds: [{
-      title: '\u{1F916} Bot \uC124\uC815',
-      description: '\uD0ED\uC744 \uC120\uD0DD\uD558\uC138\uC694',
+      title: 'Bot 설정',
       color: 0x5865F2,
       fields,
     }],
@@ -341,7 +340,7 @@ function activityList(ctx: CommandContext): CommandResult {
   if (entries.length === 0) {
     return {
       embeds: [{
-        title: '\u{1F4E1} \uD65C\uB3D9 \uCC44\uB110',
+        title: '\uD65C\uB3D9 \uCC44\uB110',
         description: t('activity.empty', ctx.lang),
         color: 0x5865F2,
       }],
@@ -364,7 +363,7 @@ function activityList(ctx: CommandContext): CommandResult {
   }
 
   return {
-    embeds: [{ title: '\u{1F4E1} \uD65C\uB3D9 \uCC44\uB110', color: 0x5865F2, fields }],
+    embeds: [{ title: '\uD65C\uB3D9 \uCC44\uB110', color: 0x5865F2, fields }],
     components,
   }
 }
@@ -433,7 +432,7 @@ function handleBotProfile(parsed: ParsedCommand, ctx: CommandContext): CommandRe
   if (entries.length === 0) {
     return {
       embeds: [{
-        title: '\u{1F464} \uD504\uB85C\uD544',
+        title: '\uD504\uB85C\uD544',
         description: t('profile.empty', ctx.lang),
         color: 0x57F287,
       }],
@@ -446,7 +445,7 @@ function handleBotProfile(parsed: ParsedCommand, ctx: CommandContext): CommandRe
   }))
 
   return {
-    embeds: [{ title: '\u{1F464} \uD504\uB85C\uD544', color: 0x57F287, fields }],
+    embeds: [{ title: '\uD504\uB85C\uD544', color: 0x57F287, fields }],
     components,
   }
 }
@@ -627,7 +626,7 @@ function scheduleList(ctx: CommandContext): CommandResult {
 
   const result: CommandResult = {
     embeds: [{
-      title: '\u{1F4CB} \uC2A4\uCF00\uC904 \uBAA9\uB85D',
+      title: '\uC2A4\uCF00\uC904 \uBAA9\uB85D',
       color: 0x5865F2,
       fields,
     }],
@@ -827,7 +826,7 @@ export function handleProfileCommand(
 
       return {
         embeds: [{
-          title: '\u{1F464} \uD504\uB85C\uD544',
+          title: '\uD504\uB85C\uD544',
           color: 0x57F287,
           fields: profileFields,
         }],
