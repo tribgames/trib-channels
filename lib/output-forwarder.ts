@@ -1,6 +1,6 @@
 /**
  * OutputForwarder — centralized output forwarding from MCP server to Discord.
- * Replaces Discord API calls previously scattered across hooks.
+ * Replaces hook-based output with MCP server-centric architecture.
  */
 
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, watchFile, unwatchFile, openSync, readSync, closeSync } from 'fs'
@@ -115,26 +115,23 @@ export class OutputForwarder {
       try {
         const entry = JSON.parse(l)
 
-        // tool_result: only show Edit diff, skip the rest
-        if (entry.type === 'user' && entry.message?.content) {
-          let hasToolResult = false
-          for (const c of entry.message.content) {
-            if (c.type === 'tool_result') {
-              hasToolResult = true
-              if (this.lastToolName === 'Edit') {
-                const text = typeof c.content === 'string' ? c.content : ''
-                if (text.trim()) {
-                  const lines = text.trimEnd().split('\n').slice(0, 15)
-                  let block = '```diff\n' + lines.join('\n')
-                  const total = text.trimEnd().split('\n').length
-                  if (total > 15) block += '\n... +' + (total - 15) + ' lines'
-                  block += '\n```'
-                  newText += block + '\n'
-                }
-              }
+        // tool_result: show Edit diff from toolUseResult, skip the rest
+        if (entry.type === 'user' && entry.message?.content?.some((c: any) => c.type === 'tool_result')) {
+          if (this.lastToolName === 'Edit' && entry.toolUseResult) {
+            const old = entry.toolUseResult.oldString || ''
+            const nw = entry.toolUseResult.newString || ''
+            if (old || nw) {
+              const diffLines: string[] = []
+              for (const l of old.split('\n')) diffLines.push('- ' + l)
+              for (const l of nw.split('\n')) diffLines.push('+ ' + l)
+              const shown = diffLines.slice(0, 15)
+              let block = '```diff\n' + shown.join('\n')
+              if (diffLines.length > 15) block += '\n... +' + (diffLines.length - 15) + ' lines'
+              block += '\n```'
+              newText += block + '\n'
             }
           }
-          if (hasToolResult) continue
+          continue
         }
 
         if (entry.type === 'assistant' && entry.message?.content) {
