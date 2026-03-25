@@ -616,12 +616,7 @@ function scheduleList(ctx: CommandContext): CommandResult {
     return { name: s.name, value: `${s.time} ${days} [${exec}]${status}`, inline: false }
   })
 
-  // Add proactive entries to embed fields
-  if (config.proactive?.items.length) {
-    for (const item of config.proactive.items) {
-      fields.push({ name: `proactive:${item.topic}`, value: `freq=${config.proactive.frequency} \u2192 ${item.channel}`, inline: false })
-    }
-  }
+  // proactive는 /claude bot autotalk에서 별도 관리 — 스케줄 목록에서 숨김
 
   // Build select menu options (max 25 per Discord limit)
   const options = all.slice(0, 25).map(s => ({
