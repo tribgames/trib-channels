@@ -94,9 +94,8 @@ function noteIdleActivity(): void {
   if (idleTimer) clearTimeout(idleTimer)
   idleTimer = setTimeout(() => {
     idleTimer = null
-    stopServerTyping()
+    // typing은 Stop 훅(turn-end)에서만 OFF — 여기서 끄지 않음
     void forwarder.forwardFinalText()
-    // watch is kept alive — never stopped
   }, IDLE_MS)
 }
 
@@ -131,7 +130,7 @@ const forwarder = new OutputForwarder({
 
 // Wire up forwarder's idle detection to server idle handling
 forwarder.setOnIdle(() => {
-  stopServerTyping()
+  // typing은 Stop 훅(turn-end)에서만 OFF
   void forwarder.forwardFinalText()
 })
 
@@ -501,7 +500,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
   try {
     switch (toolName) {
       case 'reply': {
-        stopServerTyping()
+        // typing은 Stop 훅(turn-end)에서만 OFF
         const sendResult = await backend.sendMessage(
           args.chat_id as string,
           args.text as string,
