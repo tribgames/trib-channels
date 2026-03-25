@@ -770,21 +770,7 @@ export async function handleSlashCommand(
     case 'stop':
       return handleStop(interaction, ctx)
     case 'status': {
-      const memMB = Math.round(process.memoryUsage.rss() / 1024 / 1024)
-      const uptimeMin = Math.round(process.uptime() / 60)
-      const startTime = new Date(Date.now() - process.uptime() * 1000)
-      const startStr = startTime.toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })
-      const schedules = ctx.scheduler.getStatus()
-      const activeSchedules = schedules.filter(s => s.running).length
-
-      const fields: EmbedField[] = [
-        { name: 'Backend', value: ctx.config.backend, inline: true },
-        { name: 'PID', value: String(ctx.serverProcess.pid), inline: true },
-        { name: 'Uptime', value: `${uptimeMin}m`, inline: true },
-        { name: 'Memory', value: `${memMB}MB`, inline: true },
-        { name: t('status.started', interaction.locale), value: startStr, inline: true },
-        { name: 'Schedules', value: `${schedules.length} total, ${activeSchedules} running`, inline: true },
-      ]
+      const fields: EmbedField[] = []
 
       try {
         const sessionPath = '/tmp/claude-session-data.json'
@@ -793,28 +779,26 @@ export async function handleSlashCommand(
           const model = data.model?.display_name ?? data.model?.id ?? 'unknown'
           fields.push({ name: 'Model', value: model, inline: true })
 
-          const inTok = data.context_window?.total_input_tokens
-          const outTok = data.context_window?.total_output_tokens
-          if (inTok != null || outTok != null) {
-            const fmt = (n: number) => n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1_000 ? `${Math.round(n / 1_000)}K` : `${n}`
-            fields.push({ name: 'Tokens', value: `in ${fmt(inTok ?? 0)} / out ${fmt(outTok ?? 0)}`, inline: true })
-          }
-
-          const fiveH = data.rate_limits?.five_hour?.used_percentage
-          const sevenD = data.rate_limits?.seven_day?.used_percentage
-          if (fiveH != null || sevenD != null) {
-            const parts: string[] = []
-            if (fiveH != null) parts.push(`5h ${Math.round(fiveH)}%`)
-            if (sevenD != null) parts.push(`7d ${Math.round(sevenD)}%`)
-            fields.push({ name: 'Rate Limit', value: parts.join(' / '), inline: true })
-          }
-
           const ctxPct = data.context_window?.used_percentage
           if (ctxPct != null) fields.push({ name: 'Context', value: `${Math.round(ctxPct)}%`, inline: true })
+
+          const fmtTime = (ts: number) => new Date(ts * 1000).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+
+          const fiveH = data.rate_limits?.five_hour
+          if (fiveH) {
+            fields.push({ name: '5시간', value: `${Math.round(fiveH.used_percentage)}% (리셋 ${fmtTime(fiveH.resets_at)})`, inline: true })
+          }
+
+          const sevenD = data.rate_limits?.seven_day
+          if (sevenD) {
+            fields.push({ name: '주간', value: `${Math.round(sevenD.used_percentage)}% (리셋 ${fmtTime(sevenD.resets_at)})`, inline: true })
+          }
         }
       } catch { /* graceful fallback */ }
 
-      await interaction.reply({ embeds: [{ title: '\u{1f4ca} Status', fields, color: EMBED_COLOR }], flags: 64 })
+      if (!fields.length) fields.push({ name: 'Status', value: 'session data unavailable', inline: false })
+
+      await interaction.reply({ embeds: [{ fields, color: EMBED_COLOR }], flags: 64 })
       return
     }
     case 'config': {
