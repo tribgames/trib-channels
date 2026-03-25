@@ -92,14 +92,22 @@ function convertMarkdownTables(text: string): string {
 }
 
 function escapeNestedCodeBlocks(text: string): string {
-  let inBlock = false
+  let fenceLen = 0  // 0 = not in block, >0 = backtick count of opening fence
   const lines = text.split('\n')
   return lines.map(line => {
-    if (line.startsWith('```')) {
-      inBlock = !inBlock
+    const match = line.match(/^(`{3,})/)
+    if (match) {
+      if (fenceLen === 0) {
+        // Opening fence
+        fenceLen = match[1].length
+      } else if (match[1].length >= fenceLen) {
+        // Closing fence (must be >= opening length)
+        fenceLen = 0
+      }
+      // else: shorter backtick sequence inside block — leave as-is
       return line
     }
-    if (inBlock && line.includes('```')) {
+    if (fenceLen > 0 && line.includes('```')) {
       return line.replace(/```/g, '`\u200B``')
     }
     return line
