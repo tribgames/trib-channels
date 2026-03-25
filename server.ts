@@ -17,7 +17,7 @@ import * as fs from 'fs'
 import * as https from 'https'
 import * as os from 'os'
 import * as path from 'path'
-import { loadConfig, createBackend, loadBotConfig } from './lib/config.js'
+import { loadConfig, createBackend, loadBotConfig, loadProfileConfig } from './lib/config.js'
 import { loadSettings } from './lib/settings.js'
 import { Scheduler } from './lib/scheduler.js'
 import { handleSlashCommand, type SlashCommandContext } from './lib/slash-commands.js'
@@ -205,9 +205,10 @@ backend.onModalRequest = async (rawInteraction: any) => {
     const modal = new ModalBuilder().setCustomId('modal_sched_add').setTitle('스케줄 추가')
     ;(modal as any).addComponents(
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('name').setLabel('이름').setStyle(TextInputStyle.Short).setRequired(true)),
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('time').setLabel('시간 (HH:MM)').setStyle(TextInputStyle.Short).setRequired(true)),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('time').setLabel('시간 (HH:MM / hourly / every5m)').setStyle(TextInputStyle.Short).setRequired(true)),
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('channel').setLabel('채널').setStyle(TextInputStyle.Short).setValue('general')),
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('mode').setLabel('모드 (interactive/non-interactive)').setStyle(TextInputStyle.Short).setValue('non-interactive')),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('period').setLabel('주기 (daily / weekday)').setStyle(TextInputStyle.Short).setValue('daily').setRequired(false)),
     )
     await rawInteraction.showModal(modal)
   } else if (customId === 'autotalk_freq') {
@@ -227,8 +228,29 @@ backend.onModalRequest = async (rawInteraction: any) => {
     const name = customId.split(':')[1]
     const modal = new ModalBuilder().setCustomId(`modal_sched_edit:${name}`).setTitle(`${name} 편집`)
     ;(modal as any).addComponents(
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('time').setLabel('시간 (HH:MM)').setStyle(TextInputStyle.Short)),
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('channel').setLabel('채널').setStyle(TextInputStyle.Short)),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('time').setLabel('시간 (HH:MM / hourly / every5m)').setStyle(TextInputStyle.Short).setRequired(false)),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('channel').setLabel('채널').setStyle(TextInputStyle.Short).setRequired(false)),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('period').setLabel('주기 (daily / weekday)').setStyle(TextInputStyle.Short).setRequired(false)),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('exec').setLabel('실행모드 (prompt / script / script+prompt)').setStyle(TextInputStyle.Short).setRequired(false)),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('dnd').setLabel('방해금지 (예: 23:00-07:00, 비우면 해제)').setStyle(TextInputStyle.Short).setRequired(false)),
+    )
+    await rawInteraction.showModal(modal)
+  } else if (customId === 'activity_add') {
+    const modal = new ModalBuilder().setCustomId('modal_activity_add').setTitle('활동 채널 추가')
+    ;(modal as any).addComponents(
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('name').setLabel('채널 이름').setStyle(TextInputStyle.Short).setRequired(true)),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('id').setLabel('채널 ID').setStyle(TextInputStyle.Short).setRequired(true)),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('mode').setLabel('모드 (interactive / monitor)').setStyle(TextInputStyle.Short).setValue('interactive').setRequired(false)),
+    )
+    await rawInteraction.showModal(modal)
+  } else if (customId === 'profile_edit') {
+    const profile = loadProfileConfig()
+    const modal = new ModalBuilder().setCustomId('modal_profile_edit').setTitle('프로필 편집')
+    ;(modal as any).addComponents(
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('name').setLabel('이름').setStyle(TextInputStyle.Short).setValue(profile.name ?? '').setRequired(false)),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('role').setLabel('역할').setStyle(TextInputStyle.Short).setValue(profile.role ?? '').setRequired(false)),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('lang').setLabel('언어 (ko / en / ja / zh)').setStyle(TextInputStyle.Short).setValue(profile.lang ?? '').setRequired(false)),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('tone').setLabel('말투').setStyle(TextInputStyle.Short).setValue(profile.tone ?? '').setRequired(false)),
     )
     await rawInteraction.showModal(modal)
   }
@@ -329,8 +351,8 @@ backend.onInteraction = (interaction: any) => {
       const cmdCtx: CommandContext = { channelId: interaction.channelId, userId: interaction.userId, lang: 'ko', scheduler }
 
       if (interaction.customId === 'modal_sched_add') {
-        const { name, time, channel, mode } = interaction.fields!
-        const cmd = `/bot(schedule, add, "${name}", time="${time}", channel="${channel || 'general'}", mode="${mode || 'non-interactive'}")`
+        const { name, time, channel, mode, period } = interaction.fields!
+        const cmd = `/bot(schedule, add, "${name}", time="${time}", channel="${channel || 'general'}", mode="${mode || 'non-interactive'}", period="${period || 'daily'}")`
         const result = await routeCustomCommand(cmd, cmdCtx)
         if (interaction.channelId) await backend.sendMessage(interaction.channelId, result?.text ?? 'done')
       }
@@ -349,6 +371,42 @@ backend.onInteraction = (interaction: any) => {
         if (autotalk) cmds.push(`/bot(quiet, autotalk, "${autotalk}")`)
         for (const cmd of cmds) await routeCustomCommand(cmd, cmdCtx)
         if (interaction.channelId) await backend.sendMessage(interaction.channelId, '방해금지 설정 완료')
+      }
+
+      if (interaction.customId?.startsWith('modal_sched_edit:')) {
+        const name = interaction.customId.split(':')[1]
+        const params: string[] = []
+        const { time, channel, period, exec, dnd } = interaction.fields!
+        if (time) params.push(`time="${time}"`)
+        if (channel) params.push(`channel="${channel}"`)
+        if (period) params.push(`period="${period}"`)
+        if (exec) params.push(`exec="${exec}"`)
+        const cmd = `/bot(schedule, edit, "${name}"${params.length ? ', ' + params.join(', ') : ''})`
+        const result = await routeCustomCommand(cmd, cmdCtx)
+        // dnd → bot-level quiet schedule 설정
+        if (dnd) await routeCustomCommand(`/bot(quiet, schedule, "${dnd}")`, cmdCtx)
+        if (interaction.channelId) await backend.sendMessage(interaction.channelId, result?.text ?? 'done')
+      }
+
+      if (interaction.customId === 'modal_activity_add') {
+        const { name, id, mode } = interaction.fields!
+        const cmd = `/bot(activity, add, "${name}", id="${id}", mode="${mode || 'interactive'}")`
+        const result = await routeCustomCommand(cmd, cmdCtx)
+        if (interaction.channelId) await backend.sendMessage(interaction.channelId, result?.text ?? 'done')
+      }
+
+      if (interaction.customId === 'modal_profile_edit') {
+        const { name, role, lang, tone } = interaction.fields!
+        const params: string[] = []
+        if (name) params.push(`name="${name}"`)
+        if (role) params.push(`role="${role}"`)
+        if (lang) params.push(`lang="${lang}"`)
+        if (tone) params.push(`tone="${tone}"`)
+        if (params.length > 0) {
+          const cmd = `/profile(set, ${params.join(', ')})`
+          await routeCustomCommand(cmd, cmdCtx)
+        }
+        if (interaction.channelId) await backend.sendMessage(interaction.channelId, '프로필 업데이트 완료')
       }
     })()
     return
@@ -382,6 +440,17 @@ backend.onInteraction = (interaction: any) => {
     void (async () => {
       const cmdCtx: CommandContext = { channelId: interaction.channelId, userId: interaction.userId, lang: 'ko', scheduler }
       const result = await routeCustomCommand(`/bot(schedule, test, "${name}")`, cmdCtx)
+      if (interaction.channelId) await backend.sendMessage(interaction.channelId, result?.text ?? 'done')
+    })()
+    return
+  }
+
+  // ── Activity remove 버튼 ──
+  if (interaction.customId?.startsWith('activity_remove:')) {
+    const name = interaction.customId.split(':')[1]
+    void (async () => {
+      const cmdCtx: CommandContext = { channelId: interaction.channelId, userId: interaction.userId, lang: 'ko', scheduler }
+      const result = await routeCustomCommand(`/bot(activity, remove, "${name}")`, cmdCtx)
       if (interaction.channelId) await backend.sendMessage(interaction.channelId, result?.text ?? 'done')
     })()
     return

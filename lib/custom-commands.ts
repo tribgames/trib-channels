@@ -9,7 +9,7 @@
 
 import { readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
-import { DATA_DIR, loadBotConfig, loadProfileConfig, saveProfileConfig } from './config.js'
+import { DATA_DIR, loadBotConfig, saveBotConfig, loadProfileConfig, saveProfileConfig } from './config.js'
 import type { PluginConfig, TimedSchedule } from '../backends/types.js'
 import type { Scheduler } from './scheduler.js'
 
@@ -162,6 +162,58 @@ const msg: Record<string, Record<'ko' | 'en', string>> = {
     ko: '알 수 없는 서브커맨드: {sub}',
     en: 'Unknown subcommand: {sub}',
   },
+  'autotalk.status': {
+    ko: '자율대화 상태',
+    en: 'Autotalk Status',
+  },
+  'autotalk.freq_updated': {
+    ko: '자율대화 빈도가 {freq}(으)로 변경되었습니다.',
+    en: 'Autotalk frequency updated to {freq}.',
+  },
+  'autotalk.enabled': {
+    ko: '자율대화가 활성화되었습니다.',
+    en: 'Autotalk enabled.',
+  },
+  'autotalk.disabled': {
+    ko: '자율대화가 비활성화되었습니다.',
+    en: 'Autotalk disabled.',
+  },
+  'quiet.status': {
+    ko: '방해금지 설정',
+    en: 'Quiet Settings',
+  },
+  'quiet.updated': {
+    ko: '방해금지 설정이 업데이트되었습니다.',
+    en: 'Quiet settings updated.',
+  },
+  'activity.empty': {
+    ko: '등록된 활동 채널이 없습니다.',
+    en: 'No activity channels configured.',
+  },
+  'activity.added': {
+    ko: '채널 "{name}" 추가 완료.',
+    en: 'Channel "{name}" added.',
+  },
+  'activity.exists': {
+    ko: '채널 "{name}"이(가) 이미 존재합니다.',
+    en: 'Channel "{name}" already exists.',
+  },
+  'activity.not_found': {
+    ko: '채널 "{name}"을(를) 찾을 수 없습니다.',
+    en: 'Channel "{name}" not found.',
+  },
+  'activity.removed': {
+    ko: '채널 "{name}" 삭제 완료.',
+    en: 'Channel "{name}" removed.',
+  },
+  'activity.missing_name': {
+    ko: '채널 이름이 필요합니다.',
+    en: 'Channel name is required.',
+  },
+  'activity.missing_id': {
+    ko: '채널 ID가 필요합니다.',
+    en: 'Channel ID is required.',
+  },
 }
 
 function t(key: string, lang: 'ko' | 'en', vars?: Record<string, string>): string {
@@ -185,6 +237,14 @@ export async function handleBotCommand(
   switch (sub) {
     case 'schedule':
       return handleSchedule(parsed, ctx)
+    case 'autotalk':
+      return handleAutotalk(parsed, ctx)
+    case 'quiet':
+      return handleQuiet(parsed, ctx)
+    case 'activity':
+      return handleActivity(parsed, ctx)
+    case 'profile':
+      return handleBotProfile(parsed, ctx)
     case 'status':
       return handleBotStatus(ctx)
     default:
@@ -243,8 +303,272 @@ function handleBotStatus(_ctx: CommandContext): CommandResult {
         { type: 2, style: 1, label: '\uC790\uC728\uB300\uD654', custom_id: 'bot_autotalk' },
         { type: 2, style: 1, label: '\uBC29\uD574\uAE08\uC9C0', custom_id: 'bot_quiet' },
         { type: 2, style: 1, label: '\uD65C\uB3D9\uCC44\uB110', custom_id: 'bot_activity' },
+        { type: 2, style: 1, label: '\uD504\uB85C\uD544', custom_id: 'bot_profile' },
       ],
     }],
+  }
+}
+
+// ── /bot(activity, ...) ─────────────────────────────────────────────
+
+function handleActivity(parsed: ParsedCommand, ctx: CommandContext): CommandResult {
+  const action = parsed.args[1] ?? 'list'
+  switch (action) {
+    case 'list':
+      return activityList(ctx)
+    case 'add':
+      return activityAdd(parsed, ctx)
+    case 'remove':
+      return activityRemove(parsed, ctx)
+    default:
+      return { text: t('unknown_action', ctx.lang, { action }) }
+  }
+}
+
+function activityList(ctx: CommandContext): CommandResult {
+  const config = loadPluginConfig()
+  const channels = config.channelsConfig?.channels ?? {}
+  const main = config.channelsConfig?.main ?? ''
+  const entries = Object.entries(channels)
+
+  const components: Record<string, unknown>[] = [{
+    type: 1,
+    components: [
+      { type: 2, style: 1, label: '\uCD94\uAC00', custom_id: 'activity_add' },
+    ],
+  }]
+
+  if (entries.length === 0) {
+    return {
+      embeds: [{
+        title: '\u{1F4E1} \uD65C\uB3D9 \uCC44\uB110',
+        description: t('activity.empty', ctx.lang),
+        color: 0x5865F2,
+      }],
+      components,
+    }
+  }
+
+  const fields = entries.map(([name, entry]) => ({
+    name: name === main ? `${name} \u2B50` : name,
+    value: `ID: \`${entry.id}\`\nMode: ${entry.mode}`,
+    inline: false,
+  }))
+
+  // Remove buttons (max 5 per row)
+  const removeButtons = entries.map(([name]) => ({
+    type: 2, style: 4, label: `${name}`, custom_id: `activity_remove:${name}`,
+  }))
+  for (let i = 0; i < removeButtons.length; i += 5) {
+    components.push({ type: 1, components: removeButtons.slice(i, i + 5) })
+  }
+
+  return {
+    embeds: [{ title: '\u{1F4E1} \uD65C\uB3D9 \uCC44\uB110', color: 0x5865F2, fields }],
+    components,
+  }
+}
+
+function activityAdd(parsed: ParsedCommand, ctx: CommandContext): CommandResult {
+  const name = parsed.args[2] ?? parsed.params.name
+  if (!name) return { text: t('activity.missing_name', ctx.lang) }
+
+  const id = parsed.params.id
+  if (!id) return { text: t('activity.missing_id', ctx.lang) }
+
+  const mode = (parsed.params.mode ?? 'interactive') as 'interactive' | 'monitor'
+
+  const config = loadPluginConfig()
+  if (!config.channelsConfig) {
+    config.channelsConfig = { main: name, channels: {} }
+  }
+
+  if (config.channelsConfig.channels[name]) {
+    return { text: t('activity.exists', ctx.lang, { name }) }
+  }
+
+  config.channelsConfig.channels[name] = { id, mode }
+  savePluginConfig(config)
+
+  return { text: t('activity.added', ctx.lang, { name }) }
+}
+
+function activityRemove(parsed: ParsedCommand, ctx: CommandContext): CommandResult {
+  const name = parsed.args[2] ?? parsed.params.name
+  if (!name) return { text: t('activity.missing_name', ctx.lang) }
+
+  const config = loadPluginConfig()
+  if (!config.channelsConfig?.channels[name]) {
+    return { text: t('activity.not_found', ctx.lang, { name }) }
+  }
+
+  delete config.channelsConfig.channels[name]
+  savePluginConfig(config)
+
+  return { text: t('activity.removed', ctx.lang, { name }) }
+}
+
+// ── /bot(profile) ───────────────────────────────────────────────────
+
+function handleBotProfile(parsed: ParsedCommand, ctx: CommandContext): CommandResult {
+  // /bot(profile, set, name="...", ...) — param-based update
+  if ((parsed.args[1] === 'set' || Object.keys(parsed.params).length > 0) && parsed.args[0] === 'profile') {
+    return handleProfileCommand(
+      { cmd: 'profile', args: ['set'], params: parsed.params },
+      ctx,
+    )
+  }
+
+  // Default: show profile + edit button
+  const profile = loadProfileConfig()
+  const entries = Object.entries(profile).filter(([_, v]) => v !== undefined)
+
+  const components: Record<string, unknown>[] = [{
+    type: 1,
+    components: [
+      { type: 2, style: 1, label: '\uD3B8\uC9D1', custom_id: 'profile_edit' },
+    ],
+  }]
+
+  if (entries.length === 0) {
+    return {
+      embeds: [{
+        title: '\u{1F464} \uD504\uB85C\uD544',
+        description: t('profile.empty', ctx.lang),
+        color: 0x57F287,
+      }],
+      components,
+    }
+  }
+
+  const fields = entries.map(([k, v]) => ({
+    name: k, value: String(v), inline: false,
+  }))
+
+  return {
+    embeds: [{ title: '\u{1F464} \uD504\uB85C\uD544', color: 0x57F287, fields }],
+    components,
+  }
+}
+
+// ── /bot(autotalk, ...) ──────────────────────────────────────────────
+
+function handleAutotalk(parsed: ParsedCommand, ctx: CommandContext): CommandResult {
+  const action = parsed.args[1] ?? 'status'
+  const bot = loadBotConfig()
+
+  // /bot(autotalk, freq=N) — freq passed as param
+  if (parsed.params.freq) {
+    const freq = Math.max(1, Math.min(5, parseInt(parsed.params.freq, 10) || 3))
+    if (!bot.autotalk) bot.autotalk = {}
+    bot.autotalk.freq = freq
+    saveBotConfig(bot)
+    return { text: t('autotalk.freq_updated', ctx.lang, { freq: String(freq) }) }
+  }
+
+  switch (action) {
+    case 'status':
+    case 'list': {
+      const freq = bot.autotalk?.freq ?? '-'
+      const enabled = bot.autotalk?.enabled ?? false
+      const statusEmoji = enabled ? '\u2705' : '\u274C'
+
+      return {
+        embeds: [{
+          title: `\u{1F4AC} ${t('autotalk.status', ctx.lang)}`,
+          description: `**\uBE48\uB3C4**: ${freq}\n**\uC0C1\uD0DC**: ${statusEmoji} ${enabled ? 'ON' : 'OFF'}`,
+          color: 0x5865F2,
+        }],
+        components: [{
+          type: 1,
+          components: [
+            { type: 2, style: 1, label: '\uBE48\uB3C4 \uBCC0\uACBD', custom_id: 'autotalk_freq' },
+            enabled
+              ? { type: 2, style: 4, label: 'OFF', custom_id: 'autotalk_off' }
+              : { type: 2, style: 3, label: 'ON', custom_id: 'autotalk_on' },
+          ],
+        }],
+      }
+    }
+    case 'on': {
+      if (!bot.autotalk) bot.autotalk = {}
+      bot.autotalk.enabled = true
+      saveBotConfig(bot)
+      return { text: t('autotalk.enabled', ctx.lang) }
+    }
+    case 'off': {
+      if (!bot.autotalk) bot.autotalk = {}
+      bot.autotalk.enabled = false
+      saveBotConfig(bot)
+      return { text: t('autotalk.disabled', ctx.lang) }
+    }
+    default:
+      return { text: t('unknown_action', ctx.lang, { action }) }
+  }
+}
+
+// ── /bot(quiet, ...) ────────────────────────────────────────────────
+
+function handleQuiet(parsed: ParsedCommand, ctx: CommandContext): CommandResult {
+  const action = parsed.args[1] ?? 'status'
+  const bot = loadBotConfig()
+  const value = parsed.args[2] ?? parsed.params.value
+
+  switch (action) {
+    case 'status':
+    case 'list': {
+      const q = bot.quiet ?? {}
+      const lines: string[] = [
+        `**\uC2A4\uCF00\uC904 \uBC29\uD574\uAE08\uC9C0**: ${q.schedule ?? '-'}`,
+        `**\uC790\uC728\uB300\uD654 \uBC29\uD574\uAE08\uC9C0**: ${q.autotalk ?? '-'}`,
+        `**\uACF5\uD734\uC77C \uAD6D\uAC00**: ${q.holidays ?? '-'}`,
+        `**\uC2DC\uAC04\uB300**: ${q.timezone ?? 'system'}`,
+      ]
+
+      return {
+        embeds: [{
+          title: `\u{1F515} ${t('quiet.status', ctx.lang)}`,
+          description: lines.join('\n'),
+          color: 0x5865F2,
+        }],
+        components: [{
+          type: 1,
+          components: [
+            { type: 2, style: 1, label: '\uC124\uC815 \uBCC0\uACBD', custom_id: 'quiet_set' },
+          ],
+        }],
+      }
+    }
+    case 'schedule': {
+      if (!value) return { text: t('unknown_action', ctx.lang, { action: 'schedule (value required)' }) }
+      if (!bot.quiet) bot.quiet = {}
+      bot.quiet.schedule = value
+      saveBotConfig(bot)
+      return { text: t('quiet.updated', ctx.lang) }
+    }
+    case 'autotalk': {
+      if (!value) return { text: t('unknown_action', ctx.lang, { action: 'autotalk (value required)' }) }
+      if (!bot.quiet) bot.quiet = {}
+      bot.quiet.autotalk = value
+      saveBotConfig(bot)
+      return { text: t('quiet.updated', ctx.lang) }
+    }
+    case 'holidays': {
+      if (!value) return { text: t('unknown_action', ctx.lang, { action: 'holidays (value required)' }) }
+      if (!bot.quiet) bot.quiet = {}
+      bot.quiet.holidays = value
+      saveBotConfig(bot)
+      return { text: t('quiet.updated', ctx.lang) }
+    }
+    case 'timezone': {
+      if (!value) return { text: t('unknown_action', ctx.lang, { action: 'timezone (value required)' }) }
+      if (!bot.quiet) bot.quiet = {}
+      bot.quiet.timezone = value
+      saveBotConfig(bot)
+      return { text: t('quiet.updated', ctx.lang) }
+    }
+    default:
+      return { text: t('unknown_action', ctx.lang, { action }) }
   }
 }
 
@@ -438,6 +762,8 @@ function scheduleEdit(parsed: ParsedCommand, ctx: CommandContext): CommandResult
   if (parsed.params.channel) entry.channel = parsed.params.channel
   if (parsed.params.period || parsed.params.days) entry.days = (parsed.params.period ?? parsed.params.days) as 'daily' | 'weekday'
   if (parsed.params.enabled !== undefined) entry.enabled = parsed.params.enabled !== 'false'
+  if (parsed.params.exec) entry.exec = parsed.params.exec as 'prompt' | 'script' | 'script+prompt'
+  if (parsed.params.script) entry.script = parsed.params.script
 
   // Update prompt file if provided
   if (parsed.params.prompt) {

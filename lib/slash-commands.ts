@@ -12,7 +12,7 @@ import { join } from 'path'
 import type { PluginConfig } from '../backends/types.js'
 import type { Scheduler } from './scheduler.js'
 import { DATA_DIR } from './config.js'
-import { handleBotCommand, handleProfileCommand } from './custom-commands.js'
+import { handleBotCommand } from './custom-commands.js'
 import type { CommandContext } from './custom-commands.js'
 
 // ── Constants ────────────────────────────────────────────────────────
@@ -454,6 +454,26 @@ function buildCommands(): SlashCommandBuilder {
             { name: 'opus', value: 'opus' },
             { name: 'haiku', value: 'haiku' },
           ),
+      )
+      .addStringOption(opt =>
+        opt
+          .setName('effort')
+          .setDescription('Reasoning effort level')
+          .setDescriptionLocalizations({
+            ko: '추론 노력 수준',
+            ja: '推論レベル',
+            'zh-CN': '推理级别',
+            'zh-TW': '推理等級',
+            'pt-BR': 'Nivel de esforco',
+            'es-ES': 'Nivel de esfuerzo',
+          })
+          .setRequired(false)
+          .addChoices(
+            { name: 'low', value: 'low' },
+            { name: 'medium', value: 'medium' },
+            { name: 'high', value: 'high' },
+            { name: 'max', value: 'max' },
+          ),
       ),
   )
 
@@ -697,18 +717,16 @@ function buildCommands(): SlashCommandBuilder {
             'zh-CN': '活动频道',
             'zh-TW': '活動頻道',
           }),
+      )
+      .addSubcommand(sub =>
+        sub.setName('profile').setDescription('User profile')
+          .setDescriptionLocalizations({
+            ko: '사용자 프로필',
+            ja: 'ユーザープロフィール',
+            'zh-CN': '用户资料',
+            'zh-TW': '使用者個人資料',
+          }),
       ),
-  )
-
-  // /claude profile
-  claude.addSubcommand(sub =>
-    sub.setName('profile').setDescription('User profile settings')
-      .setDescriptionLocalizations({
-        ko: '사용자 프로필 설정',
-        ja: 'ユーザープロフィール設定',
-        'zh-CN': '用户资料设置',
-        'zh-TW': '使用者個人資料設定',
-      }),
   )
 
   return claude
@@ -830,8 +848,6 @@ export async function handleSlashCommand(
       return handleDoctor(interaction, ctx)
     case 'help':
       return handleHelp(interaction)
-    case 'profile':
-      return handleProfileSub(interaction, ctx)
     default:
       await interaction.reply({ content: t('unknown_command', interaction.locale, { cmd: sub }), flags: 64 })
   }
@@ -895,9 +911,17 @@ async function handleModel(
   _ctx: SlashCommandContext,
 ): Promise<void> {
   const model = interaction.options.getString('name', true)
+  const effort = interaction.options.getString('effort')
   const ok = await tmuxSendKeys(`/model ${model}`)
+  let effortOk = true
+  if (effort && ok) {
+    effortOk = await tmuxSendKeys(`/effort ${effort}`)
+  }
+  const desc = ok
+    ? t('model.switched', interaction.locale, { model }) + (effort ? ` (effort: ${effort})` : '')
+    : 'tmux not found'
   await interaction.reply({
-    embeds: [{ title: '\u{1f916} Model', description: ok ? t('model.switched', interaction.locale, { model }) : 'tmux not found', color: ok ? EMBED_COLOR : 0xFEE75C }],
+    embeds: [{ title: '\u{1f916} Model', description: desc, color: ok && effortOk ? EMBED_COLOR : 0xFEE75C }],
     flags: 64,
   })
 }
@@ -1315,23 +1339,3 @@ async function handleBotSub(
   }
 }
 
-async function handleProfileSub(
-  interaction: ChatInputCommandInteraction,
-  ctx: SlashCommandContext,
-): Promise<void> {
-  const cmdCtx: CommandContext = {
-    scheduler: ctx.scheduler,
-    channelId: interaction.channelId,
-    userId: interaction.user.id,
-    lang: getCmdLang(interaction.locale),
-  }
-  try {
-    const result = handleProfileCommand(
-      { cmd: 'profile', args: [], params: {} },
-      cmdCtx,
-    )
-    await replyWithResult(interaction, result)
-  } catch (err) {
-    await interaction.reply({ content: `Error: ${err instanceof Error ? err.message : String(err)}`, flags: 64 })
-  }
-}

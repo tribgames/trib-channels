@@ -220,7 +220,9 @@ export class DiscordBackend implements ChannelBackend {
             interaction.customId.startsWith('sched_add') ||
             interaction.customId.startsWith('sched_edit') ||
             interaction.customId.startsWith('quiet_set') ||
-            interaction.customId.startsWith('autotalk_freq')
+            interaction.customId.startsWith('autotalk_freq') ||
+            interaction.customId === 'activity_add' ||
+            interaction.customId === 'profile_edit'
           )
 
           if (needsModal) {
