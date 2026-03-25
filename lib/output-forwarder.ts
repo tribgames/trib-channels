@@ -223,50 +223,55 @@ export class OutputForwarder {
   }
 
   /** Build tool log line from tool name and input */
-  static buildToolLine(tool: string, toolInput: Record<string, any>): string | null {
-    const isSearchTool = (tool === 'Read' || tool === 'Grep' || tool === 'Glob')
-    const desc = (toolInput.description || '').substring(0, 50)
+  static buildToolLine(name: string, input: Record<string, any>): string | null {
     let summary = ''
-    let detail = ''
 
-    if (tool === 'Bash' || tool.includes('Bash')) {
-      summary = desc || 'Bash'
-      detail = isSearchTool ? '' : (toolInput.command || '').substring(0, 500)
-    } else if (tool === 'Read') {
-      summary = (toolInput.file_path || '').split('/').pop() || ''
-    } else if (tool === 'Grep') {
-      summary = '"' + (toolInput.pattern || '').substring(0, 25) + '"'
-    } else if (tool === 'Glob') {
-      summary = (toolInput.pattern || '').substring(0, 25)
-    } else if (tool === 'Write') {
-      summary = (toolInput.file_path || '').split('/').pop() || 'Write'
-      detail = toolInput.file_path || ''
-    } else if (tool === 'Edit') {
-      summary = (toolInput.file_path || '').split('/').pop() || 'Edit'
-      detail = toolInput.file_path || ''
-    } else if (tool === 'Agent') {
-      summary = toolInput.name || toolInput.subagent_type || 'agent'
-      let d = (toolInput.prompt || '').substring(0, 200)
-      const backticks = (d.match(/```/g) || []).length
-      if (backticks % 2 === 1) d += '\n```'
-      if (d.length < (toolInput.prompt || '').length) d += '...'
-      detail = d
-    } else if (tool === 'TaskCreate') {
-      summary = (toolInput.subject || '').substring(0, 50)
-    } else if (tool === 'TeamCreate') {
-      summary = toolInput.team_name || ''
-      detail = toolInput.description || ''
-    } else {
-      summary = tool.replace(/mcp__\w+__/, '')
+    switch (name) {
+      case 'Bash':
+        summary = (input?.command || '').substring(0, 80)
+        break
+      case 'Read':
+        summary = input?.file_path?.split('/').pop() || ''
+        break
+      case 'Edit':
+      case 'Write':
+        summary = input?.file_path?.split('/').pop() || ''
+        break
+      case 'Grep':
+        summary = (input?.pattern || '').substring(0, 40)
+        break
+      case 'Glob':
+        summary = input?.pattern || ''
+        break
+      case 'Agent':
+        summary = input?.description || input?.name || ''
+        break
+      case 'TeamCreate':
+        summary = input?.team_name || ''
+        break
+      case 'TaskCreate':
+        summary = (input?.subject || '').substring(0, 50)
+        break
+      case 'SendMessage':
+        summary = input?.summary || ('\u2192 ' + (input?.to || ''))
+        break
+      case 'ToolSearch':
+        summary = input?.query || ''
+        break
+      case 'Skill':
+        summary = input?.skill || ''
+        break
+      default:
+        if (name.startsWith('mcp__')) {
+          const parts = name.split('__')
+          summary = parts[parts.length - 1] || ''
+          name = 'mcp'
+        }
+        break
     }
 
-    if (!summary) return null
-    const displayName = tool.startsWith('mcp__') ? 'mcp' : tool
-    let line = '-# ' + displayName + ' (' + summary + ')'
-    if (!isSearchTool && detail && detail !== summary) {
-      line += '\n```\n' + detail.substring(0, 300) + '\n```'
-    }
-    return line
+    if (!summary) return '-# ' + name
+    return '-# ' + name + ' (' + summary + ')'
   }
 
   // ── File watch ─────────────────────────────────────────────────────
