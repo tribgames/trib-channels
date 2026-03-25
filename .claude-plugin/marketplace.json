@@ -1,6 +1,6 @@
 {
   "name": "claude2bot",
-  "description": "Channel mode plugin for Claude Code — autonomous AI agent for Discord & Telegram",
+  "description": "Channel mode plugin for Claude Code — autonomous AI agent for Discord",
   "owner": {
     "name": "claude2bot",
     "email": "claude2bot@users.noreply.github.com"
@@ -8,7 +8,7 @@
   "plugins": [
     {
       "name": "claude2bot",
-      "description": "Multi-backend channel plugin with scheduler, voice transcription, and proactive chat",
+      "description": "Discord channel plugin with scheduler, voice transcription, and proactive chat",
       "category": "productivity",
       "source": {
         "source": "url",

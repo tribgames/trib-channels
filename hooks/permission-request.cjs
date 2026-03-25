@@ -2,7 +2,7 @@ if (process.env.CLAUDE2BOT_NO_CONNECT) process.exit(0);
 /**
  * claude2bot PermissionRequest hook
  * 1. Send Discord message with approve/deny buttons
- * 2. Poll /tmp/perm-{uuid}.result for decision
+ * 2. Poll runtime/perm-{instance}-{uuid}.result for decision
  * 3. Return JSON decision to stdout
  */
 const https = require('https');
@@ -16,9 +16,24 @@ const DEBUG = process.env.CLAUDE2BOT_DEBUG === '1';
 const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA;
 if (!DATA_DIR) process.exit(0);
 
+const RUNTIME_ROOT = path.join(os.tmpdir(), 'claude2bot');
+const ACTIVE_INSTANCE_FILE = path.join(RUNTIME_ROOT, 'active-instance.json');
+
 const POLL_INTERVAL = 2000;
 const TIMEOUT = 900000; // 15 minutes
 const STALE_THRESHOLD = 30 * 60 * 1000; // 30 minutes
+
+function sanitize(value) {
+  return String(value).replace(/[^a-zA-Z0-9._-]/g, '_');
+}
+
+function readActiveInstance() {
+  try {
+    return JSON.parse(fs.readFileSync(ACTIVE_INSTANCE_FILE, 'utf8'));
+  } catch {
+    return null;
+  }
+}
 
 function discordApi(method, apiPath, token, body) {
   return new Promise((resolve, reject) => {
@@ -35,12 +50,11 @@ function discordApi(method, apiPath, token, body) {
 
 function cleanupStaleFiles() {
   try {
-    const tmpDir = os.tmpdir();
-    const files = fs.readdirSync(tmpDir);
+    const files = fs.readdirSync(RUNTIME_ROOT);
     const now = Date.now();
     for (const f of files) {
       if (f.startsWith('perm-') && f.endsWith('.pending')) {
-        const fp = path.join(tmpDir, f);
+        const fp = path.join(RUNTIME_ROOT, f);
         try {
           const stat = fs.statSync(fp);
           if (now - stat.mtimeMs > STALE_THRESHOLD) {
@@ -92,9 +106,11 @@ process.stdin.on('end', async () => {
     cleanupStaleFiles();
 
     const uuid = crypto.randomBytes(16).toString('hex');
-    const tmpDir = os.tmpdir();
-    const pendingFile = path.join(tmpDir, 'perm-' + uuid + '.pending');
-    const resultFile = path.join(tmpDir, 'perm-' + uuid + '.result');
+    const active = readActiveInstance();
+    if (!active || !active.instanceId) process.exit(0);
+    const instanceId = sanitize(active.instanceId);
+    const pendingFile = path.join(RUNTIME_ROOT, `perm-${instanceId}-${uuid}.pending`);
+    const resultFile = path.join(RUNTIME_ROOT, `perm-${instanceId}-${uuid}.result`);
 
     const toolName = data.tool_name || 'unknown';
     const toolInput = data.tool_input || {};
@@ -128,7 +144,7 @@ process.stdin.on('end', async () => {
     // Poll for result
     const startTime = Date.now();
 
-    const STOP_FLAG = path.join(tmpDir, 'claude2bot-stop.flag');
+    const STOP_FLAG = path.join(RUNTIME_ROOT, `stop-${instanceId}.flag`);
 
     while (Date.now() - startTime < TIMEOUT) {
       await new Promise(r => setTimeout(r, POLL_INTERVAL));

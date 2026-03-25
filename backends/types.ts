@@ -1,7 +1,7 @@
 /**
  * ChannelBackend — abstract interface for messaging platform integrations.
  *
- * Each backend (Discord, Telegram, Slack, etc.) implements this interface
+ * Each backend (Discord, Slack, etc.) implements this interface
  * to provide a unified messaging layer to the MCP server.
  */
 
@@ -23,7 +23,7 @@ export interface InboundMessage {
   /** ISO 8601 timestamp */
   ts: string
   attachments: AttachmentInfo[]
-  /** Local file path of an inline image (Telegram photos) */
+  /** Local file path of an inline image */
   imagePath?: string
 }
 
@@ -66,7 +66,7 @@ export interface DownloadedFile {
 // ── Backend interface ──────────────────────────────────────────────────
 
 export interface ChannelBackend {
-  /** Backend identifier (e.g. "discord", "telegram") */
+  /** Backend identifier (e.g. "discord") */
   readonly name: string
 
   /**
@@ -209,15 +209,8 @@ export interface DiscordBackendConfig {
   accessMode?: 'static' | 'dynamic'
 }
 
-export interface TelegramBackendConfig {
-  token: string
-  stateDir?: string
-  accessMode?: 'static' | 'dynamic'
-}
-
 export interface PluginConfig {
-  backend: 'discord' | 'telegram'
-  telegram?: TelegramBackendConfig
+  backend: 'discord'
   discord?: DiscordBackendConfig
   /** Named channel configuration */
   channelsConfig?: ChannelsConfig

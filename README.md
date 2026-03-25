@@ -1,6 +1,6 @@
 # claude2bot
 
-> 🤖 100% built with Claude Code — inspired by the official Discord & Telegram plugins, redesigned as an all-in-one autonomous agent
+> 🤖 100% built with Claude Code — inspired by the official Discord plugin, redesigned as an all-in-one autonomous agent
 
 **v0.1.0-preview** — Claude Code channel mode plugin for autonomous AI agent & personal assistant.
 
@@ -8,11 +8,15 @@
 
 ## Features
 
-- **Multi-backend**: Discord & Telegram support with pluggable architecture
+- **Discord-first**: purpose-built Discord channel bridge for Claude Code
 - **Built-in scheduler**: non-interactive (`claude -p`), interactive (session inject), proactive (random-interval bot-initiated chat)
 - **Voice transcription**: whisper.cpp with cross-platform auto-detection (macOS / Windows / Linux)
 - **Access control**: DM allowlists, channel policies, pairing codes
 - **Proactive chat**: Memory-driven conversations with feedback loop and idle guard
+
+Windows session control priority:
+- Preferred: `WSL tmux`
+- Fallback: native PowerShell window activation
 
 ## Quick Start
 
@@ -32,8 +36,8 @@ Run the setup wizard inside a Claude Code session:
 ```
 
 The wizard will:
-- Ask for your backend (Discord / Telegram) and bot token
-- Connect to verify the token and discover channels (Discord) or bot info (Telegram)
+- Ask for your Discord bot token
+- Connect to verify the token and discover channels
 - Let you select main channel and additional channels
 - Configure access policy and voice transcription
 - Write `config.json` and `access.json` automatically
@@ -98,14 +102,13 @@ Requires [whisper.cpp](https://github.com/ggerganov/whisper.cpp) and `ffmpeg`.
 
 ## CLI Mirroring
 
-All tool activity and assistant text is automatically forwarded to Discord via plugin hooks:
+Assistant text and tool activity are forwarded by the MCP server and transcript watcher. Hooks are only used for session bootstrap, turn-end signaling, and permission requests:
 
 | Hook | Purpose |
 |------|---------|
-| `UserPromptSubmit` | Saves transcript offset, adds reaction to user message |
-| `PreToolUse` | Extracts intermediate assistant text from transcript |
-| `PostToolUse` | Sends tool log + pending text to Discord |
-| `Stop` | Forwards final assistant text, removes reaction |
+| `SessionStart` | Injects bundled + local instruction context |
+| `Stop` | Signals turn end so the server can flush final text and clear typing |
+| `PermissionRequest` | Sends approve/deny buttons to Discord and waits for decision |
 
 - Action tools (Bash, Edit, Write, Agent, Team) show with `-#` subtext + code block
 - Search tools (Read, Grep, Glob) show as `-#` one-liner

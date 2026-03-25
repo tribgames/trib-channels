@@ -6,7 +6,6 @@
 import { readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { DiscordBackend } from '../backends/discord.js'
-import { TelegramBackend } from '../backends/telegram.js'
 import type { ChannelBackend, PluginConfig, BotConfig, ProfileConfig } from '../backends/types.js'
 
 if (!process.env.CLAUDE_PLUGIN_DATA) {
@@ -40,31 +39,20 @@ export function loadConfig(): PluginConfig {
 }
 
 export function createBackend(config: PluginConfig): ChannelBackend {
-  switch (config.backend) {
-    case 'discord': {
-      if (!config.discord?.token) {
-        process.stderr.write('claude2bot: discord.token required in config.json\n')
-        process.exit(1)
-      }
-      const stateDir =
-        config.discord.stateDir ?? join(DATA_DIR, 'discord')
-      mkdirSync(stateDir, { recursive: true })
-      return new DiscordBackend(config.discord, stateDir)
-    }
-    case 'telegram': {
-      if (!config.telegram?.token) {
-        process.stderr.write('claude2bot: telegram.token required in config.json\n')
-        process.exit(1)
-      }
-      const stateDir =
-        config.telegram.stateDir ?? join(DATA_DIR, 'telegram')
-      mkdirSync(stateDir, { recursive: true })
-      return new TelegramBackend(config.telegram, stateDir)
-    }
-    default:
-      process.stderr.write(`claude2bot: unknown backend "${config.backend}"\n`)
-      process.exit(1)
+  if (config.backend !== 'discord') {
+    process.stderr.write(`claude2bot: unsupported backend "${config.backend}" (discord only)\n`)
+    process.exit(1)
   }
+
+  if (!config.discord?.token) {
+    process.stderr.write('claude2bot: discord.token required in config.json\n')
+    process.exit(1)
+  }
+
+  const stateDir =
+    config.discord.stateDir ?? join(DATA_DIR, 'discord')
+  mkdirSync(stateDir, { recursive: true })
+  return new DiscordBackend(config.discord, stateDir)
 }
 
 // ── bot.json ──────────────────────────────────────────────────────────

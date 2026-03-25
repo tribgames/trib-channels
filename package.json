@@ -1,7 +1,7 @@
 {
   "name": "claude2bot",
   "version": "0.1.0",
-  "description": "Multi-backend channel plugin for Claude Code with pluggable messaging backends",
+  "description": "Discord channel plugin for Claude Code with scheduler, voice transcription, and access control",
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
@@ -13,7 +13,6 @@
     "tsx": "^4.0.0"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
-    "grammy": "^1.41.1"
+    "@types/node": "^22.0.0"
   }
 }

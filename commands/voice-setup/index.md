@@ -144,5 +144,5 @@ Voice transcription setup complete!
   model:     ✓ default / ggml-large-v3-turbo.bin
   language:  auto
 
-Voice messages on Discord/Telegram will be automatically transcribed.
+Voice messages on Discord will be automatically transcribed.
 ```

@@ -3,9 +3,10 @@
  * MCP server-centric output architecture. No hooks for text forwarding.
  */
 
-import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, watchFile, unwatchFile, openSync, readSync, closeSync } from 'fs'
-import { join } from 'path'
-import { tmpdir, homedir } from 'os'
+import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, watch, openSync, readSync, closeSync, type FSWatcher } from 'fs'
+import { execFileSync } from 'child_process'
+import { join, resolve } from 'path'
+import { homedir } from 'os'
 import { createHash } from 'crypto'
 import { formatForDiscord, chunk, safeCodeBlock } from './format.js'
 
@@ -15,24 +16,76 @@ export interface ForwarderCallbacks {
   removeReaction(channelId: string, messageId: string, emoji: string): Promise<void>
 }
 
-const STATUS_FILE = join(tmpdir(), 'claude2bot-status.json')
-
 /** Discover the most recently modified .jsonl transcript under ~/.claude/projects/ */
 export function discoverTranscriptPath(): string {
   const projectsDir = join(homedir(), '.claude', 'projects')
+  const sessionsDir = join(homedir(), '.claude', 'sessions')
   let latest = { path: '', mtime: 0 }
 
-  try {
-    for (const slug of readdirSync(projectsDir)) {
-      const dir = join(projectsDir, slug)
+  function scanDir(dir: string): void {
+    try {
+      for (const f of readdirSync(dir)) {
+        if (!f.endsWith('.jsonl')) continue
+        const fp = join(dir, f)
+        const mt = statSync(fp).mtimeMs
+        if (mt > latest.mtime) latest = { path: fp, mtime: mt }
+      }
+    } catch { /* skip unreadable dirs */ }
+  }
+
+  function cwdToProjectSlug(cwd: string): string {
+    return resolve(cwd)
+      .replace(/\\/g, '/')
+      .replace(/^([A-Za-z]):/, '$1')
+      .replace(/\//g, '-')
+  }
+
+  function getParentPid(pid: number): number | null {
+    try {
+      if (process.platform === 'win32') {
+        const out = execFileSync('powershell.exe', [
+          '-NoProfile',
+          '-Command',
+          `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").ParentProcessId`,
+        ], { encoding: 'utf8' }).trim()
+        const parsed = parseInt(out, 10)
+        return Number.isFinite(parsed) ? parsed : null
+      }
+      const out = execFileSync('ps', ['-o', 'ppid=', '-p', String(pid)], { encoding: 'utf8' }).trim()
+      const parsed = parseInt(out, 10)
+      return Number.isFinite(parsed) ? parsed : null
+    } catch {
+      return null
+    }
+  }
+
+  function discoverSessionBoundTranscript(): string {
+    let pid: number | null = process.ppid
+    const projectSlug = cwdToProjectSlug(process.cwd())
+    for (let depth = 0; pid && pid > 1 && depth < 6; depth += 1) {
+      const sessionFile = join(sessionsDir, `${pid}.json`)
       try {
-        for (const f of readdirSync(dir)) {
-          if (!f.endsWith('.jsonl')) continue
-          const fp = join(dir, f)
-          const mt = statSync(fp).mtimeMs
-          if (mt > latest.mtime) latest = { path: fp, mtime: mt }
+        const session = JSON.parse(readFileSync(sessionFile, 'utf8')) as { sessionId?: string; cwd?: string }
+        if (session.sessionId) {
+          const preferred = join(projectsDir, cwdToProjectSlug(session.cwd ?? process.cwd()), `${session.sessionId}.jsonl`)
+          if (existsSync(preferred)) return preferred
+          const fallback = join(projectsDir, projectSlug, `${session.sessionId}.jsonl`)
+          if (existsSync(fallback)) return fallback
         }
-      } catch { /* skip unreadable dirs */ }
+      } catch { /* try parent */ }
+      pid = getParentPid(pid)
+    }
+    return ''
+  }
+
+  try {
+    const exact = discoverSessionBoundTranscript()
+    if (exact) return exact
+
+    // Prefer the current project directory only to avoid cross-project transcript drift.
+    const preferredDir = join(projectsDir, cwdToProjectSlug(process.cwd()))
+    if (preferredDir.startsWith(projectsDir)) {
+      scanDir(preferredDir)
     }
   } catch { /* projects dir missing */ }
 
@@ -48,20 +101,37 @@ export class OutputForwarder {
   private emoji = ''
   private lastFileSize = 0
   private watchingPath = ''
+  private watcher: FSWatcher | null = null
   private idleTimer: ReturnType<typeof setTimeout> | null = null
   private onIdleCallback: (() => void) | null = null
   private inExplorerSequence = false
   private hasSeenAssistant = false
+  private sending = false
+  private mainSessionId = ''
+  private watchDebounce: ReturnType<typeof setTimeout> | null = null
 
-  constructor(private cb: ForwarderCallbacks) {}
+  constructor(
+    private cb: ForwarderCallbacks,
+    private statusFile: string,
+  ) {}
 
   /** Set context for current turn (called on user message) */
   setContext(channelId: string, transcriptPath: string): void {
     this.channelId = channelId
-    this.transcriptPath = transcriptPath
+    // 항상 최신 transcript 경로로 갱신 (/clear 등으로 새 파일 생성 시 즉시 반영)
+    if (this.transcriptPath !== transcriptPath) {
+      // 경로 변경 시 watch 재설정 필요
+      if (this.watcher) {
+        this.watcher.close()
+        this.watcher = null
+        this.watchingPath = ''
+      }
+      this.transcriptPath = transcriptPath
+      this.mainSessionId = ''
+    }
     // Record current file size so we only forward new content
     try {
-      this.lastFileSize = existsSync(transcriptPath) ? statSync(transcriptPath).size : 0
+      this.lastFileSize = existsSync(this.transcriptPath) ? statSync(this.transcriptPath).size : 0
     } catch {
       this.lastFileSize = 0
     }
@@ -118,11 +188,15 @@ export class OutputForwarder {
       try {
         const entry = JSON.parse(l)
 
-        // 에이전트 엔트리 필터링 — teamName이 있으면 에이전트 출력 (단, plan_approval은 통과)
-        if (entry.teamName) {
-          const text = JSON.stringify(entry.message?.content ?? '')
-          if (!text.includes('plan_approval') && !text.includes('teammate-message')) continue
+        // 메인 세션 식별 — 첫 번째 non-team, non-sidechain 엔트리의 sessionId
+        if (!entry.teamName && !entry.isSidechain && entry.sessionId && !this.mainSessionId) {
+          this.mainSessionId = entry.sessionId
         }
+
+        // 3중 필터: 메인 세션 assistant text만 통과
+        if (entry.teamName) continue
+        if (entry.isSidechain) continue
+        if (this.mainSessionId && entry.sessionId && entry.sessionId !== this.mainSessionId) continue
 
         // tool_result: show Edit diff from toolUseResult, skip the rest
         if (entry.type === 'user' && entry.message?.content?.some((c: any) => c.type === 'tool_result')) {
@@ -188,98 +262,90 @@ export class OutputForwarder {
     return newText.trim()
   }
 
-  /** Forward new assistant text to Discord (pre-tool replacement) */
-  async forwardNewText(): Promise<void> {
-    if (!this.channelId) return
-    const newText = this.extractNewText()
+  // ── 단일 전송 게이트 ──────────────────────────────────────────────
+  // 모든 Discord 전송은 반드시 sendOnce()를 통과. 동시 실행 불가.
 
-    // Filter out internal/system responses
-    const SKIP_TEXTS = ['No response requested.', 'No response requested', '유저 응답 대기.', '유저 응답 대기']
-    if (!newText || SKIP_TEXTS.includes(newText.trim())) {
-      this.persistState()
-      return
-    }
-
-    const formatted = formatForDiscord(newText)
+  private async sendOnce(text: string): Promise<void> {
+    if (!text || !this.channelId) return
+    const formatted = formatForDiscord(text)
     const hash = createHash('md5').update(formatted).digest('hex')
-    if (this.lastHash === hash) {
-      this.persistState()
-      return
-    }
-
+    if (this.lastHash === hash) return
     this.lastHash = hash
     const pad = this.sentCount > 0 ? '\u3164\n' : ''
     const chunks = chunk(pad + formatted, 2000)
     this.sentCount += chunks.length
     this.persistState()
-
     for (const c of chunks) {
       try { await this.cb.send(this.channelId, c) }
-      catch (err) { process.stderr.write(`claude2bot: forwardNewText failed: ${err}\n`) }
+      catch (err) { process.stderr.write(`claude2bot: send failed: ${err}\n`) }
     }
   }
 
-  /** Forward tool log line to Discord (post-tool replacement) */
-  async forwardToolLog(toolLine: string): Promise<void> {
-    if (!this.channelId) return
-
-    // Update reaction to tool emoji
-    if (this.userMessageId) {
-      const newEmoji = '\u{1F6E0}\uFE0F'
-      try {
-        if (this.emoji && this.emoji !== newEmoji) {
-          await this.cb.removeReaction(this.channelId, this.userMessageId, this.emoji)
-        }
-        await this.cb.react(this.channelId, this.userMessageId, newEmoji)
-        this.emoji = newEmoji
-      } catch {}
-    }
-
-    // Combine pending text + tool log
-    const newText = this.extractNewText()
-    const pad = this.sentCount > 0 ? '\u3164\n' : ''
-    const msg = newText
-      ? pad + formatForDiscord(newText) + '\n\n' + toolLine
-      : pad + toolLine
-    this.sentCount++
-    this.persistState()
-
-    const chunks = chunk(msg, 2000)
-    for (const c of chunks) {
-      try { await this.cb.send(this.channelId, c) }
-      catch (err) { process.stderr.write(`claude2bot: forwardToolLog failed: ${err}\n`) }
-    }
-  }
-
-  /** Forward final text on session idle (stop hook replacement) */
-  async forwardFinalText(): Promise<void> {
-    if (!this.channelId) return
-
-    // Remove reaction
-    if (this.userMessageId && this.emoji) {
-      try { await this.cb.removeReaction(this.channelId, this.userMessageId, this.emoji) }
-      catch {}
-    }
-
-    const newText = this.extractNewText()
-    if (newText) {
-      const formatted = formatForDiscord(newText)
-      const hash = createHash('md5').update(formatted).digest('hex')
-      if (this.lastHash !== hash) {
-        this.lastHash = hash
-        const pad = this.sentCount > 0 ? '\u3164\n' : ''
-        const chunks = chunk(pad + formatted, 2000)
-        for (const c of chunks) {
-          try { await this.cb.send(this.channelId, c) }
-          catch (err) { process.stderr.write(`claude2bot: forwardFinalText failed: ${err}\n`) }
-        }
+  /** Forward new assistant text to Discord */
+  async forwardNewText(): Promise<void> {
+    if (!this.channelId || this.sending) return
+    this.sending = true
+    try {
+      const newText = this.extractNewText()
+      const SKIP_TEXTS = ['No response requested.', 'No response requested', '유저 응답 대기.', '유저 응답 대기']
+      if (!newText || SKIP_TEXTS.includes(newText.trim())) {
+        this.persistState()
+        return
       }
-    }
+      await this.sendOnce(newText)
+    } finally { this.sending = false }
+  }
 
-    // Mark idle in state
-    const state = this.readState()
-    state.sessionIdle = true
-    this.writeState(state)
+  /** Forward tool log line to Discord */
+  async forwardToolLog(toolLine: string): Promise<void> {
+    if (!this.channelId || this.sending) return
+    this.sending = true
+    try {
+      // Update reaction to tool emoji
+      if (this.userMessageId) {
+        const newEmoji = '\u{1F6E0}\uFE0F'
+        try {
+          if (this.emoji && this.emoji !== newEmoji) {
+            await this.cb.removeReaction(this.channelId, this.userMessageId, this.emoji)
+          }
+          await this.cb.react(this.channelId, this.userMessageId, newEmoji)
+          this.emoji = newEmoji
+        } catch {}
+      }
+      // Combine pending text + tool log
+      const newText = this.extractNewText()
+      const pad = this.sentCount > 0 ? '\u3164\n' : ''
+      const msg = newText
+        ? pad + formatForDiscord(newText) + '\n\n' + toolLine
+        : pad + toolLine
+      // toolLog는 항상 새 내용이므로 hash 없이 직접 전송
+      this.sentCount++
+      this.persistState()
+      const chunks = chunk(msg, 2000)
+      for (const c of chunks) {
+        try { await this.cb.send(this.channelId, c) }
+        catch (err) { process.stderr.write(`claude2bot: send failed: ${err}\n`) }
+      }
+    } finally { this.sending = false }
+  }
+
+  /** Forward final text on session idle */
+  async forwardFinalText(): Promise<void> {
+    if (!this.channelId || this.sending) return
+    this.sending = true
+    try {
+      // Remove reaction
+      if (this.userMessageId && this.emoji) {
+        try { await this.cb.removeReaction(this.channelId, this.userMessageId, this.emoji) }
+        catch {}
+      }
+      const newText = this.extractNewText()
+      if (newText) await this.sendOnce(newText)
+      // Mark idle in state
+      const state = this.readState()
+      state.sessionIdle = true
+      this.writeState(state)
+    } finally { this.sending = false }
   }
 
   /** Hidden tools — skip both tool_use and tool_result */
@@ -434,8 +500,9 @@ export class OutputForwarder {
     // Already watching the same file — skip
     if (this.watchingPath === this.transcriptPath) return
     // Watching a different file — switch
-    if (this.watchingPath) {
-      unwatchFile(this.watchingPath)
+    if (this.watcher) {
+      this.watcher.close()
+      this.watcher = null
       this.watchingPath = ''
     }
 
@@ -447,14 +514,16 @@ export class OutputForwarder {
     }
 
     this.watchingPath = this.transcriptPath
-    watchFile(this.transcriptPath, { interval: 1000 }, (curr, prev) => {
-      if (curr.size > prev.size) {
+    this.watcher = watch(this.transcriptPath, () => {
+      // macOS FSEvents fires duplicate events — debounce 200ms
+      if (this.watchDebounce) clearTimeout(this.watchDebounce)
+      this.watchDebounce = setTimeout(() => {
+        this.watchDebounce = null
         void this.forwardNewText()
-        // Reset idle timer — only after first assistant entry seen
         if (this.hasSeenAssistant) {
           this.resetIdleTimer()
         }
-      }
+      }, 200)
     })
   }
 
@@ -475,12 +544,12 @@ export class OutputForwarder {
   // ── State file helpers ────────────────────────────────────────────
 
   private readState(): Record<string, any> {
-    try { return JSON.parse(readFileSync(STATUS_FILE, 'utf8')) }
+    try { return JSON.parse(readFileSync(this.statusFile, 'utf8')) }
     catch { return {} }
   }
 
   private writeState(state: Record<string, any>): void {
-    try { writeFileSync(STATUS_FILE, JSON.stringify(state)) }
+    try { writeFileSync(this.statusFile, JSON.stringify(state)) }
     catch {}
   }
 

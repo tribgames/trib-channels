@@ -1,6 +1,6 @@
 #!/usr/bin/env npx tsx
 /**
- * claude2bot — Multi-backend channel plugin for Claude Code.
+ * claude2bot — Discord channel plugin for Claude Code.
  *
  * Main entrypoint: reads config, initializes the selected backend,
  * registers MCP tools, and bridges inbound messages as notifications.
@@ -23,8 +23,23 @@ import { Scheduler } from './lib/scheduler.js'
 import { handleSlashCommand, type SlashCommandContext } from './lib/slash-commands.js'
 import { routeCustomCommand, type CommandContext } from './lib/custom-commands.js'
 import { OutputForwarder, discoverTranscriptPath } from './lib/output-forwarder.js'
+import { controlClaudeSession } from './lib/session-control.js'
+import {
+  ensureRuntimeDirs,
+  makeInstanceId,
+  getTurnEndPath,
+  getStatusPath,
+  getPermissionResultPath,
+  getChannelOwnerPath,
+  refreshActiveInstance,
+  cleanupStaleRuntimeFiles,
+  cleanupInstanceRuntimeFiles,
+  releaseOwnedChannelLocks,
+  clearActiveInstance,
+} from './lib/runtime-paths.js'
 import type { InboundMessage } from './backends/types.js'
 import type { ChatInputCommandInteraction } from 'discord.js'
+import { PLUGIN_ROOT } from './lib/config.js'
 
 process.on('unhandledRejection', err => {
   process.stderr.write(`claude2bot: unhandled rejection: ${err}\n`)
@@ -39,6 +54,9 @@ const config = loadConfig()
 const botConfig = loadBotConfig()
 const backend = createBackend(config)
 const settings = loadSettings(config.contextFiles)
+const INSTANCE_ID = makeInstanceId()
+ensureRuntimeDirs()
+cleanupStaleRuntimeFiles()
 
 // ── Instructions ───────────────────────────────────────────────────────
 // Based on the official Claude Code Discord plugin instructions.
@@ -69,6 +87,7 @@ const mcp = new Server(
 // ── Typing state management ───────────────────────────────────────────
 
 let typingChannelId: string | null = null
+let controlWorker: import('child_process').ChildProcess | null = null
 
 // ── Pending setup state (Select Menu → Modal 2-step flow) ────────────
 const pendingSetup = new Map<string, Record<string, string>>()
@@ -103,7 +122,7 @@ function noteIdleActivity(): void {
 }
 
 // ── Stop hook file watch (turn-end signal) ─────────────────────────
-const TURN_END_FILE = path.join(os.tmpdir(), 'claude2bot-turn-end')
+const TURN_END_FILE = getTurnEndPath(INSTANCE_ID)
 try { fs.unlinkSync(TURN_END_FILE) } catch {} // 시작 시 정리
 fs.watchFile(TURN_END_FILE, { interval: 500 }, (curr) => {
   if (curr.size > 0) {
@@ -115,7 +134,7 @@ fs.watchFile(TURN_END_FILE, { interval: 500 }, (curr) => {
 })
 
 // Status file — used for IPC with permission-request hook and state persistence
-const STATUS_FILE = path.join(os.tmpdir(), 'claude2bot-status.json')
+const STATUS_FILE = getStatusPath(INSTANCE_ID)
 if (!fs.existsSync(STATUS_FILE)) {
   try { fs.writeFileSync(STATUS_FILE, '{}') } catch {}
 }
@@ -129,7 +148,18 @@ const forwarder = new OutputForwarder({
   send: (ch, text) => backend.sendMessage(ch, text).then(() => {}),
   react: (ch, mid, emoji) => backend.react(ch, mid, emoji),
   removeReaction: (ch, mid, emoji) => backend.removeReaction(ch, mid, emoji),
-})
+}, STATUS_FILE)
+
+refreshActiveInstance(INSTANCE_ID)
+
+try {
+  controlWorker = spawn(process.execPath, [path.join(PLUGIN_ROOT, 'hooks', 'control-worker.cjs'), INSTANCE_ID], {
+    stdio: 'ignore',
+    detached: false,
+  })
+} catch (err) {
+  process.stderr.write(`claude2bot: control worker start failed: ${err}\n`)
+}
 
 // Wire up forwarder's idle detection to server idle handling
 forwarder.setOnIdle(() => {
@@ -287,7 +317,7 @@ backend.onInteraction = (interaction: any) => {
     }
 
     // Write result file (idempotent — skip if already exists)
-    const resultPath = path.join(os.tmpdir(), `perm-${uuid}.result`)
+    const resultPath = getPermissionResultPath(INSTANCE_ID, uuid)
     if (!fs.existsSync(resultPath)) {
       fs.writeFileSync(resultPath, action)
     }
@@ -303,16 +333,9 @@ backend.onInteraction = (interaction: any) => {
 
   // ── Bot button handling ──
   if (interaction.customId === 'stop_task') {
-    const { execSync } = require('child_process') as typeof import('child_process')
-    try {
-      const sessions = execSync('tmux list-sessions -F "#{session_name}"', { encoding: 'utf8' }).trim().split('\n')
-      const target = sessions.find((s: string) => s.includes('claude')) || sessions[0]
-      if (target) execSync(`tmux send-keys -t ${target} Escape`)
-    } catch {
-      try { process.kill(process.ppid, 'SIGINT') } catch {}
-    }
+    void controlClaudeSession(INSTANCE_ID, { type: 'interrupt' })
     // turn-end 파일 생성 (typing OFF)
-    try { fs.writeFileSync(path.join(os.tmpdir(), 'claude2bot-turn-end'), String(Date.now())) } catch {}
+    try { fs.writeFileSync(TURN_END_FILE, String(Date.now())) } catch {}
     return
   }
 
@@ -758,6 +781,8 @@ backend.onInteraction = (interaction: any) => {
 const slashCtx: SlashCommandContext = {
   config,
   scheduler,
+  instanceId: INSTANCE_ID,
+  turnEndFile: TURN_END_FILE,
   notify: (channelId: string, user: string, text: string) => {
     void mcp.notification({
       method: 'notifications/claude/channel',
@@ -1136,16 +1161,120 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
   return result
 })
 
+// ── Inbound dedup (dual-registration 등 중복 notification 방어) ────────
+
+const INBOUND_DEDUP_TTL = 5 * 60_000 // 5분
+const inboundSeen = new Map<string, number>()
+const INBOUND_DEDUP_DIR = path.join(os.tmpdir(), 'claude2bot-inbound')
+try { fs.mkdirSync(INBOUND_DEDUP_DIR, { recursive: true }) } catch {}
+
+function claimChannelOwner(channelId: string): boolean {
+  const ownerPath = getChannelOwnerPath(channelId)
+  const now = Date.now()
+  try {
+    const raw = fs.readFileSync(ownerPath, 'utf8')
+    const owner = JSON.parse(raw) as { instanceId: string; pid: number; updatedAt: number }
+    if (owner.instanceId === INSTANCE_ID) {
+      fs.writeFileSync(ownerPath, JSON.stringify({ ...owner, updatedAt: now }))
+      return true
+    }
+    if (owner.updatedAt && now - owner.updatedAt < 10 * 60_000) {
+      try {
+        process.kill(owner.pid, 0)
+        return false
+      } catch { /* dead owner, take over */ }
+    }
+  } catch { /* no owner */ }
+
+  try {
+    fs.writeFileSync(ownerPath, JSON.stringify({ instanceId: INSTANCE_ID, pid: process.pid, updatedAt: now }))
+    return true
+  } catch {
+    return false
+  }
+}
+
+function shouldDropDuplicateInbound(msg: InboundMessage): boolean {
+  const key = `${msg.chatId}:${msg.messageId}`
+  const now = Date.now()
+
+  // 1) 메모리 캐시 — 같은 프로세스 내 중복
+  if (inboundSeen.has(key) && now - inboundSeen.get(key)! < INBOUND_DEDUP_TTL) return true
+  inboundSeen.set(key, now)
+
+  // 2) 파일 캐시 — cross-process 중복
+  const marker = path.join(INBOUND_DEDUP_DIR, key.replace(/:/g, '_'))
+  try {
+    const stat = fs.statSync(marker)
+    if (now - stat.mtimeMs < INBOUND_DEDUP_TTL) return true
+  } catch { /* not found */ }
+  try { fs.writeFileSync(marker, String(now)) } catch {}
+
+  // 3) lazy cleanup — 오래된 marker 정리 (10회에 1번)
+  if (Math.random() < 0.1) {
+    try {
+      for (const f of fs.readdirSync(INBOUND_DEDUP_DIR)) {
+        const fp = path.join(INBOUND_DEDUP_DIR, f)
+        try { if (now - fs.statSync(fp).mtimeMs > INBOUND_DEDUP_TTL) fs.unlinkSync(fp) } catch {}
+      }
+    } catch {}
+  }
+
+  // 메모리 cleanup
+  for (const [k, t] of inboundSeen) {
+    if (now - t > INBOUND_DEDUP_TTL) inboundSeen.delete(k)
+  }
+
+  return false
+}
+
 // ── Inbound message bridge ─────────────────────────────────────────────
 
+function resolveInboundRoute(chatId: string): {
+  targetChatId: string
+  sourceChatId: string
+  sourceLabel?: string
+  sourceMode?: 'interactive' | 'monitor'
+} {
+  const channels = config.channelsConfig?.channels ?? {}
+  const sourceEntry = Object.entries(channels).find(([, entry]) => entry.id === chatId)
+  const sourceLabel = sourceEntry?.[0]
+  const sourceMode = sourceEntry?.[1].mode ?? 'interactive'
+
+  if (sourceMode === 'monitor') {
+    const mainLabel = config.channelsConfig?.main ?? sourceLabel ?? ''
+    const mainChannel = mainLabel ? channels[mainLabel]?.id : undefined
+    if (mainChannel) {
+      return {
+        targetChatId: mainChannel,
+        sourceChatId: chatId,
+        sourceLabel,
+        sourceMode,
+      }
+    }
+  }
+
+  return {
+    targetChatId: chatId,
+    sourceChatId: chatId,
+    sourceLabel,
+    sourceMode,
+  }
+}
+
 backend.onMessage = (msg) => {
+  if (shouldDropDuplicateInbound(msg)) return
+  if (!claimChannelOwner(msg.chatId)) return
+  const route = resolveInboundRoute(msg.chatId)
+
   scheduler.noteActivity()
-  startServerTyping(msg.chatId)
+  startServerTyping(route.targetChatId)
   forwarder.reset()
 
   // Re-discover transcript path — may change between sessions
   const transcriptPath = discoverTranscriptPath()
-  forwarder.setContext(msg.chatId, transcriptPath)
+  forwarder.setContext(route.targetChatId, transcriptPath)
+  refreshActiveInstance(INSTANCE_ID, { channelId: route.targetChatId, transcriptPath })
 
   void (async () => {
     try {
@@ -1154,7 +1283,7 @@ backend.onMessage = (msg) => {
     // Persist state for permission-request hook and forwarder recovery
     const state: Record<string, any> = {}
     try { Object.assign(state, JSON.parse(fs.readFileSync(STATUS_FILE, 'utf8'))) } catch {}
-    state.channelId = msg.chatId
+    state.channelId = route.targetChatId
     state.userMessageId = msg.messageId
     state.emoji = '\u{1F914}'
     state.transcriptPath = transcriptPath
@@ -1165,10 +1294,18 @@ backend.onMessage = (msg) => {
     forwarder.startWatch()
     noteIdleActivity()
   })()
-  void handleInbound(msg)
+  void handleInbound(msg, route)
 }
 
-async function handleInbound(msg: InboundMessage): Promise<void> {
+async function handleInbound(
+  msg: InboundMessage,
+  route: {
+    targetChatId: string
+    sourceChatId: string
+    sourceLabel?: string
+    sourceMode?: 'interactive' | 'monitor'
+  },
+): Promise<void> {
   let text = msg.text
 
   // Voice transcription — download voice attachments, run whisper, replace text
@@ -1205,13 +1342,22 @@ async function handleInbound(msg: InboundMessage): Promise<void> {
   void mcp.notification({
     method: 'notifications/claude/channel',
     params: {
-      content: text,
+      content: route.sourceMode === 'monitor' && route.sourceLabel
+        ? `[monitor:${route.sourceLabel}] ${text}`
+        : text,
       meta: {
-        chat_id: msg.chatId,
+        chat_id: route.targetChatId,
         message_id: msg.messageId,
         user: msg.user,
         user_id: msg.userId,
         ts: msg.ts,
+        ...(route.sourceMode === 'monitor'
+          ? {
+              source_chat_id: route.sourceChatId,
+              source_mode: route.sourceMode,
+              ...(route.sourceLabel ? { source_label: route.sourceLabel } : {}),
+            }
+          : {}),
         ...attMeta,
         ...(msg.imagePath ? { image_path: msg.imagePath } : {}),
       },
@@ -1234,6 +1380,7 @@ await mcp.connect(new StdioServerTransport())
   if (initialTranscript) {
     forwarder.setContext(defaultChannelId, initialTranscript)
     forwarder.startWatch()
+    refreshActiveInstance(INSTANCE_ID, { channelId: defaultChannelId, transcriptPath: initialTranscript })
     process.stderr.write(`claude2bot: watching transcript: ${initialTranscript}, channel: ${defaultChannelId}\n`)
   }
 }
@@ -1252,6 +1399,11 @@ function shutdown(): void {
   shuttingDown = true
   process.stderr.write('claude2bot: shutting down\n')
   setTimeout(() => process.exit(0), 2000)
+  try { fs.unwatchFile(TURN_END_FILE) } catch {}
+  try { controlWorker?.kill() } catch {}
+  releaseOwnedChannelLocks(INSTANCE_ID)
+  clearActiveInstance(INSTANCE_ID)
+  cleanupInstanceRuntimeFiles(INSTANCE_ID)
   void backend.disconnect().finally(() => process.exit(0))
 }
 process.stdin.on('end', () => {

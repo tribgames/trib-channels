@@ -12,7 +12,7 @@ Display the current state of claude2bot. Use the MCP tools to gather information
 ## What to show
 
 ### Backend
-- Backend type (discord/telegram)
+- Backend type (discord)
 - Connection status (connected/disconnected)
 - Bot username (if connected)
 

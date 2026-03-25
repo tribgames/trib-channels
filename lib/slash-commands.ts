@@ -8,12 +8,14 @@
 import { REST, Routes, SlashCommandBuilder } from 'discord.js'
 import type { ChatInputCommandInteraction, Client } from 'discord.js'
 import { readFileSync, existsSync } from 'fs'
+import { tmpdir } from 'os'
 import { join } from 'path'
 import type { PluginConfig } from '../backends/types.js'
 import type { Scheduler } from './scheduler.js'
 import { DATA_DIR } from './config.js'
 import { handleBotCommand } from './custom-commands.js'
 import type { CommandContext } from './custom-commands.js'
+import { controlClaudeSession } from './session-control.js'
 
 // ── Constants ────────────────────────────────────────────────────────
 
@@ -324,6 +326,8 @@ export type NotifyFn = (channelId: string, user: string, text: string) => void
 export interface SlashCommandContext {
   config: PluginConfig
   scheduler: Scheduler
+  instanceId: string
+  turnEndFile: string
   /** Inject a command into the MCP session as a notification */
   notify: NotifyFn
   /** The MCP server's process (for stop command) */
@@ -790,7 +794,7 @@ export async function handleSlashCommand(
     case 'status': {
       let desc = ''
       try {
-        const sessionPath = '/tmp/claude-session-data.json'
+        const sessionPath = join(tmpdir(), 'claude-session-data.json')
         if (existsSync(sessionPath)) {
           const data = JSON.parse(readFileSync(sessionPath, 'utf-8'))
           const model = data.model?.display_name ?? data.model?.id ?? 'unknown'
@@ -857,69 +861,43 @@ export async function handleSlashCommand(
 
 async function handleStop(
   interaction: ChatInputCommandInteraction,
-  _ctx: SlashCommandContext,
+  ctx: SlashCommandContext,
 ): Promise<void> {
-  // tmux send-keys Escape로 즉시 중단 + turn-end 파일 생성 (typing OFF)
-  const { execSync } = await import('child_process')
   const { writeFileSync } = await import('fs')
-  const { tmpdir: getTmpdir } = await import('os')
-  const pathMod = await import('path')
-
-  let stopped = false
-  try {
-    const sessions = execSync('tmux list-sessions -F "#{session_name}"', { encoding: 'utf8' }).trim().split('\n')
-    const target = sessions.find(s => s.includes('claude')) || sessions[0]
-    if (target) {
-      execSync(`tmux send-keys -t ${target} Escape`)
-      stopped = true
-    }
-  } catch {
-    const ppid = process.ppid
-    if (ppid && ppid > 1) {
-      try { process.kill(ppid, 'SIGINT') } catch {}
-      stopped = true
-    }
-  }
+  const result = await controlClaudeSession(ctx.instanceId, { type: 'interrupt' })
 
   // Escape 중단 시 Stop 훅이 안 불릴 수 있으므로 직접 turn-end 파일 생성
   try {
-    writeFileSync(pathMod.join(getTmpdir(), 'claude2bot-turn-end'), String(Date.now()))
+    writeFileSync(ctx.turnEndFile, String(Date.now()))
   } catch {}
 
   await interaction.reply({
-    embeds: [{ title: 'Stop', description: stopped ? 'Stopped' : 'tmux not found', color: stopped ? 0xED4245 : 0xFEE75C }],
+    embeds: [{ title: 'Stop', description: result.ok ? 'Stopped' : result.message, color: result.ok ? 0xED4245 : 0xFEE75C }],
     flags: 64,
   })
 }
 
-// ── tmux send-keys helper ──────────────────────────────────────────
-async function tmuxSendKeys(command: string): Promise<boolean> {
-  const { execSync } = await import('child_process')
-  try {
-    const sessions = execSync('tmux list-sessions -F "#{session_name}"', { encoding: 'utf8' }).trim().split('\n')
-    const target = sessions.find(s => s.includes('claude')) || sessions[0]
-    if (!target) return false
-    execSync(`tmux send-keys -t ${target} "${command}" Enter`)
-    return true
-  } catch {
-    return false
-  }
+// ── session control helper ──────────────────────────────────────────
+async function sendSessionCommand(ctx: SlashCommandContext, command: string) {
+  return controlClaudeSession(ctx.instanceId, { type: 'send', text: command })
 }
 
 async function handleModel(
   interaction: ChatInputCommandInteraction,
-  _ctx: SlashCommandContext,
+  ctx: SlashCommandContext,
 ): Promise<void> {
   const model = interaction.options.getString('name', true)
   const effort = interaction.options.getString('effort')
-  const ok = await tmuxSendKeys(`/model ${model}`)
+  const modelResult = await sendSessionCommand(ctx, `/model ${model}`)
+  const ok = modelResult.ok
   let effortOk = true
   if (effort && ok) {
-    effortOk = await tmuxSendKeys(`/effort ${effort}`)
+    const effortResult = await sendSessionCommand(ctx, `/effort ${effort}`)
+    effortOk = effortResult.ok
   }
   const desc = ok
     ? t('model.switched', interaction.locale, { model }) + (effort ? ` (effort: ${effort})` : '')
-    : 'tmux not found'
+    : modelResult.message
   await interaction.reply({
     embeds: [{ title: 'Model', description: desc, color: ok && effortOk ? EMBED_COLOR : 0xFEE75C }],
     flags: 64,
@@ -928,34 +906,34 @@ async function handleModel(
 
 async function handleCompact(
   interaction: ChatInputCommandInteraction,
-  _ctx: SlashCommandContext,
+  ctx: SlashCommandContext,
 ): Promise<void> {
-  const ok = await tmuxSendKeys('/compact')
-  await interaction.reply({ embeds: [{ title: 'Compact', description: ok ? t('compact.forwarded', interaction.locale) : 'tmux not found', color: ok ? EMBED_COLOR : 0xFEE75C }], flags: 64 })
+  const result = await sendSessionCommand(ctx, '/compact')
+  await interaction.reply({ embeds: [{ title: 'Compact', description: result.ok ? t('compact.forwarded', interaction.locale) : result.message, color: result.ok ? EMBED_COLOR : 0xFEE75C }], flags: 64 })
 }
 
 async function handleClear(
   interaction: ChatInputCommandInteraction,
-  _ctx: SlashCommandContext,
+  ctx: SlashCommandContext,
 ): Promise<void> {
-  const ok = await tmuxSendKeys('/clear')
-  await interaction.reply({ embeds: [{ title: 'Clear', description: ok ? t('clear.forwarded', interaction.locale) : 'tmux not found', color: ok ? EMBED_COLOR : 0xFEE75C }], flags: 64 })
+  const result = await sendSessionCommand(ctx, '/clear')
+  await interaction.reply({ embeds: [{ title: 'Clear', description: result.ok ? t('clear.forwarded', interaction.locale) : result.message, color: result.ok ? EMBED_COLOR : 0xFEE75C }], flags: 64 })
 }
 
 async function handleNew(
   interaction: ChatInputCommandInteraction,
-  _ctx: SlashCommandContext,
+  ctx: SlashCommandContext,
 ): Promise<void> {
-  const ok = await tmuxSendKeys('/new')
-  await interaction.reply({ embeds: [{ title: 'New Session', description: ok ? t('new.forwarded', interaction.locale) : 'tmux not found', color: ok ? EMBED_COLOR : 0xFEE75C }], flags: 64 })
+  const result = await sendSessionCommand(ctx, '/new')
+  await interaction.reply({ embeds: [{ title: 'New Session', description: result.ok ? t('new.forwarded', interaction.locale) : result.message, color: result.ok ? EMBED_COLOR : 0xFEE75C }], flags: 64 })
 }
 
 async function handleResume(
   interaction: ChatInputCommandInteraction,
-  _ctx: SlashCommandContext,
+  ctx: SlashCommandContext,
 ): Promise<void> {
-  const ok = await tmuxSendKeys('/resume')
-  await interaction.reply({ embeds: [{ title: 'Resume', description: ok ? t('resume.forwarded', interaction.locale) : 'tmux not found', color: ok ? EMBED_COLOR : 0xFEE75C }], flags: 64 })
+  const result = await sendSessionCommand(ctx, '/resume')
+  await interaction.reply({ embeds: [{ title: 'Resume', description: result.ok ? t('resume.forwarded', interaction.locale) : result.message, color: result.ok ? EMBED_COLOR : 0xFEE75C }], flags: 64 })
 }
 
 async function handleLanguage(
@@ -1139,7 +1117,7 @@ async function handleDoctor(
   lines.push(`**Config** ${configOk ? '\u{2705}' : '\u{274c} Missing'}`)
   if (!configOk) allPass = false
 
-  const hasToken = (ctx.config.backend === 'discord' && ctx.config.discord?.token) || (ctx.config.backend === 'telegram' && ctx.config.telegram?.token)
+  const hasToken = ctx.config.backend === 'discord' && ctx.config.discord?.token
   lines.push(`**Token** ${hasToken ? '\u{2705}' : '\u{274c} Missing'}`)
   if (!hasToken) allPass = false
 
@@ -1338,4 +1316,3 @@ async function handleBotSub(
     await interaction.reply({ content: `Error: ${err instanceof Error ? err.message : String(err)}`, flags: 64 })
   }
 }
-
