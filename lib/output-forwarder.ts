@@ -265,7 +265,11 @@ export class OutputForwarder {
 
   /** Check if a tool should be hidden */
   static isHidden(name: string): boolean {
-    return OutputForwarder.HIDDEN_TOOLS.has(name)
+    if (OutputForwarder.HIDDEN_TOOLS.has(name)) return true
+    // claude2bot 자체 MCP 도구 숨김 (reply, react, edit_message, fetch_messages 등)
+    if (name.includes('plugin_claude2bot') || name === 'reply' || name === 'react'
+      || name === 'edit_message' || name === 'fetch_messages' || name === 'download_attachment') return true
+    return false
   }
 
   /** Build tool log line from tool name and input (시안 C 포맷) */
