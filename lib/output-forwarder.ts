@@ -158,7 +158,8 @@ export class OutputForwarder {
   async forwardNewText(): Promise<void> {
     if (!this.channelId) return
     const newText = this.extractNewText()
-    if (!newText) {
+    // Filter out internal/system responses
+    if (!newText || newText === 'No response requested.' || newText === 'No response requested') {
       this.persistState()
       return
     }
