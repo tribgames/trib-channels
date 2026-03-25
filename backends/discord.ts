@@ -167,13 +167,6 @@ export class DiscordBackend implements ChannelBackend {
 
     this.client.on('messageCreate', msg => {
       if (msg.author.id === this.client.user?.id) {
-        // If typing is active for this channel, keep it going; otherwise do nothing
-        if (this.typingIntervals.has(msg.channelId)) {
-          // typing 활성 상태 → 봇 메시지 전송으로 끊긴 typing 즉시 복구
-          if ('sendTyping' in msg.channel) {
-            void (msg.channel as any).sendTyping().catch(() => {})
-          }
-        }
         return
       }
       if (msg.author.bot) return

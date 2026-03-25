@@ -107,20 +107,6 @@ function stopServerTyping(): void {
   }
 }
 
-// ── Forwarder idle timer (replaces stop hook) ────────────────────────
-
-let idleTimer: ReturnType<typeof setTimeout> | null = null
-const IDLE_MS = 15_000  // 15초 무활동 → 최종 텍스트 전송 + 리액션 제거
-
-function noteIdleActivity(): void {
-  if (idleTimer) clearTimeout(idleTimer)
-  idleTimer = setTimeout(() => {
-    idleTimer = null
-    // typing은 Stop 훅(turn-end)에서만 OFF — 여기서 끄지 않음
-    void forwarder.forwardFinalText()
-  }, IDLE_MS)
-}
-
 // ── Stop hook file watch (turn-end signal) ─────────────────────────
 const TURN_END_FILE = getTurnEndPath(INSTANCE_ID)
 try { fs.unlinkSync(TURN_END_FILE) } catch {} // 시작 시 정리
@@ -163,7 +149,7 @@ try {
 
 // Wire up forwarder's idle detection to server idle handling
 forwarder.setOnIdle(() => {
-  // typing은 Stop 훅(turn-end)에서만 OFF
+  stopServerTyping()
   void forwarder.forwardFinalText()
 })
 
@@ -1018,8 +1004,6 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
 // ── Tool handlers ──────────────────────────────────────────────────────
 
 mcp.setRequestHandler(CallToolRequestSchema, async req => {
-  noteIdleActivity()
-
   // Forward pending assistant text before tool execution
   await forwarder.forwardNewText()
 
@@ -1292,7 +1276,6 @@ backend.onMessage = (msg) => {
     try { fs.writeFileSync(STATUS_FILE, JSON.stringify(state)) } catch {}
     // startWatch handles path change detection — safe to call every time
     forwarder.startWatch()
-    noteIdleActivity()
   })()
   void handleInbound(msg, route)
 }

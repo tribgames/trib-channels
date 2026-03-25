@@ -188,13 +188,12 @@ export class OutputForwarder {
       try {
         const entry = JSON.parse(l)
 
-        // 메인 세션 식별 — 첫 번째 non-team, non-sidechain 엔트리의 sessionId
-        if (!entry.teamName && !entry.isSidechain && entry.sessionId && !this.mainSessionId) {
+        // Pin to the main session id on the first non-sidechain entry.
+        if (!entry.isSidechain && entry.sessionId && !this.mainSessionId) {
           this.mainSessionId = entry.sessionId
         }
 
-        // 3중 필터: 메인 세션 assistant text만 통과
-        if (entry.teamName) continue
+        // Keep sidechains out of the forwarding path.
         if (entry.isSidechain) continue
         if (this.mainSessionId && entry.sessionId && entry.sessionId !== this.mainSessionId) continue
 
@@ -265,8 +264,14 @@ export class OutputForwarder {
   // ── 단일 전송 게이트 ──────────────────────────────────────────────
   // 모든 Discord 전송은 반드시 sendOnce()를 통과. 동시 실행 불가.
 
+  private static readonly SKIP_TEXTS = new Set([
+    'No response requested.', 'No response requested',
+    '유저 응답 대기.', '유저 응답 대기',
+  ])
+
   private async sendOnce(text: string): Promise<void> {
     if (!text || !this.channelId) return
+    if (OutputForwarder.SKIP_TEXTS.has(text.trim())) return
     const formatted = formatForDiscord(text)
     const hash = createHash('md5').update(formatted).digest('hex')
     if (this.lastHash === hash) return
@@ -287,8 +292,7 @@ export class OutputForwarder {
     this.sending = true
     try {
       const newText = this.extractNewText()
-      const SKIP_TEXTS = ['No response requested.', 'No response requested', '유저 응답 대기.', '유저 응답 대기']
-      if (!newText || SKIP_TEXTS.includes(newText.trim())) {
+      if (!newText) {
         this.persistState()
         return
       }
