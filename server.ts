@@ -237,6 +237,54 @@ backend.onInteraction = (interaction) => {
     return  // do NOT forward to notification
   }
 
+  // ── Bot button handling ──
+  if (interaction.customId === 'stop_task') {
+    const { execSync } = require('child_process') as typeof import('child_process')
+    try {
+      const sessions = execSync('tmux list-sessions -F "#{session_name}"', { encoding: 'utf8' }).trim().split('\n')
+      const target = sessions.find((s: string) => s.includes('claude')) || sessions[0]
+      if (target) execSync(`tmux send-keys -t ${target} Escape`)
+    } catch {
+      try { process.kill(process.ppid, 'SIGINT') } catch {}
+    }
+    // turn-end 파일 생성 (typing OFF)
+    try { fs.writeFileSync(path.join(os.tmpdir(), 'claude2bot-turn-end'), String(Date.now())) } catch {}
+    return
+  }
+
+  // bot_* 버튼 → custom command 실행 (status, schedule, autotalk, quiet, activity)
+  if (interaction.customId?.startsWith('bot_')) {
+    const sub = interaction.customId.replace('bot_', '')
+    const cmd = sub === 'status' ? '/bot(status)' : `/bot(${sub}, list)`
+    void (async () => {
+      const cmdCtx: CommandContext = { channelId: interaction.channelId, userId: interaction.userId, lang: 'ko', scheduler }
+      const result = await routeCustomCommand(cmd, cmdCtx)
+      if (interaction.channelId && (result?.text || result?.embeds)) {
+        await backend.sendMessage(interaction.channelId, result.text ?? '', {
+          embeds: result.embeds as any,
+          components: result.components as any,
+        })
+      }
+    })()
+    return
+  }
+
+  // schedule_select → 스케줄 상세
+  if (interaction.customId === 'schedule_select' && interaction.values?.length) {
+    const name = interaction.values[0]
+    void (async () => {
+      const cmdCtx: CommandContext = { channelId: interaction.channelId, userId: interaction.userId, lang: 'ko', scheduler }
+      const result = await routeCustomCommand(`/bot(schedule, detail, "${name}")`, cmdCtx)
+      if (interaction.channelId && (result?.text || result?.embeds)) {
+        await backend.sendMessage(interaction.channelId, result.text ?? '', {
+          embeds: result.embeds as any,
+          components: result.components as any,
+        })
+      }
+    })()
+    return
+  }
+
   // ── Default: forward interaction as MCP notification ──
   void mcp.notification({
     method: 'notifications/claude/channel',
