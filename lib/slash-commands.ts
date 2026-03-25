@@ -778,7 +778,8 @@ export async function handleSlashCommand(
           const model = data.model?.display_name ?? data.model?.id ?? 'unknown'
           const fmtTime = (ts: number) => new Date(ts * 1000).toLocaleString(undefined, { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
           const lines: string[] = []
-          lines.push(`**Model** ${model}`)
+          const effort = data.effort ?? data.output_style?.effort ?? ''
+          lines.push(`**Model** ${model}${effort ? ` (effort: ${effort})` : ''}`)
           const ctxPct = data.context_window?.used_percentage
           if (ctxPct != null) lines.push(`**Context** ${Math.round(ctxPct)}%`)
           const fiveH = data.rate_limits?.five_hour
@@ -974,13 +975,13 @@ async function handleAccess(
     const chCount = Object.keys(access.channels ?? {}).length
     const pendingCount = (access.pendingPairings ?? []).length
 
-    const fields: EmbedField[] = [
-      { name: 'DM Policy', value: dmPolicy, inline: true },
-      { name: 'Allowed Users', value: String(userCount), inline: true },
-      { name: 'Channels', value: String(chCount), inline: true },
-      { name: 'Pending', value: String(pendingCount), inline: true },
-    ]
-    await interaction.reply({ embeds: [{ title: '\u{1f512} Access', fields, color: EMBED_COLOR }], flags: 64 })
+    const desc = [
+      `**DM Policy** ${dmPolicy}`,
+      `**Allowed Users** ${userCount}`,
+      `**Channels** ${chCount}`,
+      `**Pending** ${pendingCount}`,
+    ].join('\n')
+    await interaction.reply({ embeds: [{ description: desc, color: EMBED_COLOR }], flags: 64 })
   } catch (err) {
     await interaction.reply({
       embeds: [{ title: '\u{1f512} Access', description: t('access.parse_failed', locale, { error: err instanceof Error ? err.message : String(err) }), color: 0xED4245 }],
@@ -1106,67 +1107,42 @@ async function handleDoctor(
   interaction: ChatInputCommandInteraction,
   ctx: SlashCommandContext,
 ): Promise<void> {
-  const fields: EmbedField[] = []
   let allPass = true
+  const lines: string[] = []
 
-  // 1. Config
   const configPath = join(DATA_DIR, 'config.json')
   const configOk = existsSync(configPath)
-  fields.push({ name: 'Config', value: configOk ? '\u{2705} Found' : '\u{274c} Missing', inline: true })
+  lines.push(`**Config** ${configOk ? '\u{2705}' : '\u{274c} Missing'}`)
   if (!configOk) allPass = false
 
-  // 2. Bot token
-  const hasToken =
-    (ctx.config.backend === 'discord' && ctx.config.discord?.token) ||
-    (ctx.config.backend === 'telegram' && ctx.config.telegram?.token)
-  fields.push({ name: 'Token', value: hasToken ? '\u{2705} OK' : '\u{274c} Missing', inline: true })
+  const hasToken = (ctx.config.backend === 'discord' && ctx.config.discord?.token) || (ctx.config.backend === 'telegram' && ctx.config.telegram?.token)
+  lines.push(`**Token** ${hasToken ? '\u{2705}' : '\u{274c} Missing'}`)
   if (!hasToken) allPass = false
 
-  // 3. Access control
   const stateDir = ctx.config.discord?.stateDir ?? join(DATA_DIR, 'discord')
   const accessPath = join(stateDir, 'access.json')
   if (existsSync(accessPath)) {
     try {
       const access = JSON.parse(readFileSync(accessPath, 'utf8'))
-      const userCount = (access.allowFrom ?? []).length
-      const chCount = Object.keys(access.channels ?? {}).length
-      fields.push({ name: 'Access', value: `\u{2705} ${userCount} users, ${chCount} channels`, inline: true })
-    } catch {
-      fields.push({ name: 'Access', value: '\u{274c} Parse failed', inline: true })
-      allPass = false
-    }
-  } else {
-    fields.push({ name: 'Access', value: '\u{26a0}\u{fe0f} Not configured', inline: true })
-  }
+      lines.push(`**Access** \u{2705} ${(access.allowFrom ?? []).length} users, ${Object.keys(access.channels ?? {}).length} channels`)
+    } catch { lines.push('**Access** \u{274c} Parse failed'); allPass = false }
+  } else { lines.push('**Access** \u{26a0}\u{fe0f} Not configured') }
 
-  // 4. Schedules
   const statuses = ctx.scheduler.getStatus()
   const promptsDir = ctx.config.promptsDir ?? join(DATA_DIR, 'prompts')
   const missingPrompts = statuses.filter(s => s.type !== 'proactive' && !existsSync(join(promptsDir, `${s.name}.md`)))
-  let schedVal = `\u{2705} ${statuses.length} registered`
-  if (missingPrompts.length > 0) {
-    schedVal += `\n\u{26a0}\u{fe0f} Missing prompts: ${missingPrompts.map(s => s.name).join(', ')}`
-  }
-  fields.push({ name: 'Schedules', value: schedVal, inline: false })
+  let schedLine = `**Schedules** \u{2705} ${statuses.length} registered`
+  if (missingPrompts.length > 0) schedLine += ` (\u{26a0}\u{fe0f} missing: ${missingPrompts.map(s => s.name).join(', ')})`
+  lines.push(schedLine)
 
-  // 5. Channels
   if (ctx.config.channelsConfig) {
-    const chCount = Object.keys(ctx.config.channelsConfig.channels).length
-    fields.push({ name: 'Channels', value: `\u{2705} ${chCount} configured`, inline: true })
-  } else {
-    fields.push({ name: 'Channels', value: '\u{26a0}\u{fe0f} Not configured', inline: true })
-  }
+    lines.push(`**Channels** \u{2705} ${Object.keys(ctx.config.channelsConfig.channels).length} configured`)
+  } else { lines.push('**Channels** \u{26a0}\u{fe0f} Not configured') }
 
-  // 6. Voice
-  fields.push({ name: 'Voice', value: ctx.config.voice?.enabled ? '\u{2705} Enabled' : 'Disabled', inline: true })
+  lines.push(`**Voice** ${ctx.config.voice?.enabled ? '\u{2705} Enabled' : 'Disabled'}`)
+  lines.push(`**Process** PID ${process.pid}, uptime ${Math.floor(process.uptime() / 60)}m`)
 
-  // 7. Process health
-  fields.push({ name: 'Process', value: `PID ${process.pid}, uptime ${Math.floor(process.uptime() / 60)}m`, inline: true })
-
-  await interaction.reply({
-    embeds: [{ title: '\u{1fa7a} Doctor', fields, color: allPass ? 0x57F287 : 0xFEE75C }],
-    flags: 64,
-  })
+  await interaction.reply({ embeds: [{ description: lines.join('\n'), color: allPass ? 0x57F287 : 0xFEE75C }], flags: 64 })
 }
 
 // ── Help (locale-aware, embed) ───────────────────────────────────────

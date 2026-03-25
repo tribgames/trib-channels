@@ -202,18 +202,18 @@ function handleBotStatus(_ctx: CommandContext): CommandResult {
   const p = config.proactive
 
   const fields: Array<{ name: string; value: string; inline: boolean }> = []
-  fields.push({ name: 'Backend', value: config.backend, inline: true })
-  fields.push({ name: 'Schedules', value: `${ni.length} non-interactive\n${i.length} interactive`, inline: true })
+  fields.push({ name: 'Backend', value: config.backend, inline: false })
+  fields.push({ name: 'Schedules', value: `${ni.length} non-interactive\n${i.length} interactive`, inline: false })
   if (p) {
-    fields.push({ name: 'Proactive', value: `freq=${p.frequency}, ${p.items.length} topic(s)`, inline: true })
+    fields.push({ name: 'Proactive', value: `freq=${p.frequency}, ${p.items.length} topic(s)`, inline: false })
   }
   if (config.voice?.enabled) {
-    fields.push({ name: 'Voice', value: `lang=${config.voice.language ?? 'auto'}`, inline: true })
+    fields.push({ name: 'Voice', value: `lang=${config.voice.language ?? 'auto'}`, inline: false })
   }
   const main = config.channelsConfig?.main
   if (main) {
     const chCount = Object.keys(config.channelsConfig?.channels ?? {}).length
-    fields.push({ name: 'Channels', value: `main="${main}", ${chCount} total`, inline: true })
+    fields.push({ name: 'Channels', value: `main="${main}", ${chCount} total`, inline: false })
   }
   // bot.json fields
   if (bot.quiet) {
@@ -222,11 +222,11 @@ function handleBotStatus(_ctx: CommandContext): CommandResult {
     if (bot.quiet.autotalk) qParts.push(`autotalk: ${bot.quiet.autotalk}`)
     if (bot.quiet.holidays) qParts.push(`holidays: ${bot.quiet.holidays}`)
     if (qParts.length > 0) {
-      fields.push({ name: 'Quiet', value: qParts.join('\n'), inline: true })
+      fields.push({ name: 'Quiet', value: qParts.join('\n'), inline: false })
     }
   }
   if (bot.autotalk) {
-    fields.push({ name: 'Autotalk', value: `freq=${bot.autotalk.freq ?? '-'}, enabled=${bot.autotalk.enabled ?? false}`, inline: true })
+    fields.push({ name: 'Autotalk', value: `freq=${bot.autotalk.freq ?? '-'}, enabled=${bot.autotalk.enabled ?? false}`, inline: false })
   }
 
   return {
@@ -289,13 +289,13 @@ function scheduleList(ctx: CommandContext): CommandResult {
     const status = s.enabled === false ? ' [OFF]' : ''
     const days = s.days ?? 'daily'
     const exec = s.exec ?? 'prompt'
-    return { name: s.name, value: `${s.time} ${days} [${exec}]${status}`, inline: true }
+    return { name: s.name, value: `${s.time} ${days} [${exec}]${status}`, inline: false }
   })
 
   // Add proactive entries to embed fields
   if (config.proactive?.items.length) {
     for (const item of config.proactive.items) {
-      fields.push({ name: `proactive:${item.topic}`, value: `freq=${config.proactive.frequency} \u2192 ${item.channel}`, inline: true })
+      fields.push({ name: `proactive:${item.topic}`, value: `freq=${config.proactive.frequency} \u2192 ${item.channel}`, inline: false })
     }
   }
 
@@ -347,18 +347,18 @@ function scheduleDetail(parsed: ParsedCommand, ctx: CommandContext): CommandResu
   if (!entry) return { text: t('schedule.not_found', ctx.lang, { name }) }
 
   const fields = [
-    { name: 'Time', value: entry.time, inline: true },
-    { name: 'Days', value: entry.days ?? 'daily', inline: true },
-    { name: 'Type', value: schedType, inline: true },
-    { name: 'Channel', value: entry.channel, inline: true },
-    { name: 'Exec', value: entry.exec ?? 'prompt', inline: true },
-    { name: 'Enabled', value: entry.enabled !== false ? 'Yes' : 'No', inline: true },
+    { name: 'Time', value: entry.time, inline: false },
+    { name: 'Days', value: entry.days ?? 'daily', inline: false },
+    { name: 'Type', value: schedType, inline: false },
+    { name: 'Channel', value: entry.channel, inline: false },
+    { name: 'Exec', value: entry.exec ?? 'prompt', inline: false },
+    { name: 'Enabled', value: entry.enabled !== false ? 'Yes' : 'No', inline: false },
   ]
   if (entry.script) {
-    fields.push({ name: 'Script', value: entry.script, inline: true })
+    fields.push({ name: 'Script', value: entry.script, inline: false })
   }
   if (entry.prompt) {
-    fields.push({ name: 'Prompt', value: entry.prompt, inline: true })
+    fields.push({ name: 'Prompt', value: entry.prompt, inline: false })
   }
 
   return {
@@ -501,7 +501,7 @@ export function handleProfileCommand(
       }
 
       const profileFields = entries.map(([k, v]) => ({
-        name: k, value: String(v), inline: true,
+        name: k, value: String(v), inline: false,
       }))
 
       return {
