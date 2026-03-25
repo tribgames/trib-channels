@@ -314,7 +314,10 @@ export class OutputForwarder {
     }
 
     if (!summary) return null
-    let toolLine = '-# ' + displayName + ' (' + summary + ')'
+    // displayName과 summary가 같으면 중복 표시 방지
+    let toolLine = (displayName === summary)
+      ? '-# ' + displayName
+      : '-# ' + displayName + ' (' + summary + ')'
     if (!isSearchTool && detail && detail !== summary) {
       // 5줄 제한
       const lines = detail.substring(0, 500).split('\n')
