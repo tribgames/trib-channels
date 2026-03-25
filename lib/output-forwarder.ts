@@ -118,7 +118,10 @@ export class OutputForwarder {
               parts.push(c.text.trim())
             } else if (c.type === 'tool_use') {
               const toolLine = OutputForwarder.buildToolLine(c.name, c.input)
-              if (toolLine) parts.push(toolLine)
+              if (toolLine) {
+                if (parts.length > 0) parts.push('')
+                parts.push(toolLine)
+              }
             }
           }
           if (parts.length) newText += parts.join('\n') + '\n'
