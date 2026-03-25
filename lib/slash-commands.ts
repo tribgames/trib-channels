@@ -793,15 +793,20 @@ export async function handleSlashCommand(
       return
     }
     case 'config': {
-      const fields: EmbedField[] = [
-        { name: 'Backend', value: ctx.config.backend, inline: true },
-        { name: 'Channels', value: String(Object.keys(ctx.config.channelsConfig?.channels ?? {}).length), inline: true },
-        { name: 'Voice', value: ctx.config.voice?.enabled ? 'Enabled' : 'Disabled', inline: true },
-        { name: 'Proactive', value: ctx.config.proactive ? `freq ${ctx.config.proactive.frequency}` : 'Disabled', inline: true },
-        { name: 'Interactive', value: String((ctx.config.interactive ?? []).length), inline: true },
-        { name: 'Non-interactive', value: String((ctx.config.nonInteractive ?? []).length), inline: true },
+      const chCount = Object.keys(ctx.config.channelsConfig?.channels ?? {}).length
+      const mainCh = ctx.config.channelsConfig?.main || 'general'
+      const niCount = (ctx.config.nonInteractive ?? []).length
+      const iCount = (ctx.config.interactive ?? []).length
+      const proactive = ctx.config.proactive
+      const voice = ctx.config.voice
+      const lines: string[] = [
+        `**Backend** ${ctx.config.backend}`,
+        `**Schedules** ${niCount} non-interactive, ${iCount} interactive`,
+        `**Proactive** ${proactive ? `freq=${proactive.frequency}, ${proactive.items?.length ?? 0} topic(s)` : 'Disabled'}`,
+        `**Voice** ${voice?.enabled ? `lang=${voice.language || 'ko'}` : 'Disabled'}`,
+        `**Channels** main="${mainCh}", ${chCount} total`,
       ]
-      await interaction.reply({ embeds: [{ title: '\u{2699}\u{fe0f} Configuration', fields, color: EMBED_COLOR }], flags: 64 })
+      await interaction.reply({ embeds: [{ description: lines.join('\n'), color: EMBED_COLOR }], flags: 64 })
       return
     }
     case 'model':
