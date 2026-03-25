@@ -303,8 +303,8 @@ export class OutputForwarder {
         break
     }
 
-    if (!summary) return '`' + displayName + '`'
-    return '`' + displayName + '` ' + summary
+    if (!summary) return '-# ' + displayName
+    return '-# ' + displayName + ' (' + summary + ')'
   }
 
   /** Format tool result as code block (Bash: last 5 lines, Edit: diff) */
