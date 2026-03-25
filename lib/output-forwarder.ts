@@ -102,6 +102,9 @@ export class OutputForwarder {
     }
   }
 
+  /** Track last tool_use name for matching with tool_result */
+  private lastToolName = ''
+
   /** Extract new assistant text + tool logs from transcript since lastFileSize */
   private extractNewText(): string {
     const newLines = this.readNewLines()
@@ -109,14 +112,26 @@ export class OutputForwarder {
     for (const l of newLines) {
       try {
         const entry = JSON.parse(l)
-        // Skip tool_result entries — not useful for forwarding
-        if (entry.type === 'tool_result') continue
+
+        // tool_result: show results for Bash/Edit
+        if (entry.type === 'tool_result') {
+          // Skip hidden tools
+          if (OutputForwarder.isHidden(this.lastToolName)) continue
+          const resultBlock = OutputForwarder.formatToolResult(this.lastToolName, entry.content)
+          if (resultBlock) newText += resultBlock + '\n'
+          continue
+        }
+
         if (entry.type === 'assistant' && entry.message?.content) {
           const parts: string[] = []
           for (const c of entry.message.content) {
             if (c.type === 'text' && c.text?.trim()) {
               parts.push(c.text.trim())
             } else if (c.type === 'tool_use') {
+              // Track for tool_result matching
+              this.lastToolName = c.name || ''
+              // Skip hidden tools entirely
+              if (OutputForwarder.isHidden(c.name)) continue
               const toolLine = OutputForwarder.buildToolLine(c.name, c.input)
               if (toolLine) {
                 if (parts.length > 0) parts.push('')
@@ -222,8 +237,29 @@ export class OutputForwarder {
     this.writeState(state)
   }
 
-  /** Build tool log line from tool name and input */
+  /** Hidden tools — skip both tool_use and tool_result */
+  private static readonly HIDDEN_TOOLS = new Set([
+    'ToolSearch', 'SendMessage', 'TeamCreate', 'TaskCreate',
+    'TaskUpdate', 'TaskList', 'TaskGet',
+  ])
+
+  /** Tools whose results should be shown */
+  static readonly RESULT_TOOLS: Record<string, 'code' | 'diff'> = {
+    Bash: 'code',
+    Edit: 'diff',
+  }
+
+  /** Check if a tool should be hidden */
+  static isHidden(name: string): boolean {
+    return OutputForwarder.HIDDEN_TOOLS.has(name)
+  }
+
+  /** Build tool log line from tool name and input (시안 C 포맷) */
   static buildToolLine(name: string, input: Record<string, any>): string | null {
+    // Hidden tools — return null
+    if (OutputForwarder.isHidden(name)) return null
+
+    let displayName = name
     let summary = ''
 
     switch (name) {
@@ -238,25 +274,13 @@ export class OutputForwarder {
         summary = input?.file_path?.split('/').pop() || ''
         break
       case 'Grep':
-        summary = (input?.pattern || '').substring(0, 40)
+        summary = 'pattern: "' + (input?.pattern || '').substring(0, 40) + '"'
         break
       case 'Glob':
         summary = input?.pattern || ''
         break
       case 'Agent':
-        summary = input?.description || input?.name || ''
-        break
-      case 'TeamCreate':
-        summary = input?.team_name || ''
-        break
-      case 'TaskCreate':
-        summary = (input?.subject || '').substring(0, 50)
-        break
-      case 'SendMessage':
-        summary = input?.summary || ('\u2192 ' + (input?.to || ''))
-        break
-      case 'ToolSearch':
-        summary = input?.query || ''
+        summary = (input?.description || input?.name || '').substring(0, 60)
         break
       case 'Skill':
         summary = input?.skill || ''
@@ -264,14 +288,54 @@ export class OutputForwarder {
       default:
         if (name.startsWith('mcp__')) {
           const parts = name.split('__')
+          displayName = 'mcp'
           summary = parts[parts.length - 1] || ''
-          name = 'mcp'
         }
         break
     }
 
-    if (!summary) return '-# ' + name
-    return '-# ' + name + ' (' + summary + ')'
+    if (!summary) return '`' + displayName + '`'
+    return '`' + displayName + '` ' + summary
+  }
+
+  /** Format tool result as code block (Bash: last 5 lines, Edit: diff) */
+  static formatToolResult(toolName: string, content: any[]): string | null {
+    const mode = OutputForwarder.RESULT_TOOLS[toolName]
+    if (!mode) return null
+
+    // Extract text from tool_result content
+    let text = ''
+    if (Array.isArray(content)) {
+      for (const c of content) {
+        if (c.type === 'text' && c.text) text += c.text
+      }
+    } else if (typeof content === 'string') {
+      text = content
+    }
+    if (!text.trim()) return null
+
+    if (mode === 'code') {
+      // Bash: last 5 lines, +N lines indicator if truncated
+      const lines = text.trimEnd().split('\n')
+      const total = lines.length
+      const shown = lines.slice(-5)
+      let result = ''
+      if (total > 5) result += `+${total - 5} lines\n`
+      result += '```\n' + shown.join('\n') + '\n```'
+      return result
+    }
+
+    if (mode === 'diff') {
+      // Edit: show as diff block (truncate if very long)
+      const lines = text.trimEnd().split('\n')
+      const shown = lines.slice(0, 15)
+      let result = '```diff\n' + shown.join('\n')
+      if (lines.length > 15) result += '\n+' + (lines.length - 15) + ' more lines'
+      result += '\n```'
+      return result
+    }
+
+    return null
   }
 
   // ── File watch ─────────────────────────────────────────────────────
