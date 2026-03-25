@@ -113,13 +113,21 @@ export class OutputForwarder {
       try {
         const entry = JSON.parse(l)
 
-        // tool_result: show results for Bash/Edit
-        if (entry.type === 'tool_result') {
-          // Skip hidden tools
-          if (OutputForwarder.isHidden(this.lastToolName)) continue
-          const resultBlock = OutputForwarder.formatToolResult(this.lastToolName, entry.content)
-          if (resultBlock) newText += resultBlock + '\n'
-          continue
+        // tool_result: entries are type=user with content[].type=tool_result
+        if (entry.type === 'user' && entry.message?.content) {
+          let hasToolResult = false
+          for (const c of entry.message.content) {
+            if (c.type === 'tool_result') {
+              hasToolResult = true
+              if (OutputForwarder.isHidden(this.lastToolName)) continue
+              const content = typeof c.content === 'string'
+                ? [{ type: 'text', text: c.content }]
+                : Array.isArray(c.content) ? c.content : []
+              const resultBlock = OutputForwarder.formatToolResult(this.lastToolName, content)
+              if (resultBlock) newText += resultBlock + '\n'
+            }
+          }
+          if (hasToolResult) continue
         }
 
         if (entry.type === 'assistant' && entry.message?.content) {
