@@ -51,6 +51,7 @@ export class OutputForwarder {
   private idleTimer: ReturnType<typeof setTimeout> | null = null
   private onIdleCallback: (() => void) | null = null
   private inExplorerSequence = false
+  private hasSeenAssistant = false
 
   constructor(private cb: ForwarderCallbacks) {}
 
@@ -71,6 +72,8 @@ export class OutputForwarder {
     this.sentCount = 0
     this.lastHash = ''
     this.inExplorerSequence = false
+    this.hasSeenAssistant = false
+    if (this.idleTimer) { clearTimeout(this.idleTimer); this.idleTimer = null }
   }
 
   /** Sync in-memory state from status file (call after user-prompt hook sets state) */
@@ -135,6 +138,7 @@ export class OutputForwarder {
         }
 
         if (entry.type === 'assistant' && entry.message?.content) {
+          this.hasSeenAssistant = true
           const SEARCH_TOOLS = new Set(['Read', 'Grep', 'Glob'])
           const parts: string[] = []
 
@@ -440,8 +444,10 @@ export class OutputForwarder {
     watchFile(this.transcriptPath, { interval: 1000 }, (curr, prev) => {
       if (curr.size > prev.size) {
         void this.forwardNewText()
-        // Reset idle timer
-        this.resetIdleTimer()
+        // Reset idle timer — only after first assistant entry seen
+        if (this.hasSeenAssistant) {
+          this.resetIdleTimer()
+        }
       }
     })
   }
