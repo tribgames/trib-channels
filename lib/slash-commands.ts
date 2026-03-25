@@ -7,9 +7,8 @@
 
 import { REST, Routes, SlashCommandBuilder } from 'discord.js'
 import type { ChatInputCommandInteraction, Client } from 'discord.js'
-import { readFileSync, writeFileSync, existsSync } from 'fs'
+import { readFileSync, existsSync } from 'fs'
 import { join } from 'path'
-import { tmpdir } from 'os'
 import type { PluginConfig } from '../backends/types.js'
 import type { Scheduler } from './scheduler.js'
 import { DATA_DIR } from './config.js'
@@ -862,89 +861,88 @@ async function handleStop(
   interaction: ChatInputCommandInteraction,
   _ctx: SlashCommandContext,
 ): Promise<void> {
-  // 1. 플래그 파일 생성 (도구 호출 시 PreToolUse에서 잡힘)
-  const flagFile = join(tmpdir(), 'claude2bot-stop.flag')
-  writeFileSync(flagFile, String(Date.now()))
-
-  // 2. SIGINT도 보냄 (thinking 중 즉시 중단 — Ctrl+C와 동일)
-  const ppid = process.ppid
-  if (ppid && ppid > 1) {
-    try {
-      process.kill(ppid, 'SIGINT')
-    } catch {}
+  // tmux send-keys Escape로 즉시 중단 (tmux 세션 감지)
+  const { execSync } = await import('child_process')
+  let stopped = false
+  try {
+    // tmux 세션 이름 감지 (claude 또는 현재 세션)
+    const sessions = execSync('tmux list-sessions -F "#{session_name}"', { encoding: 'utf8' }).trim().split('\n')
+    const target = sessions.find(s => s.includes('claude')) || sessions[0]
+    if (target) {
+      execSync(`tmux send-keys -t ${target} Escape`)
+      stopped = true
+    }
+  } catch {
+    // tmux 없으면 SIGINT fallback
+    const ppid = process.ppid
+    if (ppid && ppid > 1) {
+      try { process.kill(ppid, 'SIGINT') } catch {}
+      stopped = true
+    }
   }
 
   await interaction.reply({
-    embeds: [{ title: '\u{1f6d1} Stop', description: t('stop.sent', interaction.locale, { pid: ppid || 0 }), color: 0xED4245 }],
+    embeds: [{ title: '\u{1f6d1} Stop', description: stopped ? t('stop.sent', interaction.locale, { pid: 0 }) : 'tmux not found', color: stopped ? 0xED4245 : 0xFEE75C }],
     flags: 64,
   })
 }
 
+// ── tmux send-keys helper ──────────────────────────────────────────
+async function tmuxSendKeys(command: string): Promise<boolean> {
+  const { execSync } = await import('child_process')
+  try {
+    const sessions = execSync('tmux list-sessions -F "#{session_name}"', { encoding: 'utf8' }).trim().split('\n')
+    const target = sessions.find(s => s.includes('claude')) || sessions[0]
+    if (!target) return false
+    execSync(`tmux send-keys -t ${target} "${command}" Enter`)
+    return true
+  } catch {
+    return false
+  }
+}
+
 async function handleModel(
   interaction: ChatInputCommandInteraction,
-  ctx: SlashCommandContext,
+  _ctx: SlashCommandContext,
 ): Promise<void> {
   const model = interaction.options.getString('name', true)
-
-  // Inject as a channel notification — the session will interpret /model command
-  ctx.notify(
-    interaction.channelId,
-    `slash:${interaction.user.username}`,
-    `/model ${model}`,
-  )
-
+  const ok = await tmuxSendKeys(`/model ${model}`)
   await interaction.reply({
-    embeds: [{ title: '\u{1f916} Model', description: t('model.switched', interaction.locale, { model }), color: EMBED_COLOR }],
+    embeds: [{ title: '\u{1f916} Model', description: ok ? t('model.switched', interaction.locale, { model }) : 'tmux not found', color: ok ? EMBED_COLOR : 0xFEE75C }],
     flags: 64,
   })
 }
 
 async function handleCompact(
   interaction: ChatInputCommandInteraction,
-  ctx: SlashCommandContext,
+  _ctx: SlashCommandContext,
 ): Promise<void> {
-  ctx.notify(
-    interaction.channelId,
-    `slash:${interaction.user.username}`,
-    'Please compact the conversation now.',
-  )
-  await interaction.reply({ embeds: [{ title: '\u{1f4e6} Compact', description: t('compact.forwarded', interaction.locale), color: EMBED_COLOR }], flags: 64 })
+  const ok = await tmuxSendKeys('/compact')
+  await interaction.reply({ embeds: [{ title: '\u{1f4e6} Compact', description: ok ? t('compact.forwarded', interaction.locale) : 'tmux not found', color: ok ? EMBED_COLOR : 0xFEE75C }], flags: 64 })
 }
 
 async function handleClear(
   interaction: ChatInputCommandInteraction,
-  ctx: SlashCommandContext,
+  _ctx: SlashCommandContext,
 ): Promise<void> {
-  ctx.notify(
-    interaction.channelId,
-    `slash:${interaction.user.username}`,
-    'Please clear the conversation.',
-  )
-  await interaction.reply({ embeds: [{ title: '\u{1f9f9} Clear', description: t('clear.forwarded', interaction.locale), color: EMBED_COLOR }], flags: 64 })
+  const ok = await tmuxSendKeys('/clear')
+  await interaction.reply({ embeds: [{ title: '\u{1f9f9} Clear', description: ok ? t('clear.forwarded', interaction.locale) : 'tmux not found', color: ok ? EMBED_COLOR : 0xFEE75C }], flags: 64 })
 }
 
 async function handleNew(
   interaction: ChatInputCommandInteraction,
-  ctx: SlashCommandContext,
+  _ctx: SlashCommandContext,
 ): Promise<void> {
-  ctx.notify(
-    interaction.channelId,
-    `slash:${interaction.user.username}`,
-    'Please start a new session.',
-  )
-  await interaction.reply({ embeds: [{ title: '\u{2728} New Session', description: t('new.forwarded', interaction.locale), color: EMBED_COLOR }], flags: 64 })
+  const ok = await tmuxSendKeys('/new')
+  await interaction.reply({ embeds: [{ title: '\u{2728} New Session', description: ok ? t('new.forwarded', interaction.locale) : 'tmux not found', color: ok ? EMBED_COLOR : 0xFEE75C }], flags: 64 })
 }
 
 async function handleResume(
   interaction: ChatInputCommandInteraction,
-  ctx: SlashCommandContext,
+  _ctx: SlashCommandContext,
 ): Promise<void> {
-  ctx.notify(
-    interaction.channelId,
-    `slash:${interaction.user.username}`,
-    'Please resume the previous session.',
-  )
-  await interaction.reply({ embeds: [{ title: '\u{25b6}\u{fe0f} Resume', description: t('resume.forwarded', interaction.locale), color: EMBED_COLOR }], flags: 64 })
+  const ok = await tmuxSendKeys('/resume')
+  await interaction.reply({ embeds: [{ title: '\u{25b6}\u{fe0f} Resume', description: ok ? t('resume.forwarded', interaction.locale) : 'tmux not found', color: ok ? EMBED_COLOR : 0xFEE75C }], flags: 64 })
 }
 
 async function handleLanguage(
