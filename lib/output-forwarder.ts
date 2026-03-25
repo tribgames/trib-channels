@@ -113,9 +113,26 @@ export class OutputForwarder {
       try {
         const entry = JSON.parse(l)
 
-        // tool_result: skip entirely (old format — header only, no result blocks)
-        if (entry.type === 'user' && entry.message?.content?.some((c: any) => c.type === 'tool_result')) {
-          continue
+        // tool_result: only show Edit diff, skip the rest
+        if (entry.type === 'user' && entry.message?.content) {
+          let hasToolResult = false
+          for (const c of entry.message.content) {
+            if (c.type === 'tool_result') {
+              hasToolResult = true
+              if (this.lastToolName === 'Edit') {
+                const text = typeof c.content === 'string' ? c.content : ''
+                if (text.trim()) {
+                  const lines = text.trimEnd().split('\n').slice(0, 15)
+                  let block = '```diff\n' + lines.join('\n')
+                  const total = text.trimEnd().split('\n').length
+                  if (total > 15) block += '\n... +' + (total - 15) + ' lines'
+                  block += '\n```'
+                  newText += block + '\n'
+                }
+              }
+            }
+          }
+          if (hasToolResult) continue
         }
 
         if (entry.type === 'assistant' && entry.message?.content) {
