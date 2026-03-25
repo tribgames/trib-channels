@@ -10,10 +10,9 @@ import { createHash } from 'crypto'
 import { formatForDiscord, chunk } from './format.js'
 
 export interface ForwarderCallbacks {
-  send(channelId: string, text: string): Promise<string>  // returns message ID
+  send(channelId: string, text: string): Promise<void>
   react(channelId: string, messageId: string, emoji: string): Promise<void>
   removeReaction(channelId: string, messageId: string, emoji: string): Promise<void>
-  editMessage(channelId: string, messageId: string, text: string): Promise<void>
 }
 
 const STATUS_FILE = join(tmpdir(), 'claude2bot-status.json')
@@ -51,8 +50,7 @@ export class OutputForwarder {
   private watchingPath = ''
   private idleTimer: ReturnType<typeof setTimeout> | null = null
   private onIdleCallback: (() => void) | null = null
-  private pendingExplorerTargets: string[] = []
-  private explorerMessageId = ''
+  private inExplorerSequence = false
 
   constructor(private cb: ForwarderCallbacks) {}
 
@@ -72,6 +70,7 @@ export class OutputForwarder {
   reset(): void {
     this.sentCount = 0
     this.lastHash = ''
+    this.inExplorerSequence = false
   }
 
   /** Sync in-memory state from status file (call after user-prompt hook sets state) */
@@ -144,32 +143,30 @@ export class OutputForwarder {
 
           for (const c of entry.message.content) {
             if (c.type === 'text' && c.text?.trim()) {
-              // 텍스트가 나오면 Explorer 버퍼 플러시
-              if (this.pendingExplorerTargets.length > 0) {
-                this.pendingExplorerTargets = []
-                this.explorerMessageId = ''
-              }
+              // 텍스트 → Explorer 시퀀스 리셋
+              this.inExplorerSequence = false
               parts.push(c.text.trim())
             } else if (c.type === 'tool_use') {
               this.lastToolName = c.name || ''
               if (OutputForwarder.isHidden(c.name)) continue
 
-              // Read/Grep/Glob → Explorer 누적 (edit_message로 업데이트)
+              // Read/Grep/Glob → 첫 번째만 표시, 나머지 무시
               if (SEARCH_TOOLS.has(c.name)) {
-                let target = ''
-                if (c.name === 'Read') target = (c.input?.file_path || '').split('/').pop() || ''
-                else if (c.name === 'Grep') target = '"' + (c.input?.pattern || '').substring(0, 25) + '"'
-                else if (c.name === 'Glob') target = (c.input?.pattern || '').substring(0, 25)
-                if (target) this.pendingExplorerTargets.push(target)
-                // Explorer 메시지 전송/업데이트는 forwardNewText에서 처리
+                if (!this.inExplorerSequence) {
+                  this.inExplorerSequence = true
+                  let target = ''
+                  if (c.name === 'Read') target = (c.input?.file_path || '').split('/').pop() || ''
+                  else if (c.name === 'Grep') target = '"' + (c.input?.pattern || '').substring(0, 25) + '"'
+                  else if (c.name === 'Glob') target = (c.input?.pattern || '').substring(0, 25)
+                  if (parts.length > 0) parts.push('\u3164')
+                  parts.push('-# Explorer (' + (target || c.name) + ')')
+                }
+                // 연속 검색은 무시
                 continue
               }
 
-              // 비검색 도구 → Explorer 버퍼 리셋
-              if (this.pendingExplorerTargets.length > 0) {
-                this.pendingExplorerTargets = []
-                this.explorerMessageId = ''
-              }
+              // 비검색 도구 → Explorer 시퀀스 리셋
+              this.inExplorerSequence = false
               const toolLine = OutputForwarder.buildToolLine(c.name, c.input)
               if (toolLine) {
                 if (parts.length > 0) parts.push('\u3164')
@@ -188,23 +185,6 @@ export class OutputForwarder {
   async forwardNewText(): Promise<void> {
     if (!this.channelId) return
     const newText = this.extractNewText()
-
-    // Explorer edit_message 처리 (검색 도구 누적)
-    if (this.pendingExplorerTargets.length > 0) {
-      const explorerLine = '-# Explorer (' + this.pendingExplorerTargets.join(', ') + ')'
-      if (this.explorerMessageId) {
-        // 기존 Explorer 메시지 업데이트
-        try { await this.cb.editMessage(this.channelId, this.explorerMessageId, explorerLine) } catch {}
-      } else {
-        // 새 Explorer 메시지 전송
-        const pad = this.sentCount > 0 ? '\u3164\n' : ''
-        try {
-          const msgId = await this.cb.send(this.channelId, pad + explorerLine)
-          if (msgId) this.explorerMessageId = msgId
-          this.sentCount++
-        } catch {}
-      }
-    }
 
     // Filter out internal/system responses
     const SKIP_TEXTS = ['No response requested.', 'No response requested', '유저 응답 대기.', '유저 응답 대기']
