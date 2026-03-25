@@ -40,7 +40,6 @@ export function discoverTranscriptPath(): string {
 }
 
 export class OutputForwarder {
-  private lastIdx = 0
   private lastHash = ''
   private sentCount = 0
   private transcriptPath = ''
