@@ -118,6 +118,9 @@ export class OutputForwarder {
       try {
         const entry = JSON.parse(l)
 
+        // 에이전트/sidechain 엔트리 스킵 (메인 세션 출력만 포워딩)
+        if (entry.isSidechain === true) continue
+
         // tool_result: show Edit diff from toolUseResult, skip the rest
         if (entry.type === 'user' && entry.message?.content?.some((c: any) => c.type === 'tool_result')) {
           if (this.lastToolName === 'Edit' && entry.toolUseResult) {
