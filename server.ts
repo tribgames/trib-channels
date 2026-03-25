@@ -70,6 +70,9 @@ const mcp = new Server(
 
 let typingChannelId: string | null = null
 
+// ── Pending schedule setup (Select Menu → Modal 2-step flow) ─────────
+const pendingScheduleSetup = new Map<string, { period?: string; exec?: string; mode?: string; editName?: string }>()
+
 function startServerTyping(channelId: string): void {
   if (typingChannelId && typingChannelId !== channelId) {
     backend.stopTyping(typingChannelId)
@@ -201,15 +204,19 @@ backend.onModalRequest = async (rawInteraction: any) => {
   const { ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder } = await import('discord.js')
   const customId = rawInteraction.customId
 
-  if (customId === 'sched_add') {
+  if (customId === 'sched_add_next') {
+    const pending = pendingScheduleSetup.get(rawInteraction.user.id)
+    const hasScript = pending?.exec?.includes('script')
     const modal = new ModalBuilder().setCustomId('modal_sched_add').setTitle('스케줄 추가')
-    ;(modal as any).addComponents(
+    const rows: any[] = [
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('name').setLabel('이름').setStyle(TextInputStyle.Short).setRequired(true)),
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('time').setLabel('시간 (HH:MM / hourly / every5m)').setStyle(TextInputStyle.Short).setRequired(true)),
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('channel').setLabel('채널').setStyle(TextInputStyle.Short).setValue('general')),
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('mode').setLabel('모드 (interactive/non-interactive)').setStyle(TextInputStyle.Short).setValue('non-interactive')),
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('period').setLabel('주기 (daily / weekday)').setStyle(TextInputStyle.Short).setValue('daily').setRequired(false)),
-    )
+    ]
+    if (hasScript) {
+      rows.push(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('script').setLabel('스크립트 파일명').setStyle(TextInputStyle.Short).setRequired(true)))
+    }
+    ;(modal as any).addComponents(...rows)
     await rawInteraction.showModal(modal)
   } else if (customId === 'autotalk_freq') {
     const modal = new ModalBuilder().setCustomId('modal_autotalk').setTitle('자율대화 빈도')
@@ -224,16 +231,20 @@ backend.onModalRequest = async (rawInteraction: any) => {
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('autotalk').setLabel('자율대화 방해금지 (예: 23:00-09:00)').setStyle(TextInputStyle.Short)),
     )
     await rawInteraction.showModal(modal)
-  } else if (customId?.startsWith('sched_edit:')) {
-    const name = customId.split(':')[1]
-    const modal = new ModalBuilder().setCustomId(`modal_sched_edit:${name}`).setTitle(`${name} 편집`)
-    ;(modal as any).addComponents(
+  } else if (customId === 'sched_edit_next') {
+    const pending = pendingScheduleSetup.get(rawInteraction.user.id)
+    const hasScript = pending?.exec?.includes('script')
+    const name = pending?.editName ?? '스케줄'
+    const modal = new ModalBuilder().setCustomId('modal_sched_edit').setTitle(`${name} 편집`)
+    const rows: any[] = [
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('time').setLabel('시간 (HH:MM / hourly / every5m)').setStyle(TextInputStyle.Short).setRequired(false)),
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('channel').setLabel('채널').setStyle(TextInputStyle.Short).setRequired(false)),
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('period').setLabel('주기 (daily / weekday)').setStyle(TextInputStyle.Short).setRequired(false)),
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('exec').setLabel('실행모드 (prompt / script / script+prompt)').setStyle(TextInputStyle.Short).setRequired(false)),
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('dnd').setLabel('방해금지 (예: 23:00-07:00, 비우면 해제)').setStyle(TextInputStyle.Short).setRequired(false)),
-    )
+    ]
+    if (hasScript) {
+      rows.push(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('script').setLabel('스크립트 파일명').setStyle(TextInputStyle.Short).setRequired(false)))
+    }
+    ;(modal as any).addComponents(...rows)
     await rawInteraction.showModal(modal)
   } else if (customId === 'activity_add') {
     const modal = new ModalBuilder().setCustomId('modal_activity_add').setTitle('활동 채널 추가')
@@ -329,6 +340,76 @@ backend.onInteraction = (interaction: any) => {
     return
   }
 
+  // ── Schedule add: Step 1 — Select Menu 전송 ──
+  if (interaction.customId === 'sched_add') {
+    pendingScheduleSetup.set(interaction.userId, {})
+    void (async () => {
+      await backend.sendMessage(interaction.channelId, '**스케줄 추가** — 옵션을 선택하세요', {
+        components: [
+          { type: 1, components: [{ type: 3, custom_id: 'sched_add_period', placeholder: '주기 선택', options: [
+            { label: 'Daily', value: 'daily' },
+            { label: 'Weekday', value: 'weekday' },
+            { label: 'Hourly', value: 'hourly' },
+            { label: 'Once', value: 'once' },
+          ]}]},
+          { type: 1, components: [{ type: 3, custom_id: 'sched_add_exec', placeholder: '실행 모드', options: [
+            { label: 'Prompt (.md)', value: 'prompt' },
+            { label: 'Script (.js/.py)', value: 'script' },
+            { label: 'Script + Prompt', value: 'script+prompt' },
+          ]}]},
+          { type: 1, components: [{ type: 3, custom_id: 'sched_add_mode', placeholder: '모드', options: [
+            { label: 'Interactive', value: 'interactive' },
+            { label: 'Non-interactive', value: 'non-interactive' },
+          ]}]},
+          { type: 1, components: [{ type: 2, style: 1, label: '다음 →', custom_id: 'sched_add_next' }]},
+        ] as any,
+      })
+    })()
+    return
+  }
+
+  // ── Schedule edit: Step 1 — Select Menu 전송 ──
+  if (interaction.customId?.startsWith('sched_edit:') && interaction.type === 'button') {
+    const name = interaction.customId.split(':')[1]
+    pendingScheduleSetup.set(interaction.userId, { editName: name })
+    void (async () => {
+      await backend.sendMessage(interaction.channelId, `**${name} 편집** — 변경할 옵션을 선택하세요`, {
+        components: [
+          { type: 1, components: [{ type: 3, custom_id: 'sched_edit_period', placeholder: '주기 선택', options: [
+            { label: 'Daily', value: 'daily' },
+            { label: 'Weekday', value: 'weekday' },
+            { label: 'Hourly', value: 'hourly' },
+            { label: 'Once', value: 'once' },
+          ]}]},
+          { type: 1, components: [{ type: 3, custom_id: 'sched_edit_exec', placeholder: '실행 모드', options: [
+            { label: 'Prompt (.md)', value: 'prompt' },
+            { label: 'Script (.js/.py)', value: 'script' },
+            { label: 'Script + Prompt', value: 'script+prompt' },
+          ]}]},
+          { type: 1, components: [{ type: 3, custom_id: 'sched_edit_mode', placeholder: '모드', options: [
+            { label: 'Interactive', value: 'interactive' },
+            { label: 'Non-interactive', value: 'non-interactive' },
+          ]}]},
+          { type: 1, components: [{ type: 2, style: 1, label: '다음 →', custom_id: 'sched_edit_next' }]},
+        ] as any,
+      })
+    })()
+    return
+  }
+
+  // ── Schedule select handlers (임시 상태 저장) ──
+  const schedSelectMatch = interaction.customId?.match(/^sched_(add|edit)_(period|exec|mode)$/)
+  if (schedSelectMatch && interaction.type === 'select') {
+    const [, , key] = schedSelectMatch
+    const val = interaction.values?.[0]
+    if (key && val) {
+      const pending = pendingScheduleSetup.get(interaction.userId) ?? {}
+      ;(pending as any)[key] = val
+      pendingScheduleSetup.set(interaction.userId, pending)
+    }
+    return
+  }
+
   // schedule_select → 스케줄 상세
   if (interaction.customId === 'schedule_select' && interaction.values?.length) {
     const name = interaction.values[0]
@@ -351,8 +432,15 @@ backend.onInteraction = (interaction: any) => {
       const cmdCtx: CommandContext = { channelId: interaction.channelId, userId: interaction.userId, lang: 'ko', scheduler }
 
       if (interaction.customId === 'modal_sched_add') {
-        const { name, time, channel, mode, period } = interaction.fields!
-        const cmd = `/bot(schedule, add, "${name}", time="${time}", channel="${channel || 'general'}", mode="${mode || 'non-interactive'}", period="${period || 'daily'}")`
+        const pending = pendingScheduleSetup.get(interaction.userId) ?? {}
+        const { name, time, channel, script } = interaction.fields!
+        const period = pending.period || 'daily'
+        const exec = pending.exec || 'prompt'
+        const mode = pending.mode || 'non-interactive'
+        pendingScheduleSetup.delete(interaction.userId)
+        const params = [`time="${time}"`, `channel="${channel || 'general'}"`, `mode="${mode}"`, `period="${period}"`, `exec="${exec}"`]
+        if (script) params.push(`script="${script}"`)
+        const cmd = `/bot(schedule, add, "${name}", ${params.join(', ')})`
         const result = await routeCustomCommand(cmd, cmdCtx)
         if (interaction.channelId) await backend.sendMessage(interaction.channelId, result?.text ?? 'done')
       }
@@ -373,17 +461,21 @@ backend.onInteraction = (interaction: any) => {
         if (interaction.channelId) await backend.sendMessage(interaction.channelId, '방해금지 설정 완료')
       }
 
-      if (interaction.customId?.startsWith('modal_sched_edit:')) {
-        const name = interaction.customId.split(':')[1]
+      if (interaction.customId === 'modal_sched_edit') {
+        const pending = pendingScheduleSetup.get(interaction.userId) ?? {}
+        const name = pending.editName
+        if (!name) return
         const params: string[] = []
-        const { time, channel, period, exec, dnd } = interaction.fields!
+        const { time, channel, script, dnd } = interaction.fields!
         if (time) params.push(`time="${time}"`)
         if (channel) params.push(`channel="${channel}"`)
-        if (period) params.push(`period="${period}"`)
-        if (exec) params.push(`exec="${exec}"`)
+        if (pending.period) params.push(`period="${pending.period}"`)
+        if (pending.exec) params.push(`exec="${pending.exec}"`)
+        if (pending.mode) params.push(`mode="${pending.mode}"`)
+        if (script) params.push(`script="${script}"`)
+        pendingScheduleSetup.delete(interaction.userId)
         const cmd = `/bot(schedule, edit, "${name}"${params.length ? ', ' + params.join(', ') : ''})`
         const result = await routeCustomCommand(cmd, cmdCtx)
-        // dnd → bot-level quiet schedule 설정
         if (dnd) await routeCustomCommand(`/bot(quiet, schedule, "${dnd}")`, cmdCtx)
         if (interaction.channelId) await backend.sendMessage(interaction.channelId, result?.text ?? 'done')
       }

@@ -217,8 +217,8 @@ export class DiscordBackend implements ChannelBackend {
         if (interaction.isButton() || interaction.isStringSelectMenu() || interaction.isRoleSelectMenu() || interaction.isUserSelectMenu() || interaction.isChannelSelectMenu()) {
           // Modal이 필요한 버튼은 deferUpdate 안 하고 raw interaction 전달
           const needsModal = interaction.isButton() && (
-            interaction.customId.startsWith('sched_add') ||
-            interaction.customId.startsWith('sched_edit') ||
+            interaction.customId === 'sched_add_next' ||
+            interaction.customId === 'sched_edit_next' ||
             interaction.customId.startsWith('quiet_set') ||
             interaction.customId.startsWith('autotalk_freq') ||
             interaction.customId === 'activity_add' ||
