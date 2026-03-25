@@ -22,7 +22,7 @@ import { loadSettings } from './lib/settings.js'
 import { Scheduler } from './lib/scheduler.js'
 import { handleSlashCommand, type SlashCommandContext } from './lib/slash-commands.js'
 import { routeCustomCommand, type CommandContext } from './lib/custom-commands.js'
-import { OutputForwarder } from './lib/output-forwarder.js'
+import { OutputForwarder, discoverTranscriptPath } from './lib/output-forwarder.js'
 import type { InboundMessage } from './backends/types.js'
 import type { ChatInputCommandInteraction } from 'discord.js'
 
@@ -115,7 +115,7 @@ function noteIdleActivity(): void {
   if (idleTimer) clearTimeout(idleTimer)
   idleTimer = setTimeout(() => {
     idleTimer = null
-    stopTranscriptPoll()
+    forwarder.stopWatch()
     stopServerTyping()
     void forwarder.forwardFinalText()
   }, IDLE_MS)
@@ -127,24 +127,8 @@ if (!fs.existsSync(STATUS_FILE)) {
   try { fs.writeFileSync(STATUS_FILE, '{}') } catch {}
 }
 
-// ── Transcript polling (replaces pre-tool hook signal) ───────────────
-// Poll transcript every 3 seconds for new assistant text while active
-
-let transcriptPollTimer: ReturnType<typeof setInterval> | null = null
-
-function startTranscriptPoll(): void {
-  if (transcriptPollTimer) return
-  transcriptPollTimer = setInterval(() => {
-    void forwarder.forwardNewText()
-  }, 3000)
-}
-
-function stopTranscriptPoll(): void {
-  if (transcriptPollTimer) {
-    clearInterval(transcriptPollTimer)
-    transcriptPollTimer = null
-  }
-}
+// ── Transcript file watch (replaces polling) ────────────────────────
+// forwarder.startWatch() / stopWatch() handles file monitoring
 
 // ── Output Forwarder ──────────────────────────────────────────────────
 
@@ -152,6 +136,12 @@ const forwarder = new OutputForwarder({
   send: (ch, text) => backend.sendMessage(ch, text).then(() => {}),
   react: (ch, mid, emoji) => backend.react(ch, mid, emoji),
   removeReaction: (ch, mid, emoji) => backend.removeReaction(ch, mid, emoji),
+})
+
+// Wire up forwarder's idle detection to server idle handling
+forwarder.setOnIdle(() => {
+  stopServerTyping()
+  void forwarder.forwardFinalText()
 })
 
 // ── Scheduler ──────────────────────────────────────────────────────────
@@ -655,15 +645,9 @@ backend.onMessage = (msg) => {
   startServerTyping(msg.chatId)
   forwarder.reset()
 
-  // Resolve transcript path from env or status file
-  const transcriptPath = process.env.CLAUDE_TRANSCRIPT_PATH ?? ''
-  let transcriptIdx = 0
-  if (transcriptPath && fs.existsSync(transcriptPath)) {
-    try {
-      transcriptIdx = fs.readFileSync(transcriptPath, 'utf8').trim().split('\n').length
-    } catch {}
-  }
-  forwarder.setContext(msg.chatId, transcriptPath, transcriptIdx)
+  // Auto-discover transcript path
+  const transcriptPath = discoverTranscriptPath()
+  forwarder.setContext(msg.chatId, transcriptPath)
 
   void (async () => {
     try {
@@ -676,11 +660,10 @@ backend.onMessage = (msg) => {
     state.userMessageId = msg.messageId
     state.emoji = '\u{1F914}'
     state.transcriptPath = transcriptPath
-    state.transcriptIdx = transcriptIdx
     state.sentCount = 0
     state.sessionIdle = false
     try { fs.writeFileSync(STATUS_FILE, JSON.stringify(state)) } catch {}
-    startTranscriptPoll()
+    forwarder.startWatch()
     noteIdleActivity()
   })()
   void handleInbound(msg)

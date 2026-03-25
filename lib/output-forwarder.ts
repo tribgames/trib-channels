@@ -3,9 +3,9 @@
  * Replaces Discord API calls previously scattered across hooks.
  */
 
-import { readFileSync, writeFileSync, existsSync } from 'fs'
+import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, watchFile, unwatchFile, openSync, readSync, closeSync } from 'fs'
 import { join } from 'path'
-import { tmpdir } from 'os'
+import { tmpdir, homedir } from 'os'
 import { createHash } from 'crypto'
 import { formatForDiscord, chunk } from './format.js'
 
@@ -17,6 +17,28 @@ export interface ForwarderCallbacks {
 
 const STATUS_FILE = join(tmpdir(), 'claude2bot-status.json')
 
+/** Discover the most recently modified .jsonl transcript under ~/.claude/projects/ */
+export function discoverTranscriptPath(): string {
+  const projectsDir = join(homedir(), '.claude', 'projects')
+  let latest = { path: '', mtime: 0 }
+
+  try {
+    for (const slug of readdirSync(projectsDir)) {
+      const dir = join(projectsDir, slug)
+      try {
+        for (const f of readdirSync(dir)) {
+          if (!f.endsWith('.jsonl')) continue
+          const fp = join(dir, f)
+          const mt = statSync(fp).mtimeMs
+          if (mt > latest.mtime) latest = { path: fp, mtime: mt }
+        }
+      } catch { /* skip unreadable dirs */ }
+    }
+  } catch { /* projects dir missing */ }
+
+  return latest.path
+}
+
 export class OutputForwarder {
   private lastIdx = 0
   private lastHash = ''
@@ -25,14 +47,23 @@ export class OutputForwarder {
   private channelId = ''
   private userMessageId = ''
   private emoji = ''
+  private lastFileSize = 0
+  private watchingPath = ''
+  private idleTimer: ReturnType<typeof setTimeout> | null = null
+  private onIdleCallback: (() => void) | null = null
 
   constructor(private cb: ForwarderCallbacks) {}
 
   /** Set context for current turn (called on user message) */
-  setContext(channelId: string, transcriptPath: string, transcriptIdx = 0): void {
+  setContext(channelId: string, transcriptPath: string): void {
     this.channelId = channelId
     this.transcriptPath = transcriptPath
-    this.lastIdx = transcriptIdx
+    // Record current file size so we only forward new content
+    try {
+      this.lastFileSize = existsSync(transcriptPath) ? statSync(transcriptPath).size : 0
+    } catch {
+      this.lastFileSize = 0
+    }
   }
 
   /** Reset counters for new turn */
@@ -48,19 +79,33 @@ export class OutputForwarder {
     if (state.userMessageId) this.userMessageId = state.userMessageId
     if (state.emoji) this.emoji = state.emoji
     if (state.transcriptPath) this.transcriptPath = state.transcriptPath
-    if (state.transcriptIdx != null) this.lastIdx = state.transcriptIdx
+    if (state.lastFileSize != null) this.lastFileSize = state.lastFileSize
     if (state.sentCount != null) this.sentCount = state.sentCount
     if (state.lastSentHash) this.lastHash = state.lastSentHash
   }
 
-  /** Extract new assistant text from transcript since lastIdx */
-  private extractNewText(): string {
-    if (!this.transcriptPath || !existsSync(this.transcriptPath)) return ''
-    const transcript = readFileSync(this.transcriptPath, 'utf8')
-    const lines = transcript.trim().split('\n')
-    const newLines = lines.slice(this.lastIdx)
-    this.lastIdx = lines.length
+  /** Read new bytes from transcript file since lastFileSize */
+  private readNewLines(): string[] {
+    if (!this.transcriptPath || !existsSync(this.transcriptPath)) return []
+    try {
+      const stat = statSync(this.transcriptPath)
+      if (stat.size <= this.lastFileSize) return []
 
+      const fd = openSync(this.transcriptPath, 'r')
+      const buf = Buffer.alloc(stat.size - this.lastFileSize)
+      readSync(fd, buf, 0, buf.length, this.lastFileSize)
+      closeSync(fd)
+      this.lastFileSize = stat.size
+
+      return buf.toString('utf8').split('\n').filter(l => l.trim())
+    } catch {
+      return []
+    }
+  }
+
+  /** Extract new assistant text from transcript since lastFileSize */
+  private extractNewText(): string {
+    const newLines = this.readNewLines()
     let newText = ''
     for (const l of newLines) {
       try {
@@ -215,6 +260,56 @@ export class OutputForwarder {
     return line
   }
 
+  // ── File watch ─────────────────────────────────────────────────────
+
+  /** Set callback for idle detection (no new data for 5s after assistant entry) */
+  setOnIdle(cb: () => void): void {
+    this.onIdleCallback = cb
+  }
+
+  /** Start watching transcript file for changes */
+  startWatch(): void {
+    if (!this.transcriptPath) return
+    this.stopWatch()
+
+    // Initialize file size
+    try {
+      this.lastFileSize = statSync(this.transcriptPath).size
+    } catch {
+      this.lastFileSize = 0
+    }
+
+    this.watchingPath = this.transcriptPath
+    watchFile(this.transcriptPath, { interval: 1000 }, (curr, prev) => {
+      if (curr.size > prev.size) {
+        void this.forwardNewText()
+        // Reset idle timer
+        this.resetIdleTimer()
+      }
+    })
+  }
+
+  /** Stop watching transcript file */
+  stopWatch(): void {
+    if (this.watchingPath) {
+      unwatchFile(this.watchingPath)
+      this.watchingPath = ''
+    }
+    if (this.idleTimer) {
+      clearTimeout(this.idleTimer)
+      this.idleTimer = null
+    }
+  }
+
+  /** Reset the idle timer — fires after 5s of no new data */
+  private resetIdleTimer(): void {
+    if (this.idleTimer) clearTimeout(this.idleTimer)
+    this.idleTimer = setTimeout(() => {
+      this.idleTimer = null
+      if (this.onIdleCallback) this.onIdleCallback()
+    }, 5000)
+  }
+
   // ── State file helpers ────────────────────────────────────────────
 
   private readState(): Record<string, any> {
@@ -229,7 +324,7 @@ export class OutputForwarder {
 
   private persistState(): void {
     const state = this.readState()
-    state.transcriptIdx = this.lastIdx
+    state.lastFileSize = this.lastFileSize
     state.sentCount = this.sentCount
     state.lastSentHash = this.lastHash
     state.lastSentTime = Date.now()
