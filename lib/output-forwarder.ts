@@ -258,26 +258,46 @@ export class OutputForwarder {
 
     let displayName = name
     let summary = ''
+    let detail = ''
+
+    const isSearchTool = (name === 'Read' || name === 'Grep' || name === 'Glob')
 
     switch (name) {
-      case 'Bash':
-        summary = (input?.command || '').substring(0, 80)
+      case 'Bash': {
+        const desc = (input?.description || '').substring(0, 50)
+        summary = desc || 'Bash'
+        detail = (input?.command || '').substring(0, 500)
         break
+      }
       case 'Read':
         summary = input?.file_path?.split('/').pop() || ''
+        break
+      case 'Grep':
+        summary = '"' + (input?.pattern || '').substring(0, 25) + '"'
+        break
+      case 'Glob':
+        summary = (input?.pattern || '').substring(0, 25)
         break
       case 'Edit':
       case 'Write':
         summary = input?.file_path?.split('/').pop() || ''
+        detail = input?.file_path || ''
         break
-      case 'Grep':
-        summary = 'pattern: "' + (input?.pattern || '').substring(0, 40) + '"'
+      case 'Agent': {
+        summary = input?.name || input?.subagent_type || 'agent'
+        let d = (input?.prompt || '').substring(0, 200)
+        const backticks = (d.match(/```/g) || []).length
+        if (backticks % 2 === 1) d += '\n```'
+        if (d.length < (input?.prompt || '').length) d += '...'
+        detail = d
         break
-      case 'Glob':
-        summary = input?.pattern || ''
+      }
+      case 'TeamCreate':
+        summary = input?.team_name || ''
+        detail = input?.description || ''
         break
-      case 'Agent':
-        summary = (input?.description || input?.name || '').substring(0, 60)
+      case 'TaskCreate':
+        summary = (input?.subject || '').substring(0, 50)
         break
       case 'Skill':
         summary = input?.skill || ''
@@ -287,12 +307,23 @@ export class OutputForwarder {
           const parts = name.split('__')
           displayName = 'mcp'
           summary = parts[parts.length - 1] || ''
+        } else {
+          summary = name
         }
         break
     }
 
-    if (!summary) return '-# ' + displayName
-    return '-# ' + displayName + ' (' + summary + ')'
+    if (!summary) return null
+    let toolLine = '-# ' + displayName + ' (' + summary + ')'
+    if (!isSearchTool && detail && detail !== summary) {
+      // 5줄 제한
+      const lines = detail.substring(0, 500).split('\n')
+      const shown = lines.slice(0, 5)
+      let block = shown.join('\n')
+      if (lines.length > 5) block += '\n... +' + (lines.length - 5) + ' lines'
+      toolLine += '\n```\n' + block + '\n```'
+    }
+    return toolLine
   }
 
   /** Format tool result as code block (Bash: last 5 lines, Edit: diff) */
