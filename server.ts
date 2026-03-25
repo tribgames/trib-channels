@@ -196,7 +196,45 @@ function editDiscordMessage(channelId: string, messageId: string, label: string)
 
 // ── Interaction handling ──────────────────────────────────────────────
 
-backend.onInteraction = (interaction) => {
+// ── Modal 표시 핸들러 (discord.ts에서 raw interaction 전달받음) ──
+backend.onModalRequest = async (rawInteraction: any) => {
+  const { ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder } = await import('discord.js')
+  const customId = rawInteraction.customId
+
+  if (customId === 'sched_add') {
+    const modal = new ModalBuilder().setCustomId('modal_sched_add').setTitle('스케줄 추가')
+    ;(modal as any).addComponents(
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('name').setLabel('이름').setStyle(TextInputStyle.Short).setRequired(true)),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('time').setLabel('시간 (HH:MM)').setStyle(TextInputStyle.Short).setRequired(true)),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('channel').setLabel('채널').setStyle(TextInputStyle.Short).setValue('general')),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('mode').setLabel('모드 (interactive/non-interactive)').setStyle(TextInputStyle.Short).setValue('non-interactive')),
+    )
+    await rawInteraction.showModal(modal)
+  } else if (customId === 'autotalk_freq') {
+    const modal = new ModalBuilder().setCustomId('modal_autotalk').setTitle('자율대화 빈도')
+    ;(modal as any).addComponents(
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('freq').setLabel('빈도 (1~5)').setStyle(TextInputStyle.Short).setValue('3').setRequired(true)),
+    )
+    await rawInteraction.showModal(modal)
+  } else if (customId === 'quiet_set') {
+    const modal = new ModalBuilder().setCustomId('modal_quiet').setTitle('방해금지 설정')
+    ;(modal as any).addComponents(
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('schedule').setLabel('스케줄 방해금지 (예: 23:00-07:00)').setStyle(TextInputStyle.Short)),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('autotalk').setLabel('자율대화 방해금지 (예: 23:00-09:00)').setStyle(TextInputStyle.Short)),
+    )
+    await rawInteraction.showModal(modal)
+  } else if (customId?.startsWith('sched_edit:')) {
+    const name = customId.split(':')[1]
+    const modal = new ModalBuilder().setCustomId(`modal_sched_edit:${name}`).setTitle(`${name} 편집`)
+    ;(modal as any).addComponents(
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('time').setLabel('시간 (HH:MM)').setStyle(TextInputStyle.Short)),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('channel').setLabel('채널').setStyle(TextInputStyle.Short)),
+    )
+    await rawInteraction.showModal(modal)
+  }
+}
+
+backend.onInteraction = (interaction: any) => {
   scheduler.noteActivity()
 
   // ── Permission button handling (perm-{uuid}-{action}) ──
@@ -281,6 +319,70 @@ backend.onInteraction = (interaction) => {
           components: result.components as any,
         })
       }
+    })()
+    return
+  }
+
+  // ── Modal submit handling (설정 변경) ──
+  if (interaction.type === 'modal' && interaction.fields) {
+    void (async () => {
+      const cmdCtx: CommandContext = { channelId: interaction.channelId, userId: interaction.userId, lang: 'ko', scheduler }
+
+      if (interaction.customId === 'modal_sched_add') {
+        const { name, time, channel, mode } = interaction.fields!
+        const cmd = `/bot(schedule, add, "${name}", time="${time}", channel="${channel || 'general'}", mode="${mode || 'non-interactive'}")`
+        const result = await routeCustomCommand(cmd, cmdCtx)
+        if (interaction.channelId) await backend.sendMessage(interaction.channelId, result?.text ?? 'done')
+      }
+
+      if (interaction.customId === 'modal_autotalk') {
+        const freq = interaction.fields!.freq || '3'
+        const result = await routeCustomCommand(`/bot(autotalk, freq=${freq})`, cmdCtx)
+        if (interaction.channelId) await backend.sendMessage(interaction.channelId, result?.text ?? 'done')
+      }
+
+      if (interaction.customId === 'modal_quiet') {
+        const schedule = interaction.fields!.schedule || ''
+        const autotalk = interaction.fields!.autotalk || ''
+        const cmds: string[] = []
+        if (schedule) cmds.push(`/bot(quiet, schedule, "${schedule}")`)
+        if (autotalk) cmds.push(`/bot(quiet, autotalk, "${autotalk}")`)
+        for (const cmd of cmds) await routeCustomCommand(cmd, cmdCtx)
+        if (interaction.channelId) await backend.sendMessage(interaction.channelId, '방해금지 설정 완료')
+      }
+    })()
+    return
+  }
+
+  // ── Autotalk on/off 버튼 ──
+  if (interaction.customId === 'autotalk_on' || interaction.customId === 'autotalk_off') {
+    void (async () => {
+      const cmdCtx: CommandContext = { channelId: interaction.channelId, userId: interaction.userId, lang: 'ko', scheduler }
+      const cmd = interaction.customId === 'autotalk_on' ? '/bot(autotalk, on)' : '/bot(autotalk, off)'
+      const result = await routeCustomCommand(cmd, cmdCtx)
+      if (interaction.channelId) await backend.sendMessage(interaction.channelId, result?.text ?? 'done')
+    })()
+    return
+  }
+
+  // ── Schedule remove 버튼 ──
+  if (interaction.customId?.startsWith('sched_remove:')) {
+    const name = interaction.customId.split(':')[1]
+    void (async () => {
+      const cmdCtx: CommandContext = { channelId: interaction.channelId, userId: interaction.userId, lang: 'ko', scheduler }
+      const result = await routeCustomCommand(`/bot(schedule, remove, "${name}")`, cmdCtx)
+      if (interaction.channelId) await backend.sendMessage(interaction.channelId, result?.text ?? 'done')
+    })()
+    return
+  }
+
+  // ── Schedule test 버튼 ──
+  if (interaction.customId?.startsWith('sched_test:')) {
+    const name = interaction.customId.split(':')[1]
+    void (async () => {
+      const cmdCtx: CommandContext = { channelId: interaction.channelId, userId: interaction.userId, lang: 'ko', scheduler }
+      const result = await routeCustomCommand(`/bot(schedule, test, "${name}")`, cmdCtx)
+      if (interaction.channelId) await backend.sendMessage(interaction.channelId, result?.text ?? 'done')
     })()
     return
   }

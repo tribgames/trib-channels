@@ -112,8 +112,9 @@ export class DiscordBackend implements ChannelBackend {
   readonly name = 'discord'
 
   onMessage: ((msg: InboundMessage) => void) | null = null
-  onInteraction: ((interaction: { type: string; customId: string; userId: string; channelId: string; values?: string[]; message?: { id: string } }) => void) | null = null
+  onInteraction: ((interaction: { type: string; customId: string; userId: string; channelId: string; values?: string[]; fields?: Record<string, string>; message?: { id: string } }) => void) | null = null
   onSlashCommand: ((interaction: ChatInputCommandInteraction) => void) | null = null
+  onModalRequest: ((interaction: any) => void) | null = null
   onCustomCommand: ((text: string, channelId: string, userId: string, replyFn: (text: string, opts?: { embeds?: Record<string, unknown>[]; components?: Record<string, unknown>[] }) => Promise<void>) => void) | null = null
 
   private client: Client
@@ -191,7 +192,45 @@ export class DiscordBackend implements ChannelBackend {
           return
         }
 
+        // Modal submit handling
+        if (interaction.isModalSubmit()) {
+          if (this.onInteraction) {
+            const fields: Record<string, string> = {}
+            for (const row of interaction.components) {
+              for (const comp of (row as any).components ?? []) {
+                if (comp.customId && comp.value != null) fields[comp.customId] = String(comp.value)
+              }
+            }
+            this.onInteraction({
+              type: 'modal',
+              customId: interaction.customId,
+              userId: interaction.user.id,
+              channelId: interaction.channelId ?? '',
+              fields,
+              message: undefined,
+            })
+          }
+          await interaction.deferUpdate().catch(() => {})
+          return
+        }
+
         if (interaction.isButton() || interaction.isStringSelectMenu() || interaction.isRoleSelectMenu() || interaction.isUserSelectMenu() || interaction.isChannelSelectMenu()) {
+          // Modal이 필요한 버튼은 deferUpdate 안 하고 raw interaction 전달
+          const needsModal = interaction.isButton() && (
+            interaction.customId.startsWith('sched_add') ||
+            interaction.customId.startsWith('sched_edit') ||
+            interaction.customId.startsWith('quiet_set') ||
+            interaction.customId.startsWith('autotalk_freq')
+          )
+
+          if (needsModal) {
+            // server.ts에서 showModal 처리할 수 있도록 raw interaction 전달
+            if (this.onModalRequest) {
+              this.onModalRequest(interaction as any)
+            }
+            return
+          }
+
           await interaction.deferUpdate().catch(() => {})
 
           if (this.onInteraction) {
