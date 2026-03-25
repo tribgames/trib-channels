@@ -266,10 +266,16 @@ export class OutputForwarder {
     this.onIdleCallback = cb
   }
 
-  /** Start watching transcript file for changes */
+  /** Start watching transcript file for changes (runs once, never stops) */
   startWatch(): void {
     if (!this.transcriptPath) return
-    this.stopWatch()
+    // Already watching the same file — skip
+    if (this.watchingPath === this.transcriptPath) return
+    // Watching a different file — switch
+    if (this.watchingPath) {
+      unwatchFile(this.watchingPath)
+      this.watchingPath = ''
+    }
 
     // Initialize file size
     try {
@@ -288,16 +294,9 @@ export class OutputForwarder {
     })
   }
 
-  /** Stop watching transcript file */
+  /** No-op — watch is kept alive permanently */
   stopWatch(): void {
-    if (this.watchingPath) {
-      unwatchFile(this.watchingPath)
-      this.watchingPath = ''
-    }
-    if (this.idleTimer) {
-      clearTimeout(this.idleTimer)
-      this.idleTimer = null
-    }
+    // Intentionally empty: watch must never stop
   }
 
   /** Reset the idle timer — fires after 5s of no new data */

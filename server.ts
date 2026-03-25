@@ -115,9 +115,9 @@ function noteIdleActivity(): void {
   if (idleTimer) clearTimeout(idleTimer)
   idleTimer = setTimeout(() => {
     idleTimer = null
-    forwarder.stopWatch()
     stopServerTyping()
     void forwarder.forwardFinalText()
+    // watch is kept alive — never stopped
   }, IDLE_MS)
 }
 
@@ -645,7 +645,7 @@ backend.onMessage = (msg) => {
   startServerTyping(msg.chatId)
   forwarder.reset()
 
-  // Auto-discover transcript path
+  // Re-discover transcript path — may change between sessions
   const transcriptPath = discoverTranscriptPath()
   forwarder.setContext(msg.chatId, transcriptPath)
 
@@ -663,6 +663,7 @@ backend.onMessage = (msg) => {
     state.sentCount = 0
     state.sessionIdle = false
     try { fs.writeFileSync(STATUS_FILE, JSON.stringify(state)) } catch {}
+    // startWatch handles path change detection — safe to call every time
     forwarder.startWatch()
     noteIdleActivity()
   })()
@@ -725,6 +726,16 @@ async function handleInbound(msg: InboundMessage): Promise<void> {
 // ── Start ──────────────────────────────────────────────────────────────
 
 await mcp.connect(new StdioServerTransport())
+
+// Start transcript watch immediately — runs once, stays alive permanently
+{
+  const initialTranscript = discoverTranscriptPath()
+  if (initialTranscript) {
+    forwarder.setContext('', initialTranscript)
+    forwarder.startWatch()
+    process.stderr.write(`claude2bot: watching transcript: ${initialTranscript}\n`)
+  }
+}
 
 if (process.env.CLAUDE2BOT_NO_CONNECT) {
   process.stderr.write('claude2bot: NO_CONNECT mode — skipping backend connection and scheduler\n')
