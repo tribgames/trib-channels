@@ -147,7 +147,7 @@ export class OutputForwarder {
               if (OutputForwarder.isHidden(c.name)) continue
               const toolLine = OutputForwarder.buildToolLine(c.name, c.input)
               if (toolLine) {
-                if (parts.length > 0) parts.push('')
+                if (parts.length > 0) parts.push('\u3164')
                 parts.push(toolLine)
               }
             }
