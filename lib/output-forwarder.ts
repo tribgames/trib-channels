@@ -118,8 +118,11 @@ export class OutputForwarder {
       try {
         const entry = JSON.parse(l)
 
-        // 에이전트 엔트리 필터링 — teamName이 있으면 에이전트 출력
-        if (entry.teamName) continue
+        // 에이전트 엔트리 필터링 — teamName이 있으면 에이전트 출력 (단, plan_approval은 통과)
+        if (entry.teamName) {
+          const text = JSON.stringify(entry.message?.content ?? '')
+          if (!text.includes('plan_approval') && !text.includes('teammate-message')) continue
+        }
 
         // tool_result: show Edit diff from toolUseResult, skip the rest
         if (entry.type === 'user' && entry.message?.content?.some((c: any) => c.type === 'tool_result')) {
