@@ -102,19 +102,26 @@ export class OutputForwarder {
     }
   }
 
-  /** Extract new assistant text from transcript since lastFileSize */
+  /** Extract new assistant text + tool logs from transcript since lastFileSize */
   private extractNewText(): string {
     const newLines = this.readNewLines()
     let newText = ''
     for (const l of newLines) {
       try {
         const entry = JSON.parse(l)
+        // Skip tool_result entries — not useful for forwarding
+        if (entry.type === 'tool_result') continue
         if (entry.type === 'assistant' && entry.message?.content) {
-          const texts = entry.message.content
-            .filter((c: any) => c.type === 'text')
-            .map((c: any) => c.text)
-            .join('\n')
-          if (texts.trim()) newText += texts.trim() + '\n'
+          const parts: string[] = []
+          for (const c of entry.message.content) {
+            if (c.type === 'text' && c.text?.trim()) {
+              parts.push(c.text.trim())
+            } else if (c.type === 'tool_use') {
+              const toolLine = OutputForwarder.buildToolLine(c.name, c.input)
+              if (toolLine) parts.push(toolLine)
+            }
+          }
+          if (parts.length) newText += parts.join('\n') + '\n'
         }
       } catch {}
     }
