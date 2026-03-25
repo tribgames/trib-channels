@@ -730,10 +730,13 @@ await mcp.connect(new StdioServerTransport())
 // Start transcript watch immediately — runs once, stays alive permanently
 {
   const initialTranscript = discoverTranscriptPath()
+  // Resolve default channel ID from config
+  const mainLabel = config.channelsConfig?.main || 'general'
+  const defaultChannelId = config.channelsConfig?.channels?.[mainLabel]?.id || ''
   if (initialTranscript) {
-    forwarder.setContext('', initialTranscript)
+    forwarder.setContext(defaultChannelId, initialTranscript)
     forwarder.startWatch()
-    process.stderr.write(`claude2bot: watching transcript: ${initialTranscript}\n`)
+    process.stderr.write(`claude2bot: watching transcript: ${initialTranscript}, channel: ${defaultChannelId}\n`)
   }
 }
 
