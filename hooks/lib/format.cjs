@@ -129,8 +129,18 @@ function chunk(text, limit) {
     rest = rest.slice(cut).replace(/^\n+/, '');
     const backtickCount = (part.match(/```/g) || []).length;
     if (backtickCount % 2 === 1) {
-      part += '\n```';
-      rest = '```\n' + rest;
+      const langMatch = part.match(/```(\w+)/);
+      const lang = langMatch ? langMatch[1] : '';
+      const closing = '\n```';
+      if (part.length + closing.length > limit) {
+        const overflow = part.length + closing.length - limit;
+        const moved = part.slice(part.length - overflow);
+        part = part.slice(0, part.length - overflow) + closing;
+        rest = '```' + lang + '\n' + moved + rest;
+      } else {
+        part += closing;
+        rest = '```' + lang + '\n' + rest;
+      }
     }
     out.push(part);
   }

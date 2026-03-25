@@ -17,10 +17,11 @@ import * as fs from 'fs'
 import * as https from 'https'
 import * as os from 'os'
 import * as path from 'path'
-import { loadConfig, createBackend } from './lib/config.js'
+import { loadConfig, createBackend, loadBotConfig } from './lib/config.js'
 import { loadSettings } from './lib/settings.js'
 import { Scheduler } from './lib/scheduler.js'
 import { handleSlashCommand, type SlashCommandContext } from './lib/slash-commands.js'
+import { routeCustomCommand, type CommandContext } from './lib/custom-commands.js'
 import type { InboundMessage } from './backends/types.js'
 import type { ChatInputCommandInteraction } from 'discord.js'
 
@@ -34,6 +35,7 @@ process.on('uncaughtException', err => {
 // ── Bootstrap ──────────────────────────────────────────────────────────
 
 const config = loadConfig()
+const botConfig = loadBotConfig()
 const backend = createBackend(config)
 const settings = loadSettings(config.contextFiles)
 
@@ -71,6 +73,7 @@ const scheduler = new Scheduler(
   config.proactive,
   config.channelsConfig,
   config.promptsDir,
+  botConfig,
 )
 
 scheduler.setInjectHandler((channelId: string, name: string, prompt: string) => {
@@ -213,6 +216,29 @@ const slashCtx: SlashCommandContext = {
 backend.onSlashCommand = (interaction) => {
   scheduler.noteActivity()
   void handleSlashCommand(interaction as ChatInputCommandInteraction, slashCtx)
+}
+
+// ── Custom command handling (/bot, /profile) ──────────────────────────
+
+backend.onCustomCommand = (text, channelId, userId, replyFn) => {
+  scheduler.noteActivity()
+  const ctx: CommandContext = {
+    scheduler,
+    channelId,
+    userId,
+    lang: (config as any).language === 'en' ? 'en' : 'ko',
+  }
+  void (async () => {
+    try {
+      const result = await routeCustomCommand(text, ctx)
+      if (result?.text || result?.embeds) {
+        await replyFn(result.text ?? '', { embeds: result.embeds, components: result.components })
+      }
+    } catch (err) {
+      process.stderr.write(`claude2bot: custom command failed: ${err}\n`)
+      await replyFn(`Error: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  })()
 }
 
 // ── Voice transcription ───────────────────────────────────────────────
@@ -584,7 +610,15 @@ function shutdown(): void {
   setTimeout(() => process.exit(0), 2000)
   void backend.disconnect().finally(() => process.exit(0))
 }
-process.stdin.on('end', shutdown)
-process.stdin.on('close', shutdown)
+process.stdin.on('end', () => {
+  process.stderr.write('[claude2bot] stdin end, waiting 3s before shutdown...\n')
+  setTimeout(() => shutdown(), 3000)
+})
+process.stdin.on('close', () => {
+  process.stderr.write('[claude2bot] stdin closed, waiting 3s before shutdown...\n')
+  setTimeout(() => shutdown(), 3000)
+})
 process.on('SIGTERM', shutdown)
-process.on('SIGINT', shutdown)
+process.on('SIGINT', () => {
+  process.stderr.write('[claude2bot] SIGINT received, ignoring (handled by host)\n')
+})

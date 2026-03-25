@@ -56,7 +56,12 @@ process.stdin.on('end', async () => {
       detail = toolInput.file_path || '';
     } else if (tool === 'Agent') {
       summary = toolInput.name || toolInput.subagent_type || 'agent';
-      detail = (toolInput.prompt || '').substring(0, 200);
+      let d = (toolInput.prompt || '').substring(0, 200);
+      // 잘린 후 열린 코드블록 닫기
+      const backticks = (d.match(/```/g) || []).length;
+      if (backticks % 2 === 1) d += '\n```';
+      if (d.length < (toolInput.prompt || '').length) d += '...';
+      detail = d;
     } else if (tool === 'TaskCreate') {
       summary = (toolInput.subject || '').substring(0, 50);
     } else if (tool === 'TeamCreate') {
@@ -67,7 +72,7 @@ process.stdin.on('end', async () => {
     }
     if (!summary) process.exit(0);
 
-    const displayName = tool.replace(/^mcp__plugin_claude2bot_claude2bot__/, '');
+    const displayName = tool.startsWith('mcp__') ? 'mcp' : tool;
     let toolLine = '-# ' + displayName + ' (' + summary + ')';
     if (!isSearchTool && detail && detail !== summary) toolLine += '\n```\n' + detail.substring(0, 300) + '\n```';
 
@@ -102,6 +107,7 @@ process.stdin.on('end', async () => {
       msg = pad + toolLine;
     }
     state.sentCount = (state.sentCount || 0) + 1;
+    state.lastSentTime = Date.now();
 
     const chunks = chunk(msg, 2000);
     for (const c of chunks) {

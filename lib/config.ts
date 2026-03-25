@@ -3,11 +3,11 @@
  * and instantiates the appropriate backend.
  */
 
-import { readFileSync, mkdirSync } from 'fs'
+import { readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { DiscordBackend } from '../backends/discord.js'
 import { TelegramBackend } from '../backends/telegram.js'
-import type { ChannelBackend, PluginConfig } from '../backends/types.js'
+import type { ChannelBackend, PluginConfig, BotConfig, ProfileConfig } from '../backends/types.js'
 
 if (!process.env.CLAUDE_PLUGIN_DATA) {
   process.stderr.write(
@@ -65,4 +65,36 @@ export function createBackend(config: PluginConfig): ChannelBackend {
       process.stderr.write(`claude2bot: unknown backend "${config.backend}"\n`)
       process.exit(1)
   }
+}
+
+// ── bot.json ──────────────────────────────────────────────────────────
+
+const BOT_FILE = join(DATA_DIR, 'bot.json')
+
+export function loadBotConfig(): BotConfig {
+  try {
+    return JSON.parse(readFileSync(BOT_FILE, 'utf8'))
+  } catch {
+    return {}
+  }
+}
+
+export function saveBotConfig(bot: BotConfig): void {
+  writeFileSync(BOT_FILE, JSON.stringify(bot, null, 2) + '\n')
+}
+
+// ── profile.json ──────────────────────────────────────────────────────
+
+const PROFILE_FILE = join(DATA_DIR, 'profile.json')
+
+export function loadProfileConfig(): ProfileConfig {
+  try {
+    return JSON.parse(readFileSync(PROFILE_FILE, 'utf8'))
+  } catch {
+    return {}
+  }
+}
+
+export function saveProfileConfig(profile: ProfileConfig): void {
+  writeFileSync(PROFILE_FILE, JSON.stringify(profile, null, 2) + '\n')
 }

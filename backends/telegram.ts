@@ -116,6 +116,7 @@ export class TelegramBackend implements ChannelBackend {
   onMessage: ((msg: InboundMessage) => void) | null = null
   onInteraction: ((interaction: { type: string; customId: string; userId: string; channelId: string; values?: string[]; message?: { id: string } }) => void) | null = null
   onSlashCommand: ((interaction: any) => void) | null = null
+  onCustomCommand: ((text: string, channelId: string, userId: string, replyFn: (text: string, opts?: { embeds?: Record<string, unknown>[]; components?: Record<string, unknown>[] }) => Promise<void>) => void) | null = null
 
   private bot: Bot
   private botUsername = ''

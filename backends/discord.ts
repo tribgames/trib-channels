@@ -114,6 +114,7 @@ export class DiscordBackend implements ChannelBackend {
   onMessage: ((msg: InboundMessage) => void) | null = null
   onInteraction: ((interaction: { type: string; customId: string; userId: string; channelId: string; values?: string[]; message?: { id: string } }) => void) | null = null
   onSlashCommand: ((interaction: ChatInputCommandInteraction) => void) | null = null
+  onCustomCommand: ((text: string, channelId: string, userId: string, replyFn: (text: string, opts?: { embeds?: Record<string, unknown>[]; components?: Record<string, unknown>[] }) => Promise<void>) => void) | null = null
 
   private client: Client
   private stateDir: string
@@ -164,6 +165,13 @@ export class DiscordBackend implements ChannelBackend {
     })
 
     this.client.on('messageCreate', msg => {
+      if (msg.author.id === this.client.user?.id) {
+        // If typing is active for this channel, keep it going; otherwise do nothing
+        if (this.typingIntervals.has(msg.channelId)) {
+          // Still processing — typing continues via existing interval
+        }
+        return
+      }
       if (msg.author.bot) return
       this.handleInbound(msg).catch(e =>
         process.stderr.write(`claude2bot discord: handleInbound failed: ${e}\n`),
@@ -240,7 +248,6 @@ export class DiscordBackend implements ChannelBackend {
   // ── Outbound operations ────────────────────────────────────────────
 
   async sendMessage(chatId: string, text: string, opts?: SendOptions): Promise<SendResult> {
-    this.stopTyping(chatId)
     const ch = await this.fetchAllowedChannel(chatId)
     if (!('send' in ch)) throw new Error('channel is not sendable')
 
@@ -490,7 +497,7 @@ export class DiscordBackend implements ChannelBackend {
         if ('sendTyping' in msg.channel) {
           msg.channel.sendTyping().catch(() => {})
         }
-      }, 9000)
+      }, 12000)
       this.typingIntervals.set(msg.channelId, interval)
     }
 
@@ -510,6 +517,26 @@ export class DiscordBackend implements ChannelBackend {
     }
 
     const text = msg.content || (atts.length > 0 ? '(attachment)' : '')
+
+    // Custom command routing: /bot(...) or /profile(...)
+    if (text.match(/^\/(bot|profile)\s*\(/) && this.onCustomCommand) {
+      const replyFn = async (reply: string, opts?: { embeds?: Record<string, unknown>[]; components?: Record<string, unknown>[] }) => {
+        try {
+          const ch = await this.fetchAllowedChannel(msg.channelId)
+          if ('send' in ch) {
+            await ch.send({
+              ...(reply ? { content: reply } : {}),
+              ...(opts?.embeds?.length ? { embeds: opts.embeds } : {}),
+              ...(opts?.components?.length ? { components: opts.components as any } : {}),
+            })
+          }
+        } catch (err) {
+          process.stderr.write(`claude2bot discord: custom command reply failed: ${err}\n`)
+        }
+      }
+      this.onCustomCommand(text, msg.channelId, msg.author.id, replyFn)
+      return
+    }
 
     if (this.onMessage) {
       this.onMessage({

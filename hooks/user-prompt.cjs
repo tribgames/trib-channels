@@ -82,13 +82,16 @@ process.stdin.on('end', async () => {
         const userMsg = Array.isArray(msgs) && msgs.find(m => !m.author || !m.author.bot);
         if (userMsg) {
           const mid = userMsg.id;
-          const oldState = {}; try { Object.assign(oldState, JSON.parse(fs.readFileSync(STATE_FILE, "utf8"))); } catch {} fs.writeFileSync(STATE_FILE, JSON.stringify({ ...oldState,
+          const oldState = {}; try { Object.assign(oldState, JSON.parse(fs.readFileSync(STATE_FILE, "utf8"))); } catch {}
+          const elapsed = Date.now() - (oldState.lastSentTime || 0);
+          fs.writeFileSync(STATE_FILE, JSON.stringify({ ...oldState,
             channelId: channelId,
             userMessageId: mid,
             emoji: '\u{1F914}',
             transcriptIdx: transcriptIdx,
             transcriptPath: data.transcript_path || '',
-            sentCount: 0
+            sentCount: (oldState.userMessageId !== mid) ? 0 : (elapsed < 420000 ? (oldState.sentCount || 0) : 0),
+            sessionIdle: false
           }));
           await discordReact(channelId, mid, '\u{1F914}', token);
         }

@@ -64,12 +64,15 @@ process.stdin.on('end', async () => {
       }
 
       if (newText.trim()) {
-        const pad = (state && state.sentCount > 0) ? '\u3164\n' : '';
-        const padded = pad + formatForDiscord(newText.trim());
-        const hash = crypto.createHash('md5').update(padded).digest('hex');
+        const formatted = formatForDiscord(newText.trim());
+        const hash = crypto.createHash('md5').update(formatted).digest('hex');
         if (state.lastSentHash === hash) process.exit(0);
         state.lastSentHash = hash;
+        state.lastSentTime = Date.now();
+        state.sessionIdle = true;
         fs.writeFileSync(STATE_FILE, JSON.stringify(state));
+        const pad = (state && state.sentCount > 0) ? '\u3164\n' : '';
+        const padded = pad + formatted;
         const chunks = chunk(padded, 2000);
         for (const c of chunks) {
           await discordSend(channelId, c, token);
@@ -77,18 +80,24 @@ process.stdin.on('end', async () => {
       }
     } else {
       // fallback: transcriptPath 없으면 last_assistant_message 사용
+      // pre-tool/post-tool이 이미 전송했을 수 있으므로 sentCount > 0이면 skip
       const msg = (data.last_assistant_message || '').trim();
-      if (msg && !msg.includes('No response requested')) {
-        const pad = (state && state.sentCount > 0) ? '\u3164\n' : '';
-        const padded = pad + formatForDiscord(msg);
-        const hash = crypto.createHash('md5').update(padded).digest('hex');
+      if (msg && !msg.includes('No response requested') && (state.sentCount || 0) === 0) {
+        const formatted = formatForDiscord(msg);
+        const hash = crypto.createHash('md5').update(formatted).digest('hex');
         if (state.lastSentHash === hash) process.exit(0);
         state.lastSentHash = hash;
+        state.lastSentTime = Date.now();
+        state.sessionIdle = true;
         fs.writeFileSync(STATE_FILE, JSON.stringify(state));
+        const padded = formatted;
         const chunks = chunk(padded, 2000);
         for (const c of chunks) {
           await discordSend(channelId, c, token);
         }
+      } else {
+        state.sessionIdle = true;
+        fs.writeFileSync(STATE_FILE, JSON.stringify(state));
       }
     }
     process.exit(0);

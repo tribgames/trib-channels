@@ -7,8 +7,9 @@
 
 import { REST, Routes, SlashCommandBuilder } from 'discord.js'
 import type { ChatInputCommandInteraction, Client } from 'discord.js'
-import { readFileSync, existsSync } from 'fs'
+import { readFileSync, writeFileSync, existsSync } from 'fs'
 import { join } from 'path'
+import { tmpdir } from 'os'
 import type { PluginConfig } from '../backends/types.js'
 import type { Scheduler } from './scheduler.js'
 import { DATA_DIR } from './config.js'
@@ -75,6 +76,12 @@ const i18n: Record<string, Record<Lang, string>> = {
     ja: 'ステータス確認中...',
     zh: '正在检查状态...',
   },
+  'status.started': {
+    en: 'Started',
+    ko: '시작 시간',
+    ja: '開始時間',
+    zh: '启动时间',
+  },
   // config
   'config.loading': {
     en: 'Loading config...',
@@ -130,12 +137,6 @@ const i18n: Record<string, Record<Lang, string>> = {
     ja: 'スケジュール名を指定してください。(`/claude schedule remove [name]`)',
     zh: '请指定计划名称。(`/claude schedule remove [name]`)',
   },
-  'schedule.name_required_toggle': {
-    en: 'Please specify a schedule name. (`/claude schedule toggle [name]`)',
-    ko: '스케줄 이름을 지정해주세요. (`/claude schedule toggle [name]`)',
-    ja: 'スケジュール名を指定してください。(`/claude schedule toggle [name]`)',
-    zh: '请指定计划名称。(`/claude schedule toggle [name]`)',
-  },
   'schedule.name_required_add': {
     en: 'Please specify a schedule name. (`/claude schedule add [name]`)',
     ko: '스케줄 이름을 지정해주세요. (`/claude schedule add [name]`)',
@@ -159,18 +160,6 @@ const i18n: Record<string, Record<Lang, string>> = {
     ko: '삭제 실패: {error}',
     ja: '削除失敗: {error}',
     zh: '删除失败: {error}',
-  },
-  'schedule.toggled': {
-    en: 'Schedule "{name}" -> **{state}** (effective from next tick)',
-    ko: '스케줄 "{name}" -> **{state}** (다음 틱부터 적용)',
-    ja: 'スケジュール「{name}」-> **{state}** (次のティックから適用)',
-    zh: '计划「{name}」-> **{state}** (下次执行时生效)',
-  },
-  'schedule.toggle_failed': {
-    en: 'Toggle failed: {error}',
-    ko: '토글 실패: {error}',
-    ja: 'トグル失敗: {error}',
-    zh: '切换失败: {error}',
   },
   'schedule.add_missing_options': {
     en: 'Missing required options. Usage: `/claude schedule add name:<name> time:<HH:MM> channel:<label> prompt:<text>`',
@@ -529,21 +518,20 @@ function buildCommands(): SlashCommandBuilder {
             { name: 'list', value: 'list' },
             { name: 'add', value: 'add' },
             { name: 'remove', value: 'remove' },
-            { name: 'toggle', value: 'toggle' },
             { name: 'restart', value: 'restart' },
           ),
       )
       .addStringOption(opt =>
         opt
           .setName('name')
-          .setDescription('Schedule name (required for add/remove/toggle)')
+          .setDescription('Schedule name (required for add/remove)')
           .setDescriptionLocalizations({
-            ko: '스케줄 이름 (add/remove/toggle 시 필수)',
-            ja: 'スケジュール名 (add/remove/toggle時必須)',
-            'zh-CN': '计划名称 (add/remove/toggle时必填)',
-            'zh-TW': '排程名稱 (add/remove/toggle時必填)',
-            'pt-BR': 'Nome do agendamento (obrigatorio para add/remove/toggle)',
-            'es-ES': 'Nombre de programacion (requerido para add/remove/toggle)',
+            ko: '스케줄 이름 (add/remove 시 필수)',
+            ja: 'スケジュール名 (add/remove時必須)',
+            'zh-CN': '计划名称 (add/remove时必填)',
+            'zh-TW': '排程名稱 (add/remove時必填)',
+            'pt-BR': 'Nome do agendamento (obrigatorio para add/remove)',
+            'es-ES': 'Nombre de programacion (requerido para add/remove)',
           })
           .setRequired(false),
       )
@@ -588,6 +576,24 @@ function buildCommands(): SlashCommandBuilder {
             'es-ES': 'Texto del prompt de programacion (requerido para add)',
           })
           .setRequired(false),
+      )
+      .addStringOption(opt =>
+        opt
+          .setName('mode')
+          .setDescription('Schedule mode (default: interactive)')
+          .setDescriptionLocalizations({
+            ko: '스케줄 모드 (기본: interactive)',
+            ja: 'スケジュールモード (デフォルト: interactive)',
+            'zh-CN': '计划模式 (默认: interactive)',
+            'zh-TW': '排程模式 (預設: interactive)',
+            'pt-BR': 'Modo do agendamento (padrao: interactive)',
+            'es-ES': 'Modo de programacion (predeterminado: interactive)',
+          })
+          .setRequired(false)
+          .addChoices(
+            { name: 'interactive', value: 'interactive' },
+            { name: 'non-interactive', value: 'non-interactive' },
+          ),
       ),
   )
 
@@ -668,16 +674,52 @@ export async function handleSlashCommand(
     case 'status': {
       const memMB = Math.round(process.memoryUsage.rss() / 1024 / 1024)
       const uptimeMin = Math.round(process.uptime() / 60)
+      const startTime = new Date(Date.now() - process.uptime() * 1000)
+      const startStr = startTime.toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })
       const schedules = ctx.scheduler.getStatus()
       const activeSchedules = schedules.filter(s => s.running).length
       const lines = [
         `**Status**`,
         `Backend: ${ctx.config.backend}`,
         `PID: ${ctx.serverProcess.pid}`,
+        `${t('status.started', interaction.locale)}: ${startStr}`,
         `Uptime: ${uptimeMin}m`,
         `Memory: ${memMB}MB`,
         `Schedules: ${schedules.length} total, ${activeSchedules} running`,
       ]
+
+      // Claude session data from statusLine
+      try {
+        const sessionPath = '/tmp/claude-session-data.json'
+        if (existsSync(sessionPath)) {
+          const raw = readFileSync(sessionPath, 'utf-8')
+          const data = JSON.parse(raw)
+
+          const model = data.model?.display_name ?? data.model?.id ?? 'unknown'
+          lines.push('', `**Claude Session**`)
+          lines.push(`Model: ${model}`)
+
+          const inTok = data.context_window?.total_input_tokens
+          const outTok = data.context_window?.total_output_tokens
+          if (inTok != null || outTok != null) {
+            const fmt = (n: number) => n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1_000 ? `${Math.round(n / 1_000)}K` : `${n}`
+            lines.push(`Tokens: in ${fmt(inTok ?? 0)} / out ${fmt(outTok ?? 0)}`)
+          }
+
+          const fiveH = data.rate_limits?.five_hour?.used_percentage
+          const sevenD = data.rate_limits?.seven_day?.used_percentage
+          if (fiveH != null || sevenD != null) {
+            const parts: string[] = []
+            if (fiveH != null) parts.push(`5h ${Math.round(fiveH)}%`)
+            if (sevenD != null) parts.push(`7d ${Math.round(sevenD)}%`)
+            lines.push(`Rate limit: ${parts.join(' / ')}`)
+          }
+
+          const ctxPct = data.context_window?.used_percentage
+          if (ctxPct != null) lines.push(`Context: ${Math.round(ctxPct)}%`)
+        }
+      } catch { /* graceful fallback — show basic info only */ }
+
       await interaction.reply({ content: lines.join('\n'), flags: 64 })
       return
     }
@@ -723,22 +765,11 @@ export async function handleSlashCommand(
 
 async function handleStop(
   interaction: ChatInputCommandInteraction,
-  ctx: SlashCommandContext,
+  _ctx: SlashCommandContext,
 ): Promise<void> {
-  const ppid = ctx.serverProcess.ppid
-  if (!ppid || ppid <= 1) {
-    await interaction.reply({ content: t('stop.not_found', interaction.locale), flags: 64 })
-    return
-  }
-  try {
-    process.kill(ppid, 'SIGINT')
-    await interaction.reply({ content: t('stop.sent', interaction.locale, { pid: ppid }), flags: 64 })
-  } catch (err) {
-    await interaction.reply({
-      content: t('stop.failed', interaction.locale, { error: err instanceof Error ? err.message : String(err) }),
-      flags: 64,
-    })
-  }
+  const flagFile = join(tmpdir(), 'claude2bot-stop.flag')
+  writeFileSync(flagFile, String(Date.now()))
+  await interaction.reply({ content: t('stop.sent', interaction.locale, { pid: process.pid }), flags: 64 })
 }
 
 async function handleModel(
@@ -923,43 +954,6 @@ async function handleSchedule(
       return
     }
 
-    case 'toggle': {
-      if (!name) {
-        await interaction.reply({ content: t('schedule.name_required_toggle', interaction.locale), flags: 64 })
-        return
-      }
-      // Toggle enabled state in config.json
-      try {
-        const configPath = join(DATA_DIR, 'config.json')
-        const config = JSON.parse(readFileSync(configPath, 'utf8')) as PluginConfig
-        let found = false
-        for (const arr of [config.nonInteractive, config.interactive]) {
-          if (!arr) continue
-          const entry = arr.find(s => s.name === name)
-          if (entry) {
-            entry.enabled = entry.enabled === false ? true : false
-            found = true
-            break
-          }
-        }
-        if (!found) {
-          await interaction.reply({ content: t('schedule.not_found', interaction.locale, { name: name! }), flags: 64 })
-          return
-        }
-        const { writeFileSync } = await import('fs')
-        writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n')
-        const entry = [...(config.nonInteractive ?? []), ...(config.interactive ?? [])].find(s => s.name === name)
-        const state = entry?.enabled === false ? 'disabled' : 'enabled'
-        await interaction.reply({ content: t('schedule.toggled', interaction.locale, { name: name!, state }), flags: 64 })
-      } catch (err) {
-        await interaction.reply({
-          content: t('schedule.toggle_failed', interaction.locale, { error: err instanceof Error ? err.message : String(err) }),
-          flags: 64,
-        })
-      }
-      return
-    }
-
     case 'add': {
       if (!name) {
         await interaction.reply({ content: t('schedule.name_required_add', interaction.locale), flags: 64 })
@@ -975,16 +969,21 @@ async function handleSchedule(
         })
         return
       }
+      const mode = interaction.options.getString('mode') || 'interactive'
       try {
         const configPath = join(DATA_DIR, 'config.json')
         const config = JSON.parse(readFileSync(configPath, 'utf8')) as PluginConfig
-        if (!config.interactive) config.interactive = []
-        const exists = config.interactive.find(s => s.name === name)
-        if (exists) {
+        const targetKey = mode === 'non-interactive' ? 'nonInteractive' : 'interactive'
+        if (!config[targetKey]) (config as any)[targetKey] = []
+        const targetArr = (config as any)[targetKey] as Array<any>
+        // Check both arrays for duplicate name
+        const existsI = (config.interactive ?? []).find(s => s.name === name)
+        const existsN = (config.nonInteractive ?? []).find(s => s.name === name)
+        if (existsI || existsN) {
           await interaction.reply({ content: t('schedule.already_exists', interaction.locale, { name }), flags: 64 })
           return
         }
-        config.interactive.push({ name, time, channel, enabled: true })
+        targetArr.push({ name, time, channel, enabled: true })
         const { writeFileSync } = await import('fs')
         writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n')
         // Write prompt file
@@ -1105,7 +1104,6 @@ const HELP_EN = [
   '`/claude schedule list` -- List registered schedules',
   '`/claude schedule add` -- Add new schedule',
   '`/claude schedule remove` -- Remove schedule',
-  '`/claude schedule toggle` -- Enable/disable schedule',
   '`/claude access` -- Show access control status',
   '`/claude doctor` -- System diagnostics (connections, hooks, config)',
 ].join('\n')
@@ -1131,7 +1129,6 @@ const HELP_KO = [
   '`/claude schedule list` -- 등록된 스케줄 목록',
   '`/claude schedule add` -- 새 스케줄 추가',
   '`/claude schedule remove` -- 스케줄 삭제',
-  '`/claude schedule toggle` -- 스케줄 켜기/끄기',
   '`/claude access` -- 접근 제어 상태 확인',
   '`/claude doctor` -- 시스템 진단 (연결, 훅, 설정 상태)',
 ].join('\n')
@@ -1157,7 +1154,6 @@ const HELP_JA = [
   '`/claude schedule list` -- 登録済みスケジュール一覧',
   '`/claude schedule add` -- 新しいスケジュール追加',
   '`/claude schedule remove` -- スケジュール削除',
-  '`/claude schedule toggle` -- スケジュール有効/無効切替',
   '`/claude access` -- アクセス制御状態を表示',
   '`/claude doctor` -- システム診断 (接続、フック、設定状態)',
 ].join('\n')
@@ -1183,7 +1179,6 @@ const HELP_ZH = [
   '`/claude schedule list` -- 查看已注册的计划',
   '`/claude schedule add` -- 添加新计划',
   '`/claude schedule remove` -- 删除计划',
-  '`/claude schedule toggle` -- 启用/禁用计划',
   '`/claude access` -- 查看访问控制状态',
   '`/claude doctor` -- 系统诊断 (连接、钩子、配置状态)',
 ].join('\n')
@@ -1191,13 +1186,13 @@ const HELP_ZH = [
 async function handleHelp(
   interaction: ChatInputCommandInteraction,
 ): Promise<void> {
-  const locale = interaction.locale
+  const lang = getLang(interaction.locale)
   let content: string
-  if (locale === 'ko') {
+  if (lang === 'ko') {
     content = HELP_KO
-  } else if (locale === 'ja') {
+  } else if (lang === 'ja') {
     content = HELP_JA
-  } else if (locale.startsWith('zh')) {
+  } else if (lang === 'zh') {
     content = HELP_ZH
   } else {
     content = HELP_EN

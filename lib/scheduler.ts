@@ -7,11 +7,14 @@
  */
 
 import { spawn } from 'child_process'
-import { readFileSync, writeFileSync, unlinkSync, existsSync } from 'fs'
-import { join, isAbsolute } from 'path'
+import { readFileSync, writeFileSync, unlinkSync, existsSync, mkdirSync } from 'fs'
+import { join, isAbsolute, extname, normalize } from 'path'
 import { tmpdir } from 'os'
-import type { TimedSchedule, ProactiveConfig, ProactiveItem, ChannelsConfig } from '../backends/types.js'
+import type { TimedSchedule, ProactiveConfig, ProactiveItem, ChannelsConfig, BotConfig } from '../backends/types.js'
 import { DATA_DIR } from './config.js'
+import { isHoliday } from './holidays.js'
+
+const SCRIPTS_DIR = join(DATA_DIR, 'scripts')
 
 const TICK_INTERVAL = 60_000 // 1 minute
 
@@ -53,6 +56,9 @@ export class Scheduler {
   private proactiveFiredToday = 0                   // count of proactive fires today
   private deferred = new Map<string, number>()       // name -> deferred-until timestamp
   private skippedToday = new Set<string>()           // names skipped for today
+  private holidayCountry: string | null = null       // ISO country code for holiday check
+  private holidayChecked = ''                        // "YYYY-MM-DD" last checked date
+  private todayIsHoliday = false                     // cached result for today
 
   constructor(
     nonInteractive: TimedSchedule[],
@@ -60,12 +66,14 @@ export class Scheduler {
     proactive: ProactiveConfig | undefined,
     channelsConfig: ChannelsConfig | undefined,
     promptsDir?: string,
+    botConfig?: BotConfig,
   ) {
     this.nonInteractive = nonInteractive.filter(s => s.enabled !== false)
     this.interactive = interactive.filter(s => s.enabled !== false)
     this.proactive = proactive ?? null
     this.channelsConfig = channelsConfig ?? null
     this.promptsDir = promptsDir ?? join(DATA_DIR, 'prompts')
+    this.holidayCountry = botConfig?.quiet?.holidays ?? null
   }
 
   setInjectHandler(fn: InjectFn): void {
@@ -242,12 +250,32 @@ export class Scheduler {
   // ── Tick ─────────────────────────────────────────────────────────────
 
   private tick(): void {
+    this.tickAsync().catch(err =>
+      process.stderr.write(`claude2bot scheduler: tick error: ${err}\n`),
+    )
+  }
+
+  private async tickAsync(): Promise<void> {
     const now = new Date()
     const hhmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
     const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
     const key = `${dateStr}T${hhmm}`
     const dow = now.getDay()
     const isWeekend = dow === 0 || dow === 6
+
+    // Holiday check — once per day, cached
+    if (this.holidayCountry && this.holidayChecked !== dateStr) {
+      this.holidayChecked = dateStr
+      try {
+        this.todayIsHoliday = await isHoliday(now, this.holidayCountry)
+        if (this.todayIsHoliday) {
+          process.stderr.write(`claude2bot scheduler: today (${dateStr}) is a holiday — weekday schedules will be skipped\n`)
+        }
+      } catch (err) {
+        process.stderr.write(`claude2bot scheduler: holiday check failed: ${err}\n`)
+        this.todayIsHoliday = false
+      }
+    }
 
     // Timed schedules (non-interactive + interactive)
     const allTimed: Array<{ schedule: TimedSchedule; type: 'non-interactive' | 'interactive' }> = [
@@ -257,6 +285,16 @@ export class Scheduler {
 
     for (const { schedule: s, type } of allTimed) {
       if ((s.days ?? 'daily') === 'weekday' && isWeekend) continue
+      // Skip weekday schedules on public holidays
+      if ((s.days ?? 'daily') === 'weekday' && this.todayIsHoliday) {
+        // Log once per schedule per day
+        const skipKey = `holiday:${dateStr}:${s.name}`
+        if (!this.lastFired.has(skipKey)) {
+          this.lastFired.set(skipKey, dateStr)
+          process.stderr.write(`claude2bot scheduler: skipping "${s.name}" — public holiday\n`)
+        }
+        continue
+      }
 
       // Determine if this schedule should fire
       const intervalMatch = s.time.match(/^every(\d+)m$/)
@@ -359,25 +397,86 @@ export class Scheduler {
     schedule: TimedSchedule,
     type: 'non-interactive' | 'interactive',
   ): Promise<void> {
+    const execMode = schedule.exec ?? 'prompt'
+
+    // For script/script+prompt modes, run script first
+    if (execMode === 'script' || execMode === 'script+prompt') {
+      if (!schedule.script) {
+        process.stderr.write(`claude2bot scheduler: no script specified for "${schedule.name}"\n`)
+        return
+      }
+
+      // Skip if already running
+      if (this.running.has(schedule.name)) return
+      this.running.add(schedule.name)
+
+      const channelId = this.resolveChannel(schedule.channel)
+      process.stderr.write(`claude2bot scheduler: firing ${schedule.name} (${type}, exec=${execMode})\n`)
+
+      try {
+        const scriptResult = await this.runScript(schedule.script)
+
+        if (execMode === 'script') {
+          // Direct send: script stdout → Discord
+          this.running.delete(schedule.name)
+          if (scriptResult && this.sendFn) {
+            await this.sendFn(channelId, scriptResult).catch(err =>
+              process.stderr.write(`claude2bot scheduler: ${schedule.name} relay failed: ${err}\n`),
+            )
+          }
+          process.stderr.write(`claude2bot scheduler: ${schedule.name} script done\n`)
+          return
+        }
+
+        // script+prompt: script result → embed in prompt → Claude
+        const prompt = this.loadPrompt(schedule.prompt ?? `${schedule.name}.md`)
+        if (!prompt) {
+          this.running.delete(schedule.name)
+          process.stderr.write(`claude2bot scheduler: prompt not found for "${schedule.name}"\n`)
+          return
+        }
+
+        const combinedPrompt = `${prompt}\n\n---\n## Script Output\n\`\`\`\n${scriptResult}\n\`\`\``
+        this.running.delete(schedule.name)
+        // Re-fire as a normal prompt schedule with the combined content
+        await this.fireTimedPrompt(schedule, type, combinedPrompt, channelId)
+        return
+      } catch (err) {
+        this.running.delete(schedule.name)
+        process.stderr.write(`claude2bot scheduler: ${schedule.name} script error: ${err}\n`)
+        return
+      }
+    }
+
+    // Default: prompt mode
     const prompt = this.loadPrompt(schedule.prompt ?? `${schedule.name}.md`)
     if (!prompt) {
       process.stderr.write(`claude2bot scheduler: prompt not found for "${schedule.name}"\n`)
       return
     }
 
+    const channelId = this.resolveChannel(schedule.channel)
+    await this.fireTimedPrompt(schedule, type, prompt, channelId)
+  }
+
+  /** Fire a timed schedule with the given prompt content */
+  private async fireTimedPrompt(
+    schedule: TimedSchedule,
+    type: 'non-interactive' | 'interactive',
+    prompt: string,
+    channelId: string,
+  ): Promise<void> {
     process.stderr.write(`claude2bot scheduler: firing ${schedule.name} (${type})\n`)
 
     if (type === 'interactive') {
       const wrapped = this.wrapPrompt(schedule.name, prompt, 'interactive')
-      if (this.injectFn) this.injectFn(this.resolveChannel(schedule.channel), schedule.name, wrapped)
+      if (this.injectFn) this.injectFn(channelId, schedule.name, wrapped)
       return
     }
 
     // Skip if already running (prevent duplicate from manual + auto trigger)
     if (this.running.has(schedule.name)) return
     this.running.add(schedule.name)
-
-    const channelId = this.resolveChannel(schedule.channel)
 
     // CLAUDE2BOT_NO_CONNECT prevents child from connecting Discord bot (avoids WebSocket conflict)
     const proc = spawn('claude', ['-p', '--dangerously-skip-permissions', '--no-session-persistence'], {
@@ -407,6 +506,56 @@ export class Scheduler {
     proc.on('error', (err: Error) => {
       this.running.delete(schedule.name)
       process.stderr.write(`claude2bot scheduler: ${schedule.name} error: ${err}\n`)
+    })
+  }
+
+  // ── Script execution ────────────────────────────────────────────────
+
+  /** Run a script from the scripts directory. Returns stdout (max 2000 chars). */
+  private runScript(scriptName: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+      // Ensure scripts directory exists
+      if (!existsSync(SCRIPTS_DIR)) {
+        mkdirSync(SCRIPTS_DIR, { recursive: true })
+      }
+
+      // Security: resolve path and verify it stays within SCRIPTS_DIR
+      const scriptPath = normalize(join(SCRIPTS_DIR, scriptName))
+      if (!scriptPath.startsWith(SCRIPTS_DIR)) {
+        reject(new Error(`script path escapes scripts directory: ${scriptName}`))
+        return
+      }
+
+      if (!existsSync(scriptPath)) {
+        reject(new Error(`script not found: ${scriptPath}`))
+        return
+      }
+
+      const ext = extname(scriptName).toLowerCase()
+      const cmd = ext === '.py' ? 'python3' : 'node'
+
+      const proc = spawn(cmd, [scriptPath], {
+        timeout: 30_000,
+        env: { ...process.env },
+      })
+
+      let stdout = ''
+      let stderr = ''
+      if (proc.stdout) proc.stdout.on('data', (d: Buffer) => { stdout += d })
+      if (proc.stderr) proc.stderr.on('data', (d: Buffer) => { stderr += d })
+
+      proc.on('close', (code: number | null) => {
+        if (code !== 0) {
+          reject(new Error(`script exited with code ${code}: ${stderr.substring(0, 500)}`))
+          return
+        }
+        // Truncate to 2000 chars (Discord limit)
+        resolve(stdout.substring(0, 2000))
+      })
+
+      proc.on('error', (err: Error) => {
+        reject(new Error(`script spawn error: ${err.message}`))
+      })
     })
   }
 

@@ -129,6 +129,12 @@ export interface ChannelBackend {
    * Only meaningful for Discord backend; other backends should set to null.
    */
   onSlashCommand: ((interaction: any) => void) | null
+
+  /**
+   * Callback invoked when a functional command (/bot, /profile) is detected.
+   * The replyFn sends the response back to the same channel.
+   */
+  onCustomCommand: ((text: string, channelId: string, userId: string, replyFn: (text: string, opts?: { embeds?: Record<string, unknown>[]; components?: Record<string, unknown>[] }) => Promise<void>) => void) | null
 }
 
 // ── Channel types ─────────────────────────────────────────────────────
@@ -203,6 +209,41 @@ export interface PluginConfig {
   voice?: VoiceConfig
 }
 
+// ── Bot config (bot.json) ─────────────────────────────────────────────
+
+export interface QuietConfig {
+  /** Quiet hours for timed schedules "HH:MM-HH:MM" (e.g. "23:00-07:00") */
+  schedule?: string
+  /** Quiet hours for autotalk/proactive "HH:MM-HH:MM" (e.g. "23:00-09:00") */
+  autotalk?: string
+  /** ISO 3166-1 alpha-2 country code for public holiday lookup (e.g. "KR") */
+  holidays?: string
+  /** IANA timezone for date evaluation (e.g. "Asia/Seoul"). Default: system tz */
+  timezone?: string
+}
+
+export interface AutotalkConfig {
+  /** Frequency level 1-5 */
+  freq?: number
+  /** Whether autotalk is enabled */
+  enabled?: boolean
+}
+
+export interface BotConfig {
+  quiet?: QuietConfig
+  autotalk?: AutotalkConfig
+}
+
+// ── Profile config (profile.json) ────────────────────────────────────
+
+export interface ProfileConfig {
+  name?: string
+  role?: string
+  lang?: string
+  tone?: string
+  [key: string]: string | undefined
+}
+
 // ── Schedule types ─────────────────────────────────────────────────────
 
 /** Shared shape for non-interactive and interactive schedules */
@@ -219,6 +260,10 @@ export interface TimedSchedule {
   prompt?: string
   /** Whether this schedule is enabled (default: true) */
   enabled?: boolean
+  /** Execution mode: 'prompt' (default), 'script', or 'script+prompt' */
+  exec?: 'prompt' | 'script' | 'script+prompt'
+  /** Script filename in scripts directory (e.g. 'market.js') */
+  script?: string
 }
 
 /** A single proactive conversation topic */
