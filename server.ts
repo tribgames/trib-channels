@@ -316,15 +316,21 @@ backend.onInteraction = (interaction: any) => {
     return
   }
 
-  // bot_* 버튼 → custom command 실행 (status, schedule, autotalk, quiet, activity)
-  if (interaction.customId?.startsWith('bot_')) {
-    const sub = interaction.customId.replace('bot_', '')
-    const cmd = sub === 'status' ? '/bot(status)' : `/bot(${sub}, list)`
+  // ── GUI close: 메시지 삭제 ──
+  if (interaction.customId === 'gui_close') {
+    if (interaction.message?.id && interaction.channelId) {
+      void backend.deleteMessage(interaction.channelId, interaction.message.id).catch(() => {})
+    }
+    return
+  }
+
+  // ── GUI back: 메인 대시보드로 복귀 ──
+  if (interaction.customId === 'gui_back') {
     void (async () => {
       const cmdCtx: CommandContext = { channelId: interaction.channelId, userId: interaction.userId, lang: 'ko', scheduler }
-      const result = await routeCustomCommand(cmd, cmdCtx)
-      if (interaction.channelId && (result?.text || result?.embeds)) {
-        await backend.sendMessage(interaction.channelId, result.text ?? '', {
+      const result = await routeCustomCommand('/bot(status)', cmdCtx)
+      if (interaction.message?.id && interaction.channelId && result?.embeds) {
+        await backend.editMessage(interaction.channelId, interaction.message.id, '', {
           embeds: result.embeds as any,
           components: result.components as any,
         })
@@ -333,11 +339,29 @@ backend.onInteraction = (interaction: any) => {
     return
   }
 
-  // ── Schedule add: Step 1 — Select Menu 전송 ──
+  // bot_* 버튼 → 같은 메시지를 editMessage로 화면 전환
+  if (interaction.customId?.startsWith('bot_')) {
+    const sub = interaction.customId.replace('bot_', '')
+    const cmd = sub === 'status' ? '/bot(status)' : `/bot(${sub}, list)`
+    void (async () => {
+      const cmdCtx: CommandContext = { channelId: interaction.channelId, userId: interaction.userId, lang: 'ko', scheduler }
+      const result = await routeCustomCommand(cmd, cmdCtx)
+      if (interaction.message?.id && interaction.channelId && (result?.text || result?.embeds)) {
+        await backend.editMessage(interaction.channelId, interaction.message.id, result.text ?? '', {
+          embeds: result.embeds as any,
+          components: result.components as any,
+        })
+      }
+    })()
+    return
+  }
+
+  // ── Schedule add: Step 1 — 같은 메시지에 Select Menu 표시 ──
   if (interaction.customId === 'sched_add') {
     pendingSetup.set(interaction.userId, {})
-    void (async () => {
-      await backend.sendMessage(interaction.channelId, '**스케줄 추가** — 옵션을 선택하세요', {
+    if (interaction.message?.id && interaction.channelId) {
+      void backend.editMessage(interaction.channelId, interaction.message.id, '', {
+        embeds: [{ title: '\uD83D\uDCC5 스케줄 추가', description: '옵션을 선택하고 **다음**을 눌러주세요', color: 0x5865F2 }],
         components: [
           { type: 1, components: [{ type: 3, custom_id: 'sched_add_period', placeholder: '주기 선택', options: [
             { label: 'Daily', value: 'daily' },
@@ -354,19 +378,24 @@ backend.onInteraction = (interaction: any) => {
             { label: 'Interactive', value: 'interactive' },
             { label: 'Non-interactive', value: 'non-interactive' },
           ]}]},
-          { type: 1, components: [{ type: 2, style: 1, label: '다음 →', custom_id: 'sched_add_next' }]},
+          { type: 1, components: [
+            { type: 2, style: 1, label: '다음 \u2192', custom_id: 'sched_add_next' },
+            { type: 2, style: 2, label: '\u2190 목록', custom_id: 'bot_schedule' },
+            { type: 2, style: 4, label: '\u2715', custom_id: 'gui_close' },
+          ]},
         ] as any,
-      })
-    })()
+      }).catch(() => {})
+    }
     return
   }
 
-  // ── Schedule edit: Step 1 — Select Menu 전송 ──
+  // ── Schedule edit: Step 1 — 같은 메시지에 Select Menu 표시 ──
   if (interaction.customId?.startsWith('sched_edit:') && interaction.type === 'button') {
     const name = interaction.customId.split(':')[1]
     pendingSetup.set(interaction.userId, { editName: name })
-    void (async () => {
-      await backend.sendMessage(interaction.channelId, `**${name} 편집** — 변경할 옵션을 선택하세요`, {
+    if (interaction.message?.id && interaction.channelId) {
+      void backend.editMessage(interaction.channelId, interaction.message.id, '', {
+        embeds: [{ title: `\uD83D\uDCC4 ${name} 편집`, description: '변경할 옵션을 선택하고 **다음**을 눌러주세요', color: 0x5865F2 }],
         components: [
           { type: 1, components: [{ type: 3, custom_id: 'sched_edit_period', placeholder: '주기 선택', options: [
             { label: 'Daily', value: 'daily' },
@@ -383,10 +412,14 @@ backend.onInteraction = (interaction: any) => {
             { label: 'Interactive', value: 'interactive' },
             { label: 'Non-interactive', value: 'non-interactive' },
           ]}]},
-          { type: 1, components: [{ type: 2, style: 1, label: '다음 →', custom_id: 'sched_edit_next' }]},
+          { type: 1, components: [
+            { type: 2, style: 1, label: '다음 \u2192', custom_id: 'sched_edit_next' },
+            { type: 2, style: 2, label: '\u2190 목록', custom_id: 'bot_schedule' },
+            { type: 2, style: 4, label: '\u2715', custom_id: 'gui_close' },
+          ]},
         ] as any,
-      })
-    })()
+      }).catch(() => {})
+    }
     return
   }
 
@@ -403,10 +436,11 @@ backend.onInteraction = (interaction: any) => {
     return
   }
 
-  // ── Autotalk freq: Select Menu (1~5) ──
+  // ── Autotalk freq: Select Menu (1~5) — 같은 메시지에 표시 ──
   if (interaction.customId === 'autotalk_freq') {
-    void (async () => {
-      await backend.sendMessage(interaction.channelId, '**자율대화 빈도** — 선택하세요', {
+    if (interaction.message?.id && interaction.channelId) {
+      void backend.editMessage(interaction.channelId, interaction.message.id, '', {
+        embeds: [{ title: '\uD83D\uDCAC 자율대화 빈도', description: '빈도를 선택하세요', color: 0x5865F2 }],
         components: [
           { type: 1, components: [{ type: 3, custom_id: 'autotalk_freq_select', placeholder: '빈도 (1~5)', options: [
             { label: '1 — 최소', value: '1' },
@@ -415,41 +449,58 @@ backend.onInteraction = (interaction: any) => {
             { label: '4 — 높음', value: '4' },
             { label: '5 — 최대', value: '5' },
           ]}]},
+          { type: 1, components: [
+            { type: 2, style: 2, label: '\u2190 자율대화', custom_id: 'bot_autotalk' },
+            { type: 2, style: 4, label: '\u2715', custom_id: 'gui_close' },
+          ]},
         ] as any,
-      })
-    })()
+      }).catch(() => {})
+    }
     return
   }
 
+  // autotalk freq 선택 → 적용 후 자율대화 탭으로 복귀
   if (interaction.customId === 'autotalk_freq_select' && interaction.values?.length) {
     const freq = interaction.values[0]
     void (async () => {
       const cmdCtx: CommandContext = { channelId: interaction.channelId, userId: interaction.userId, lang: 'ko', scheduler }
-      const result = await routeCustomCommand(`/bot(autotalk, freq=${freq})`, cmdCtx)
-      if (interaction.channelId) await backend.sendMessage(interaction.channelId, result?.text ?? 'done')
+      await routeCustomCommand(`/bot(autotalk, freq=${freq})`, cmdCtx)
+      // 적용 후 자율대화 탭으로 복귀
+      const result = await routeCustomCommand('/bot(autotalk, list)', cmdCtx)
+      if (interaction.message?.id && interaction.channelId && result?.embeds) {
+        await backend.editMessage(interaction.channelId, interaction.message.id, '', {
+          embeds: result.embeds as any,
+          components: result.components as any,
+        })
+      }
     })()
     return
   }
 
-  // ── Quiet set: Select Menu (holidays) + Modal (DND) ──
+  // ── Quiet set: Select Menu (holidays) + Modal (DND) — 같은 메시지 ──
   if (interaction.customId === 'quiet_set') {
     pendingSetup.set(interaction.userId, {})
-    void (async () => {
-      await backend.sendMessage(interaction.channelId, '**방해금지 설정** — 공휴일 국가를 선택하세요', {
+    if (interaction.message?.id && interaction.channelId) {
+      void backend.editMessage(interaction.channelId, interaction.message.id, '', {
+        embeds: [{ title: '\uD83D\uDD15 방해금지 설정', description: '공휴일 국가를 선택하고 **다음**을 눌러주세요', color: 0x5865F2 }],
         components: [
           { type: 1, components: [{ type: 3, custom_id: 'quiet_holidays_select', placeholder: '공휴일 국가 (선택사항)', options: [
             { label: '없음', value: 'none' },
-            { label: '🇰🇷 한국', value: 'KR' },
-            { label: '🇯🇵 일본', value: 'JP' },
-            { label: '🇺🇸 미국', value: 'US' },
-            { label: '🇨🇳 중국', value: 'CN' },
-            { label: '🇬🇧 영국', value: 'GB' },
-            { label: '🇩🇪 독일', value: 'DE' },
+            { label: '\uD83C\uDDF0\uD83C\uDDF7 한국', value: 'KR' },
+            { label: '\uD83C\uDDEF\uD83C\uDDF5 일본', value: 'JP' },
+            { label: '\uD83C\uDDFA\uD83C\uDDF8 미국', value: 'US' },
+            { label: '\uD83C\uDDE8\uD83C\uDDF3 중국', value: 'CN' },
+            { label: '\uD83C\uDDEC\uD83C\uDDE7 영국', value: 'GB' },
+            { label: '\uD83C\uDDE9\uD83C\uDDEA 독일', value: 'DE' },
           ]}]},
-          { type: 1, components: [{ type: 2, style: 1, label: '다음 →', custom_id: 'quiet_set_next' }]},
+          { type: 1, components: [
+            { type: 2, style: 1, label: '다음 \u2192', custom_id: 'quiet_set_next' },
+            { type: 2, style: 2, label: '\u2190 방해금지', custom_id: 'bot_quiet' },
+            { type: 2, style: 4, label: '\u2715', custom_id: 'gui_close' },
+          ]},
         ] as any,
-      })
-    })()
+      }).catch(() => {})
+    }
     return
   }
 
@@ -460,20 +511,25 @@ backend.onInteraction = (interaction: any) => {
     return
   }
 
-  // ── Activity add: Select Menu (mode) + Modal (name/id) ──
+  // ── Activity add: Select Menu (mode) + Modal (name/id) — 같은 메시지 ──
   if (interaction.customId === 'activity_add') {
     pendingSetup.set(interaction.userId, {})
-    void (async () => {
-      await backend.sendMessage(interaction.channelId, '**활동 채널 추가** — 모드를 선택하세요', {
+    if (interaction.message?.id && interaction.channelId) {
+      void backend.editMessage(interaction.channelId, interaction.message.id, '', {
+        embeds: [{ title: '\uD83D\uDCE1 활동 채널 추가', description: '모드를 선택하고 **다음**을 눌러주세요', color: 0x5865F2 }],
         components: [
           { type: 1, components: [{ type: 3, custom_id: 'activity_mode_select', placeholder: '모드 선택', options: [
-            { label: 'Interactive — 대화 참여', value: 'interactive' },
-            { label: 'Monitor — 읽기 전용', value: 'monitor' },
+            { label: 'Interactive \u2014 대화 참여', value: 'interactive' },
+            { label: 'Monitor \u2014 읽기 전용', value: 'monitor' },
           ]}]},
-          { type: 1, components: [{ type: 2, style: 1, label: '다음 →', custom_id: 'activity_add_next' }]},
+          { type: 1, components: [
+            { type: 2, style: 1, label: '다음 \u2192', custom_id: 'activity_add_next' },
+            { type: 2, style: 2, label: '\u2190 채널', custom_id: 'bot_activity' },
+            { type: 2, style: 4, label: '\u2715', custom_id: 'gui_close' },
+          ]},
         ] as any,
-      })
-    })()
+      }).catch(() => {})
+    }
     return
   }
 
@@ -484,14 +540,14 @@ backend.onInteraction = (interaction: any) => {
     return
   }
 
-  // schedule_select → 스케줄 상세
+  // schedule_select → 같은 메시지에 스케줄 상세 표시
   if (interaction.customId === 'schedule_select' && interaction.values?.length) {
     const name = interaction.values[0]
     void (async () => {
       const cmdCtx: CommandContext = { channelId: interaction.channelId, userId: interaction.userId, lang: 'ko', scheduler }
       const result = await routeCustomCommand(`/bot(schedule, detail, "${name}")`, cmdCtx)
-      if (interaction.channelId && (result?.text || result?.embeds)) {
-        await backend.sendMessage(interaction.channelId, result.text ?? '', {
+      if (interaction.message?.id && interaction.channelId && (result?.text || result?.embeds)) {
+        await backend.editMessage(interaction.channelId, interaction.message.id, result.text ?? '', {
           embeds: result.embeds as any,
           components: result.components as any,
         })
@@ -500,10 +556,11 @@ backend.onInteraction = (interaction: any) => {
     return
   }
 
-  // ── Modal submit handling (설정 변경) ──
+  // ── Modal submit handling (설정 변경 후 해당 탭으로 복귀) ──
   if (interaction.type === 'modal' && interaction.fields) {
     void (async () => {
       const cmdCtx: CommandContext = { channelId: interaction.channelId, userId: interaction.userId, lang: 'ko', scheduler }
+      const msgId = interaction.message?.id
 
       if (interaction.customId === 'modal_sched_add') {
         const pending = pendingSetup.get(interaction.userId) ?? {}
@@ -515,8 +572,15 @@ backend.onInteraction = (interaction: any) => {
         const params = [`time="${time}"`, `channel="${channel || 'general'}"`, `mode="${mode}"`, `period="${period}"`, `exec="${exec}"`]
         if (script) params.push(`script="${script}"`)
         const cmd = `/bot(schedule, add, "${name}", ${params.join(', ')})`
-        const result = await routeCustomCommand(cmd, cmdCtx)
-        if (interaction.channelId) await backend.sendMessage(interaction.channelId, result?.text ?? 'done')
+        await routeCustomCommand(cmd, cmdCtx)
+        // 스케줄 목록으로 복귀
+        const listResult = await routeCustomCommand('/bot(schedule, list)', cmdCtx)
+        if (msgId && interaction.channelId && listResult?.embeds) {
+          await backend.editMessage(interaction.channelId, msgId, '', {
+            embeds: listResult.embeds as any,
+            components: listResult.components as any,
+          })
+        }
       }
 
       if (interaction.customId === 'modal_quiet') {
@@ -530,7 +594,14 @@ backend.onInteraction = (interaction: any) => {
         if (autotalk) cmds.push(`/bot(quiet, autotalk, "${autotalk}")`)
         if (holidays) cmds.push(`/bot(quiet, holidays, "${holidays}")`)
         for (const cmd of cmds) await routeCustomCommand(cmd, cmdCtx)
-        if (interaction.channelId) await backend.sendMessage(interaction.channelId, '방해금지 설정 완료')
+        // 방해금지 탭으로 복귀
+        const quietResult = await routeCustomCommand('/bot(quiet, list)', cmdCtx)
+        if (msgId && interaction.channelId && quietResult?.embeds) {
+          await backend.editMessage(interaction.channelId, msgId, '', {
+            embeds: quietResult.embeds as any,
+            components: quietResult.components as any,
+          })
+        }
       }
 
       if (interaction.customId === 'modal_sched_edit') {
@@ -547,9 +618,16 @@ backend.onInteraction = (interaction: any) => {
         if (script) params.push(`script="${script}"`)
         pendingSetup.delete(interaction.userId)
         const cmd = `/bot(schedule, edit, "${name}"${params.length ? ', ' + params.join(', ') : ''})`
-        const result = await routeCustomCommand(cmd, cmdCtx)
+        await routeCustomCommand(cmd, cmdCtx)
         if (dnd) await routeCustomCommand(`/bot(quiet, schedule, "${dnd}")`, cmdCtx)
-        if (interaction.channelId) await backend.sendMessage(interaction.channelId, result?.text ?? 'done')
+        // 스케줄 상세로 복귀
+        const detailResult = await routeCustomCommand(`/bot(schedule, detail, "${name}")`, cmdCtx)
+        if (msgId && interaction.channelId && detailResult?.embeds) {
+          await backend.editMessage(interaction.channelId, msgId, '', {
+            embeds: detailResult.embeds as any,
+            components: detailResult.components as any,
+          })
+        }
       }
 
       if (interaction.customId === 'modal_activity_add') {
@@ -558,8 +636,15 @@ backend.onInteraction = (interaction: any) => {
         const mode = pending.activityMode || 'interactive'
         pendingSetup.delete(interaction.userId)
         const cmd = `/bot(activity, add, "${name}", id="${id}", mode="${mode}")`
-        const result = await routeCustomCommand(cmd, cmdCtx)
-        if (interaction.channelId) await backend.sendMessage(interaction.channelId, result?.text ?? 'done')
+        await routeCustomCommand(cmd, cmdCtx)
+        // 활동채널 탭으로 복귀
+        const actResult = await routeCustomCommand('/bot(activity, list)', cmdCtx)
+        if (msgId && interaction.channelId && actResult?.embeds) {
+          await backend.editMessage(interaction.channelId, msgId, '', {
+            embeds: actResult.embeds as any,
+            components: actResult.components as any,
+          })
+        }
       }
 
       if (interaction.customId === 'modal_profile_edit') {
@@ -573,52 +658,76 @@ backend.onInteraction = (interaction: any) => {
           const cmd = `/profile(set, ${params.join(', ')})`
           await routeCustomCommand(cmd, cmdCtx)
         }
-        if (interaction.channelId) await backend.sendMessage(interaction.channelId, '프로필 업데이트 완료')
+        // 프로필 탭으로 복귀
+        const profResult = await routeCustomCommand('/bot(profile, list)', cmdCtx)
+        if (msgId && interaction.channelId && profResult?.embeds) {
+          await backend.editMessage(interaction.channelId, msgId, '', {
+            embeds: profResult.embeds as any,
+            components: profResult.components as any,
+          })
+        }
       }
     })()
     return
   }
 
-  // ── Autotalk on/off 버튼 ──
+  // ── Autotalk on/off 버튼 → 적용 후 자율대화 탭 복귀 ──
   if (interaction.customId === 'autotalk_on' || interaction.customId === 'autotalk_off') {
     void (async () => {
       const cmdCtx: CommandContext = { channelId: interaction.channelId, userId: interaction.userId, lang: 'ko', scheduler }
       const cmd = interaction.customId === 'autotalk_on' ? '/bot(autotalk, on)' : '/bot(autotalk, off)'
-      const result = await routeCustomCommand(cmd, cmdCtx)
-      if (interaction.channelId) await backend.sendMessage(interaction.channelId, result?.text ?? 'done')
+      await routeCustomCommand(cmd, cmdCtx)
+      const result = await routeCustomCommand('/bot(autotalk, list)', cmdCtx)
+      if (interaction.message?.id && interaction.channelId && result?.embeds) {
+        await backend.editMessage(interaction.channelId, interaction.message.id, '', {
+          embeds: result.embeds as any,
+          components: result.components as any,
+        })
+      }
     })()
     return
   }
 
-  // ── Schedule remove 버튼 ──
+  // ── Schedule remove 버튼 → 삭제 후 스케줄 목록 복귀 ──
   if (interaction.customId?.startsWith('sched_remove:')) {
     const name = interaction.customId.split(':')[1]
     void (async () => {
       const cmdCtx: CommandContext = { channelId: interaction.channelId, userId: interaction.userId, lang: 'ko', scheduler }
-      const result = await routeCustomCommand(`/bot(schedule, remove, "${name}")`, cmdCtx)
-      if (interaction.channelId) await backend.sendMessage(interaction.channelId, result?.text ?? 'done')
+      await routeCustomCommand(`/bot(schedule, remove, "${name}")`, cmdCtx)
+      const result = await routeCustomCommand('/bot(schedule, list)', cmdCtx)
+      if (interaction.message?.id && interaction.channelId && result?.embeds) {
+        await backend.editMessage(interaction.channelId, interaction.message.id, '', {
+          embeds: result.embeds as any,
+          components: result.components as any,
+        })
+      }
     })()
     return
   }
 
-  // ── Schedule test 버튼 ──
+  // ── Schedule test 버튼 → 테스트 실행 (MCP notification) ──
   if (interaction.customId?.startsWith('sched_test:')) {
     const name = interaction.customId.split(':')[1]
     void (async () => {
       const cmdCtx: CommandContext = { channelId: interaction.channelId, userId: interaction.userId, lang: 'ko', scheduler }
-      const result = await routeCustomCommand(`/bot(schedule, test, "${name}")`, cmdCtx)
-      if (interaction.channelId) await backend.sendMessage(interaction.channelId, result?.text ?? 'done')
+      await routeCustomCommand(`/bot(schedule, test, "${name}")`, cmdCtx)
     })()
     return
   }
 
-  // ── Activity remove 버튼 ──
+  // ── Activity remove 버튼 → 삭제 후 활동채널 탭 복귀 ──
   if (interaction.customId?.startsWith('activity_remove:')) {
     const name = interaction.customId.split(':')[1]
     void (async () => {
       const cmdCtx: CommandContext = { channelId: interaction.channelId, userId: interaction.userId, lang: 'ko', scheduler }
-      const result = await routeCustomCommand(`/bot(activity, remove, "${name}")`, cmdCtx)
-      if (interaction.channelId) await backend.sendMessage(interaction.channelId, result?.text ?? 'done')
+      await routeCustomCommand(`/bot(activity, remove, "${name}")`, cmdCtx)
+      const result = await routeCustomCommand('/bot(activity, list)', cmdCtx)
+      if (interaction.message?.id && interaction.channelId && result?.embeds) {
+        await backend.editMessage(interaction.channelId, interaction.message.id, '', {
+          embeds: result.embeds as any,
+          components: result.components as any,
+        })
+      }
     })()
     return
   }
@@ -798,13 +907,23 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'edit_message',
-      description: 'Edit a message the bot previously sent. Useful for progress updates (send "working..." then edit to the result).',
+      description: 'Edit a message the bot previously sent. Supports text, embeds, and components.',
       inputSchema: {
         type: 'object' as const,
         properties: {
           chat_id: { type: 'string' },
           message_id: { type: 'string' },
           text: { type: 'string' },
+          embeds: {
+            type: 'array',
+            items: { type: 'object' },
+            description: 'Discord embed objects.',
+          },
+          components: {
+            type: 'array',
+            items: { type: 'object' },
+            description: 'Discord message components.',
+          },
         },
         required: ['chat_id', 'message_id', 'text'],
       },
@@ -935,6 +1054,10 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           args.chat_id as string,
           args.message_id as string,
           args.text as string,
+          {
+            embeds: (args.embeds as Record<string, unknown>[] | undefined) ?? [],
+            components: (args.components as Record<string, unknown>[] | undefined) ?? [],
+          },
         )
         result = { content: [{ type: 'text', text: `edited (id: ${id})` }] }
         break

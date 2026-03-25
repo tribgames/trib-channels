@@ -387,11 +387,21 @@ export class DiscordBackend implements ChannelBackend {
     }
   }
 
-  async editMessage(chatId: string, messageId: string, text: string): Promise<string> {
+  async editMessage(chatId: string, messageId: string, text: string, opts?: { embeds?: Record<string, unknown>[]; components?: Record<string, unknown>[] }): Promise<string> {
     const ch = await this.fetchAllowedChannel(chatId)
     const msg = await ch.messages.fetch(messageId)
-    const edited = await msg.edit(text)
+    const edited = await msg.edit({
+      content: text || null,
+      ...(opts?.embeds ? { embeds: opts.embeds } : {}),
+      ...(opts?.components ? { components: opts.components as any } : {}),
+    })
     return edited.id
+  }
+
+  async deleteMessage(chatId: string, messageId: string): Promise<void> {
+    const ch = await this.fetchAllowedChannel(chatId)
+    const msg = await ch.messages.fetch(messageId)
+    await msg.delete()
   }
 
   async downloadAttachment(chatId: string, messageId: string): Promise<DownloadedFile[]> {

@@ -103,8 +103,14 @@ export interface ChannelBackend {
 
   /**
    * Edit a previously sent message. Returns the edited message ID.
+   * Supports text, embeds, and components for GUI-style interactions.
    */
-  editMessage(chatId: string, messageId: string, text: string): Promise<string>
+  editMessage(chatId: string, messageId: string, text: string, opts?: { embeds?: Record<string, unknown>[]; components?: Record<string, unknown>[] }): Promise<string>
+
+  /**
+   * Delete a message by ID.
+   */
+  deleteMessage(chatId: string, messageId: string): Promise<void>
 
   /**
    * Download all attachments from a message. Returns local file paths.

@@ -259,50 +259,43 @@ function handleBotStatus(_ctx: CommandContext): CommandResult {
   const bot = loadBotConfig()
   const ni = config.nonInteractive ?? []
   const i = config.interactive ?? []
-  const p = config.proactive
 
-  const fields: Array<{ name: string; value: string; inline: boolean }> = []
-  fields.push({ name: 'Backend', value: config.backend, inline: false })
-  fields.push({ name: 'Schedules', value: `${ni.length} non-interactive\n${i.length} interactive`, inline: false })
-  if (p) {
-    fields.push({ name: 'Proactive', value: `freq=${p.frequency}, ${p.items.length} topic(s)`, inline: false })
-  }
-  if (config.voice?.enabled) {
-    fields.push({ name: 'Voice', value: `lang=${config.voice.language ?? 'auto'}`, inline: false })
-  }
-  const main = config.channelsConfig?.main
-  if (main) {
-    const chCount = Object.keys(config.channelsConfig?.channels ?? {}).length
-    fields.push({ name: 'Channels', value: `main="${main}", ${chCount} total`, inline: false })
-  }
-  // bot.json fields
-  if (bot.quiet) {
-    const qParts: string[] = []
-    if (bot.quiet.schedule) qParts.push(`schedule: ${bot.quiet.schedule}`)
-    if (bot.quiet.autotalk) qParts.push(`autotalk: ${bot.quiet.autotalk}`)
-    if (bot.quiet.holidays) qParts.push(`holidays: ${bot.quiet.holidays}`)
-    if (qParts.length > 0) {
-      fields.push({ name: 'Quiet', value: qParts.join('\n'), inline: false })
-    }
-  }
-  if (bot.autotalk) {
-    fields.push({ name: 'Autotalk', value: `freq=${bot.autotalk.freq ?? '-'}, enabled=${bot.autotalk.enabled ?? false}`, inline: false })
-  }
+  const lines: string[] = []
+  lines.push(`**스케줄** ${ni.length + i.length}개 등록`)
+
+  const autotalkStatus = bot.autotalk?.enabled ? `freq=${bot.autotalk.freq ?? 3}, 활성` : '비활성'
+  lines.push(`**자율대화** ${autotalkStatus}`)
+
+  const quietParts: string[] = []
+  if (bot.quiet?.schedule) quietParts.push(bot.quiet.schedule)
+  if (bot.quiet?.autotalk) quietParts.push(`자율대화 ${bot.quiet.autotalk}`)
+  lines.push(`**방해금지** ${quietParts.length > 0 ? quietParts.join(', ') : '없음'}`)
+
+  const chCount = Object.keys(config.channelsConfig?.channels ?? {}).length
+  lines.push(`**활동채널** ${chCount}개`)
+
+  const profile = loadProfileConfig()
+  lines.push(`**프로필** ${profile.name || '-'}`)
 
   return {
     embeds: [{
-      title: 'Bot 설정',
+      title: '\u2699\uFE0F Bot 대시보드',
+      description: lines.join('\n'),
       color: 0x5865F2,
-      fields,
     }],
     components: [{
       type: 1,
       components: [
-        { type: 2, style: 1, label: '\uC2A4\uCF00\uC904', custom_id: 'bot_schedule' },
-        { type: 2, style: 1, label: '\uC790\uC728\uB300\uD654', custom_id: 'bot_autotalk' },
-        { type: 2, style: 1, label: '\uBC29\uD574\uAE08\uC9C0', custom_id: 'bot_quiet' },
-        { type: 2, style: 1, label: '\uD65C\uB3D9\uCC44\uB110', custom_id: 'bot_activity' },
-        { type: 2, style: 1, label: '\uD504\uB85C\uD544', custom_id: 'bot_profile' },
+        { type: 2, style: 1, label: '스케줄', custom_id: 'bot_schedule' },
+        { type: 2, style: 1, label: '자율대화', custom_id: 'bot_autotalk' },
+        { type: 2, style: 1, label: '방해금지', custom_id: 'bot_quiet' },
+        { type: 2, style: 1, label: '활동채널', custom_id: 'bot_activity' },
+        { type: 2, style: 2, label: '프로필', custom_id: 'bot_profile' },
+      ],
+    }, {
+      type: 1,
+      components: [
+        { type: 2, style: 4, label: '\u2715', custom_id: 'gui_close' },
       ],
     }],
   }
@@ -330,29 +323,31 @@ function activityList(ctx: CommandContext): CommandResult {
   const main = config.channelsConfig?.main ?? ''
   const entries = Object.entries(channels)
 
-  const components: Record<string, unknown>[] = [{
-    type: 1,
-    components: [
-      { type: 2, style: 1, label: '\uCD94\uAC00', custom_id: 'activity_add' },
-    ],
-  }]
-
   if (entries.length === 0) {
     return {
       embeds: [{
-        title: '\uD65C\uB3D9 \uCC44\uB110',
+        title: '\uD83D\uDCE1 활동 채널',
         description: t('activity.empty', ctx.lang),
         color: 0x5865F2,
       }],
-      components,
+      components: [{
+        type: 1,
+        components: [
+          { type: 2, style: 1, label: '추가', custom_id: 'activity_add' },
+          { type: 2, style: 2, label: '\u2190 메인', custom_id: 'gui_back' },
+          { type: 2, style: 4, label: '\u2715', custom_id: 'gui_close' },
+        ],
+      }],
     }
   }
 
-  const fields = entries.map(([name, entry]) => ({
-    name: name === main ? `${name} \u2B50` : name,
-    value: `ID: \`${entry.id}\`\nMode: ${entry.mode}`,
-    inline: false,
-  }))
+  // description 형태로 목록 표시
+  const chLines = entries.map(([name, entry]) => {
+    const star = name === main ? ' \u2B50' : ''
+    return `**${name}${star}** — ${entry.mode} (\`${entry.id}\`)`
+  })
+
+  const components: Record<string, unknown>[] = []
 
   // Remove buttons (max 5 per row)
   const removeButtons = entries.map(([name]) => ({
@@ -362,8 +357,17 @@ function activityList(ctx: CommandContext): CommandResult {
     components.push({ type: 1, components: removeButtons.slice(i, i + 5) })
   }
 
+  components.push({
+    type: 1,
+    components: [
+      { type: 2, style: 1, label: '추가', custom_id: 'activity_add' },
+      { type: 2, style: 2, label: '\u2190 메인', custom_id: 'gui_back' },
+      { type: 2, style: 4, label: '\u2715', custom_id: 'gui_close' },
+    ],
+  })
+
   return {
-    embeds: [{ title: '\uD65C\uB3D9 \uCC44\uB110', color: 0x5865F2, fields }],
+    embeds: [{ title: '\uD83D\uDCE1 활동 채널', description: chLines.join('\n'), color: 0x5865F2 }],
     components,
   }
 }
@@ -418,35 +422,35 @@ function handleBotProfile(parsed: ParsedCommand, ctx: CommandContext): CommandRe
     )
   }
 
-  // Default: show profile + edit button
+  // Default: show profile + edit/nav buttons
   const profile = loadProfileConfig()
   const entries = Object.entries(profile).filter(([_, v]) => v !== undefined)
 
-  const components: Record<string, unknown>[] = [{
+  const navComponents: Record<string, unknown>[] = [{
     type: 1,
     components: [
-      { type: 2, style: 1, label: '\uD3B8\uC9D1', custom_id: 'profile_edit' },
+      { type: 2, style: 1, label: '편집', custom_id: 'profile_edit' },
+      { type: 2, style: 2, label: '\u2190 메인', custom_id: 'gui_back' },
+      { type: 2, style: 4, label: '\u2715', custom_id: 'gui_close' },
     ],
   }]
 
   if (entries.length === 0) {
     return {
       embeds: [{
-        title: '\uD504\uB85C\uD544',
+        title: '\uD83D\uDC64 프로필',
         description: t('profile.empty', ctx.lang),
         color: 0x57F287,
       }],
-      components,
+      components: navComponents,
     }
   }
 
-  const fields = entries.map(([k, v]) => ({
-    name: k, value: String(v), inline: false,
-  }))
+  const profileLines = entries.map(([k, v]) => `**${k}**: ${v}`)
 
   return {
-    embeds: [{ title: '\uD504\uB85C\uD544', color: 0x57F287, fields }],
-    components,
+    embeds: [{ title: '\uD83D\uDC64 프로필', description: profileLines.join('\n'), color: 0x57F287 }],
+    components: navComponents,
   }
 }
 
@@ -474,17 +478,19 @@ function handleAutotalk(parsed: ParsedCommand, ctx: CommandContext): CommandResu
 
       return {
         embeds: [{
-          title: `\u{1F4AC} ${t('autotalk.status', ctx.lang)}`,
-          description: `**\uBE48\uB3C4**: ${freq}\n**\uC0C1\uD0DC**: ${statusEmoji} ${enabled ? 'ON' : 'OFF'}`,
+          title: `\uD83D\uDCAC ${t('autotalk.status', ctx.lang)}`,
+          description: `**빈도**: ${freq}\n**상태**: ${statusEmoji} ${enabled ? 'ON' : 'OFF'}`,
           color: 0x5865F2,
         }],
         components: [{
           type: 1,
           components: [
-            { type: 2, style: 1, label: '\uBE48\uB3C4 \uBCC0\uACBD', custom_id: 'autotalk_freq' },
+            { type: 2, style: 1, label: '빈도 변경', custom_id: 'autotalk_freq' },
             enabled
               ? { type: 2, style: 4, label: 'OFF', custom_id: 'autotalk_off' }
               : { type: 2, style: 3, label: 'ON', custom_id: 'autotalk_on' },
+            { type: 2, style: 2, label: '\u2190 메인', custom_id: 'gui_back' },
+            { type: 2, style: 4, label: '\u2715', custom_id: 'gui_close' },
           ],
         }],
       }
@@ -526,14 +532,16 @@ function handleQuiet(parsed: ParsedCommand, ctx: CommandContext): CommandResult 
 
       return {
         embeds: [{
-          title: `\u{1F515} ${t('quiet.status', ctx.lang)}`,
+          title: `\uD83D\uDD15 ${t('quiet.status', ctx.lang)}`,
           description: lines.join('\n'),
           color: 0x5865F2,
         }],
         components: [{
           type: 1,
           components: [
-            { type: 2, style: 1, label: '\uC124\uC815 \uBCC0\uACBD', custom_id: 'quiet_set' },
+            { type: 2, style: 1, label: '설정 변경', custom_id: 'quiet_set' },
+            { type: 2, style: 2, label: '\u2190 메인', custom_id: 'gui_back' },
+            { type: 2, style: 4, label: '\u2715', custom_id: 'gui_close' },
           ],
         }],
       }
@@ -608,14 +616,12 @@ function scheduleList(ctx: CommandContext): CommandResult {
     return { text: t('schedule.empty', ctx.lang) }
   }
 
-  const fields = all.map(s => {
+  // description 형태로 목록 표시
+  const lines = all.map(s => {
     const status = s.enabled === false ? ' [OFF]' : ''
     const days = s.days ?? 'daily'
-    const exec = s.exec ?? 'prompt'
-    return { name: s.name, value: `${s.time} ${days} [${exec}]${status}`, inline: false }
+    return `**${s.name}** — ${s.time} ${days}${status}`
   })
-
-  // proactive는 /claude bot autotalk에서 별도 관리 — 스케줄 목록에서 숨김
 
   // Build select menu options (max 25 per Discord limit)
   const options = all.slice(0, 25).map(s => ({
@@ -624,27 +630,37 @@ function scheduleList(ctx: CommandContext): CommandResult {
     description: `${s.time} (${s.type})`.substring(0, 100),
   }))
 
-  const result: CommandResult = {
-    embeds: [{
-      title: '\uC2A4\uCF00\uC904 \uBAA9\uB85D',
-      color: 0x5865F2,
-      fields,
-    }],
-  }
+  const components: Record<string, unknown>[] = []
 
   if (options.length > 0) {
-    result.components = [{
+    components.push({
       type: 1,
       components: [{
         type: 3,
         custom_id: 'schedule_select',
-        placeholder: '\uC2A4\uCF00\uC904 \uC120\uD0DD',
+        placeholder: '스케줄 선택',
         options,
       }],
-    }]
+    })
   }
 
-  return result
+  components.push({
+    type: 1,
+    components: [
+      { type: 2, style: 1, label: '추가', custom_id: 'sched_add' },
+      { type: 2, style: 2, label: '\u2190 메인', custom_id: 'gui_back' },
+      { type: 2, style: 4, label: '\u2715', custom_id: 'gui_close' },
+    ],
+  })
+
+  return {
+    embeds: [{
+      title: '\uD83D\uDCC5 스케줄',
+      description: lines.join('\n'),
+      color: 0x5865F2,
+    }],
+    components,
+  }
 }
 
 function scheduleDetail(parsed: ParsedCommand, ctx: CommandContext): CommandResult {
@@ -664,33 +680,31 @@ function scheduleDetail(parsed: ParsedCommand, ctx: CommandContext): CommandResu
 
   if (!entry) return { text: t('schedule.not_found', ctx.lang, { name }) }
 
-  const fields = [
-    { name: 'Time', value: entry.time, inline: false },
-    { name: 'Days', value: entry.days ?? 'daily', inline: false },
-    { name: 'Type', value: schedType, inline: false },
-    { name: 'Channel', value: entry.channel, inline: false },
-    { name: 'Exec', value: entry.exec ?? 'prompt', inline: false },
-    { name: 'Enabled', value: entry.enabled !== false ? 'Yes' : 'No', inline: false },
+  // description 형태로 상세 표시
+  const detailLines = [
+    `**시간**: ${entry.time}`,
+    `**주기**: ${entry.days ?? 'daily'}`,
+    `**모드**: ${schedType}`,
+    `**채널**: ${entry.channel}`,
+    `**실행**: ${entry.exec ?? 'prompt'}`,
+    `**활성**: ${entry.enabled !== false ? 'Yes' : 'No'}`,
   ]
-  if (entry.script) {
-    fields.push({ name: 'Script', value: entry.script, inline: false })
-  }
-  if (entry.prompt) {
-    fields.push({ name: 'Prompt', value: entry.prompt, inline: false })
-  }
+  if (entry.script) detailLines.push(`**스크립트**: ${entry.script}`)
 
   return {
     embeds: [{
-      title: `\u{1F4C4} ${name}`,
+      title: `\uD83D\uDCC4 ${name}`,
+      description: detailLines.join('\n'),
       color: 0x5865F2,
-      fields,
     }],
     components: [{
       type: 1,
       components: [
-        { type: 2, style: 1, label: '\uD3B8\uC9D1', custom_id: `sched_edit:${name}` },
-        { type: 2, style: 4, label: '\uC81C\uAC70', custom_id: `sched_remove:${name}` },
-        { type: 2, style: 2, label: '\uD14C\uC2A4\uD2B8', custom_id: `sched_test:${name}` },
+        { type: 2, style: 1, label: '편집', custom_id: `sched_edit:${name}` },
+        { type: 2, style: 4, label: '삭제', custom_id: `sched_remove:${name}` },
+        { type: 2, style: 2, label: '테스트', custom_id: `sched_test:${name}` },
+        { type: 2, style: 2, label: '\u2190 목록', custom_id: 'bot_schedule' },
+        { type: 2, style: 4, label: '\u2715', custom_id: 'gui_close' },
       ],
     }],
   }

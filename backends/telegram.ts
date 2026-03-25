@@ -466,11 +466,16 @@ export class TelegramBackend implements ChannelBackend {
     await this.bot.api.setMessageReaction(chatId, Number(messageId), [])
   }
 
-  async editMessage(chatId: string, messageId: string, text: string): Promise<string> {
+  async editMessage(chatId: string, messageId: string, text: string, _opts?: { embeds?: Record<string, unknown>[]; components?: Record<string, unknown>[] }): Promise<string> {
     this.assertAllowedChat(chatId)
     const edited = await this.bot.api.editMessageText(chatId, Number(messageId), text)
     const id = typeof edited === 'object' ? edited.message_id : messageId
     return String(id)
+  }
+
+  async deleteMessage(chatId: string, messageId: string): Promise<void> {
+    this.assertAllowedChat(chatId)
+    await this.bot.api.deleteMessage(chatId, Number(messageId))
   }
 
   async downloadAttachment(_chatId: string, messageId: string): Promise<DownloadedFile[]> {
