@@ -100,6 +100,18 @@ function noteIdleActivity(): void {
   }, IDLE_MS)
 }
 
+// ── Stop hook file watch (turn-end signal) ─────────────────────────
+const TURN_END_FILE = path.join(os.tmpdir(), 'claude2bot-turn-end')
+try { fs.unlinkSync(TURN_END_FILE) } catch {} // 시작 시 정리
+fs.watchFile(TURN_END_FILE, { interval: 500 }, (curr) => {
+  if (curr.size > 0) {
+    // Turn ended — stop typing + forward final text
+    stopServerTyping()
+    void forwarder.forwardFinalText()
+    try { fs.unlinkSync(TURN_END_FILE) } catch {}
+  }
+})
+
 // Status file — used for IPC with permission-request hook and state persistence
 const STATUS_FILE = path.join(os.tmpdir(), 'claude2bot-status.json')
 if (!fs.existsSync(STATUS_FILE)) {

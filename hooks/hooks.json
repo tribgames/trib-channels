@@ -11,6 +11,16 @@
         ]
       }
     ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"require('fs').writeFileSync(require('path').join(require('os').tmpdir(),'claude2bot-turn-end'),String(Date.now()))\""
+          }
+        ]
+      }
+    ],
     "PermissionRequest": [
       {
         "hooks": [
