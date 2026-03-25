@@ -69,37 +69,16 @@ const mcp = new Server(
 // ── Typing state management ───────────────────────────────────────────
 
 let typingChannelId: string | null = null
-let typingIdleTimer: ReturnType<typeof setTimeout> | null = null
-const TYPING_IDLE_MS = 15_000  // 15초 무활동 시 typing 중지
-
-function noteTypingActivity(): void {
-  if (!typingChannelId) return
-  // 기존 idle 타이머 리셋
-  if (typingIdleTimer) clearTimeout(typingIdleTimer)
-  typingIdleTimer = setTimeout(() => {
-    if (typingChannelId) {
-      backend.stopTyping(typingChannelId)
-      typingChannelId = null
-    }
-    typingIdleTimer = null
-  }, TYPING_IDLE_MS)
-}
 
 function startServerTyping(channelId: string): void {
-  // 다른 채널에서 typing 중이면 먼저 중지
   if (typingChannelId && typingChannelId !== channelId) {
     backend.stopTyping(typingChannelId)
   }
   typingChannelId = channelId
   backend.startTyping(channelId)
-  noteTypingActivity()
 }
 
 function stopServerTyping(): void {
-  if (typingIdleTimer) {
-    clearTimeout(typingIdleTimer)
-    typingIdleTimer = null
-  }
   if (typingChannelId) {
     backend.stopTyping(typingChannelId)
     typingChannelId = null
@@ -498,7 +477,6 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
 // ── Tool handlers ──────────────────────────────────────────────────────
 
 mcp.setRequestHandler(CallToolRequestSchema, async req => {
-  noteTypingActivity()
   noteIdleActivity()
 
   // Forward pending assistant text before tool execution
