@@ -1,13 +1,13 @@
 /**
  * OutputForwarder — centralized output forwarding from MCP server to Discord.
- * Replaces hook-based output with MCP server-centric architecture.
+ * MCP server-centric output architecture. No hooks for text forwarding.
  */
 
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, watchFile, unwatchFile, openSync, readSync, closeSync } from 'fs'
 import { join } from 'path'
 import { tmpdir, homedir } from 'os'
 import { createHash } from 'crypto'
-import { formatForDiscord, chunk } from './format.js'
+import { formatForDiscord, chunk, safeCodeBlock } from './format.js'
 
 export interface ForwarderCallbacks {
   send(channelId: string, text: string): Promise<void>
@@ -125,9 +125,9 @@ export class OutputForwarder {
               for (const l of old.split('\n')) diffLines.push('- ' + l)
               for (const l of nw.split('\n')) diffLines.push('+ ' + l)
               const shown = diffLines.slice(0, 15)
-              let block = '```diff\n' + shown.join('\n')
-              if (diffLines.length > 15) block += '\n... +' + (diffLines.length - 15) + ' lines'
-              block += '\n```'
+              let diffContent = shown.join('\n')
+              if (diffLines.length > 15) diffContent += '\n... +' + (diffLines.length - 15) + ' lines'
+              const block = safeCodeBlock(diffContent, 'diff')
               newText += block + '\n'
             }
           }
@@ -366,7 +366,7 @@ export class OutputForwarder {
       const shown = lines.slice(0, 5)
       let block = shown.join('\n')
       if (lines.length > 5) block += '\n... +' + (lines.length - 5) + ' lines'
-      toolLine += '\n```\n' + block + '\n```'
+      toolLine += '\n' + safeCodeBlock(block)
     }
     return toolLine
   }
