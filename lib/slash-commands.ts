@@ -861,11 +861,14 @@ async function handleStop(
   interaction: ChatInputCommandInteraction,
   _ctx: SlashCommandContext,
 ): Promise<void> {
-  // tmux send-keys Escape로 즉시 중단 (tmux 세션 감지)
+  // tmux send-keys Escape로 즉시 중단 + turn-end 파일 생성 (typing OFF)
   const { execSync } = await import('child_process')
+  const { writeFileSync } = await import('fs')
+  const { tmpdir: getTmpdir } = await import('os')
+  const pathMod = await import('path')
+
   let stopped = false
   try {
-    // tmux 세션 이름 감지 (claude 또는 현재 세션)
     const sessions = execSync('tmux list-sessions -F "#{session_name}"', { encoding: 'utf8' }).trim().split('\n')
     const target = sessions.find(s => s.includes('claude')) || sessions[0]
     if (target) {
@@ -873,7 +876,6 @@ async function handleStop(
       stopped = true
     }
   } catch {
-    // tmux 없으면 SIGINT fallback
     const ppid = process.ppid
     if (ppid && ppid > 1) {
       try { process.kill(ppid, 'SIGINT') } catch {}
@@ -881,8 +883,13 @@ async function handleStop(
     }
   }
 
+  // Escape 중단 시 Stop 훅이 안 불릴 수 있으므로 직접 turn-end 파일 생성
+  try {
+    writeFileSync(pathMod.join(getTmpdir(), 'claude2bot-turn-end'), String(Date.now()))
+  } catch {}
+
   await interaction.reply({
-    embeds: [{ title: '\u{1f6d1} Stop', description: stopped ? t('stop.sent', interaction.locale, { pid: 0 }) : 'tmux not found', color: stopped ? 0xED4245 : 0xFEE75C }],
+    embeds: [{ title: '\u{23f9}\u{fe0f} Stop', description: stopped ? 'Stopped' : 'tmux not found', color: stopped ? 0xED4245 : 0xFEE75C }],
     flags: 64,
   })
 }
