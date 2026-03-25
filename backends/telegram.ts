@@ -142,6 +142,14 @@ export class TelegramBackend implements ChannelBackend {
     this.bot = new Bot(this.token)
   }
 
+  startTyping(_channelId: string): void {
+    // Telegram uses sendChatAction which is handled differently — no-op for now
+  }
+
+  stopTyping(_channelId: string): void {
+    // no-op for Telegram
+  }
+
   // ── Lifecycle ──────────────────────────────────────────────────────
 
   async connect(): Promise<void> {
@@ -450,6 +458,11 @@ export class TelegramBackend implements ChannelBackend {
     await this.bot.api.setMessageReaction(chatId, Number(messageId), [
       { type: 'emoji', emoji: emoji as ReactionTypeEmoji['emoji'] },
     ])
+  }
+
+  async removeReaction(chatId: string, messageId: string, _emoji: string): Promise<void> {
+    this.assertAllowedChat(chatId)
+    await this.bot.api.setMessageReaction(chatId, Number(messageId), [])
   }
 
   async editMessage(chatId: string, messageId: string, text: string): Promise<string> {

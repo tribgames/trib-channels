@@ -22,6 +22,7 @@ import { loadSettings } from './lib/settings.js'
 import { Scheduler } from './lib/scheduler.js'
 import { handleSlashCommand, type SlashCommandContext } from './lib/slash-commands.js'
 import { routeCustomCommand, type CommandContext } from './lib/custom-commands.js'
+import { OutputForwarder } from './lib/output-forwarder.js'
 import type { InboundMessage } from './backends/types.js'
 import type { ChatInputCommandInteraction } from 'discord.js'
 
@@ -64,6 +65,94 @@ const mcp = new Server(
     instructions: INSTRUCTIONS,
   },
 )
+
+// ── Typing state management ───────────────────────────────────────────
+
+let typingChannelId: string | null = null
+let typingIdleTimer: ReturnType<typeof setTimeout> | null = null
+const TYPING_IDLE_MS = 15_000  // 15초 무활동 시 typing 중지
+
+function noteTypingActivity(): void {
+  if (!typingChannelId) return
+  // 기존 idle 타이머 리셋
+  if (typingIdleTimer) clearTimeout(typingIdleTimer)
+  typingIdleTimer = setTimeout(() => {
+    if (typingChannelId) {
+      backend.stopTyping(typingChannelId)
+      typingChannelId = null
+    }
+    typingIdleTimer = null
+  }, TYPING_IDLE_MS)
+}
+
+function startServerTyping(channelId: string): void {
+  // 다른 채널에서 typing 중이면 먼저 중지
+  if (typingChannelId && typingChannelId !== channelId) {
+    backend.stopTyping(typingChannelId)
+  }
+  typingChannelId = channelId
+  backend.startTyping(channelId)
+  noteTypingActivity()
+}
+
+function stopServerTyping(): void {
+  if (typingIdleTimer) {
+    clearTimeout(typingIdleTimer)
+    typingIdleTimer = null
+  }
+  if (typingChannelId) {
+    backend.stopTyping(typingChannelId)
+    typingChannelId = null
+  }
+}
+
+// ── Forwarder idle timer (replaces stop hook) ────────────────────────
+
+let idleTimer: ReturnType<typeof setTimeout> | null = null
+const IDLE_MS = 15_000  // 15초 무활동 → 최종 텍스트 전송 + 리액션 제거
+
+function noteIdleActivity(): void {
+  if (idleTimer) clearTimeout(idleTimer)
+  idleTimer = setTimeout(() => {
+    idleTimer = null
+    stopTranscriptPoll()
+    stopServerTyping()
+    void forwarder.forwardFinalText()
+  }, IDLE_MS)
+}
+
+// Status file — used for IPC with permission-request hook and state persistence
+const STATUS_FILE = path.join(os.tmpdir(), 'claude2bot-status.json')
+if (!fs.existsSync(STATUS_FILE)) {
+  try { fs.writeFileSync(STATUS_FILE, '{}') } catch {}
+}
+
+// ── Transcript polling (replaces pre-tool hook signal) ───────────────
+// Poll transcript every 3 seconds for new assistant text while active
+
+let transcriptPollTimer: ReturnType<typeof setInterval> | null = null
+
+function startTranscriptPoll(): void {
+  if (transcriptPollTimer) return
+  transcriptPollTimer = setInterval(() => {
+    void forwarder.forwardNewText()
+  }, 3000)
+}
+
+function stopTranscriptPoll(): void {
+  if (transcriptPollTimer) {
+    clearInterval(transcriptPollTimer)
+    transcriptPollTimer = null
+  }
+}
+
+// ── Output Forwarder ──────────────────────────────────────────────────
+
+const forwarder = new OutputForwarder({
+  send: (ch, text) => backend.sendMessage(ch, text).then(() => {}),
+  react: (ch, mid, emoji) => backend.react(ch, mid, emoji),
+  removeReaction: (ch, mid, emoji) => backend.removeReaction(ch, mid, emoji),
+})
 
 // ── Scheduler ──────────────────────────────────────────────────────────
 
@@ -419,11 +508,21 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
 // ── Tool handlers ──────────────────────────────────────────────────────
 
 mcp.setRequestHandler(CallToolRequestSchema, async req => {
+  noteTypingActivity()
+  noteIdleActivity()
+
+  // Forward pending assistant text before tool execution
+  await forwarder.forwardNewText()
+
+  const toolName = req.params.name
   const args = (req.params.arguments ?? {}) as Record<string, unknown>
+  let result: { content: Array<{ type: string; text: string }>; isError?: boolean }
+
   try {
-    switch (req.params.name) {
+    switch (toolName) {
       case 'reply': {
-        const result = await backend.sendMessage(
+        stopServerTyping()
+        const sendResult = await backend.sendMessage(
           args.chat_id as string,
           args.text as string,
           {
@@ -434,10 +533,11 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           },
         )
         const text =
-          result.sentIds.length === 1
-            ? `sent (id: ${result.sentIds[0]})`
-            : `sent ${result.sentIds.length} parts (ids: ${result.sentIds.join(', ')})`
-        return { content: [{ type: 'text', text }] }
+          sendResult.sentIds.length === 1
+            ? `sent (id: ${sendResult.sentIds[0]})`
+            : `sent ${sendResult.sentIds.length} parts (ids: ${sendResult.sentIds.join(', ')})`
+        result = { content: [{ type: 'text', text }] }
+        break
       }
       case 'fetch_messages': {
         const msgs = await backend.fetchMessages(
@@ -453,7 +553,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
                   return `[${m.ts}] ${m.user}: ${m.text}  (id: ${m.id}${atts})`
                 })
                 .join('\n')
-        return { content: [{ type: 'text', text }] }
+        result = { content: [{ type: 'text', text }] }
+        break
       }
       case 'react': {
         await backend.react(
@@ -461,7 +562,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           args.message_id as string,
           args.emoji as string,
         )
-        return { content: [{ type: 'text', text: 'reacted' }] }
+        result = { content: [{ type: 'text', text: 'reacted' }] }
+        break
       }
       case 'edit_message': {
         const id = await backend.editMessage(
@@ -469,7 +571,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           args.message_id as string,
           args.text as string,
         )
-        return { content: [{ type: 'text', text: `edited (id: ${id})` }] }
+        result = { content: [{ type: 'text', text: `edited (id: ${id})` }] }
+        break
       }
       case 'download_attachment': {
         const files = await backend.downloadAttachment(
@@ -477,30 +580,35 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           args.message_id as string,
         )
         if (files.length === 0) {
-          return { content: [{ type: 'text', text: 'message has no attachments' }] }
+          result = { content: [{ type: 'text', text: 'message has no attachments' }] }
+        } else {
+          const lines = files.map(
+            f => `  ${f.path}  (${f.name}, ${f.contentType}, ${(f.size / 1024).toFixed(0)}KB)`,
+          )
+          result = {
+            content: [{ type: 'text', text: `downloaded ${files.length} attachment(s):\n${lines.join('\n')}` }],
+          }
         }
-        const lines = files.map(
-          f => `  ${f.path}  (${f.name}, ${f.contentType}, ${(f.size / 1024).toFixed(0)}KB)`,
-        )
-        return {
-          content: [{ type: 'text', text: `downloaded ${files.length} attachment(s):\n${lines.join('\n')}` }],
-        }
+        break
       }
       case 'schedule_status': {
         const statuses = scheduler.getStatus()
         if (statuses.length === 0) {
-          return { content: [{ type: 'text', text: 'no schedules configured' }] }
+          result = { content: [{ type: 'text', text: 'no schedules configured' }] }
+        } else {
+          const lines = statuses.map(s => {
+            const state = s.running ? ' [RUNNING]' : ''
+            const last = s.lastFired ? ` (last: ${s.lastFired})` : ''
+            return `  ${s.name}  ${s.time} ${s.days} (${s.type})${state}${last}`
+          })
+          result = { content: [{ type: 'text', text: lines.join('\n') }] }
         }
-        const lines = statuses.map(s => {
-          const state = s.running ? ' [RUNNING]' : ''
-          const last = s.lastFired ? ` (last: ${s.lastFired})` : ''
-          return `  ${s.name}  ${s.time} ${s.days} (${s.type})${state}${last}`
-        })
-        return { content: [{ type: 'text', text: lines.join('\n') }] }
+        break
       }
       case 'trigger_schedule': {
-        const result = await scheduler.triggerManual(args.name as string)
-        return { content: [{ type: 'text', text: result }] }
+        const triggerResult = await scheduler.triggerManual(args.name as string)
+        result = { content: [{ type: 'text', text: triggerResult }] }
+        break
       }
       case 'schedule_control': {
         const name = args.name as string
@@ -508,32 +616,73 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         if (action === 'defer') {
           const minutes = (args.minutes as number) ?? 30
           scheduler.defer(name, minutes)
-          return { content: [{ type: 'text', text: `deferred "${name}" for ${minutes} minutes` }] }
+          result = { content: [{ type: 'text', text: `deferred "${name}" for ${minutes} minutes` }] }
         } else if (action === 'skip_today') {
           scheduler.skipToday(name)
-          return { content: [{ type: 'text', text: `skipped "${name}" for today` }] }
+          result = { content: [{ type: 'text', text: `skipped "${name}" for today` }] }
+        } else {
+          result = { content: [{ type: 'text', text: `unknown action: ${action}` }], isError: true }
         }
-        return { content: [{ type: 'text', text: `unknown action: ${action}` }], isError: true }
+        break
       }
       default:
-        return {
-          content: [{ type: 'text', text: `unknown tool: ${req.params.name}` }],
+        result = {
+          content: [{ type: 'text', text: `unknown tool: ${toolName}` }],
           isError: true,
         }
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
-    return {
-      content: [{ type: 'text', text: `${req.params.name} failed: ${msg}` }],
+    result = {
+      content: [{ type: 'text', text: `${toolName} failed: ${msg}` }],
       isError: true,
     }
   }
+
+  // Forward tool log after execution
+  const toolLine = OutputForwarder.buildToolLine(toolName, args)
+  if (toolLine) {
+    void forwarder.forwardToolLog(toolLine)
+  }
+
+  return result
 })
 
 // ── Inbound message bridge ─────────────────────────────────────────────
 
 backend.onMessage = (msg) => {
   scheduler.noteActivity()
+  startServerTyping(msg.chatId)
+  forwarder.reset()
+
+  // Resolve transcript path from env or status file
+  const transcriptPath = process.env.CLAUDE_TRANSCRIPT_PATH ?? ''
+  let transcriptIdx = 0
+  if (transcriptPath && fs.existsSync(transcriptPath)) {
+    try {
+      transcriptIdx = fs.readFileSync(transcriptPath, 'utf8').trim().split('\n').length
+    } catch {}
+  }
+  forwarder.setContext(msg.chatId, transcriptPath, transcriptIdx)
+
+  void (async () => {
+    try {
+      await backend.react(msg.chatId, msg.messageId, '\u{1F914}')
+    } catch {}
+    // Persist state for permission-request hook and forwarder recovery
+    const state: Record<string, any> = {}
+    try { Object.assign(state, JSON.parse(fs.readFileSync(STATUS_FILE, 'utf8'))) } catch {}
+    state.channelId = msg.chatId
+    state.userMessageId = msg.messageId
+    state.emoji = '\u{1F914}'
+    state.transcriptPath = transcriptPath
+    state.transcriptIdx = transcriptIdx
+    state.sentCount = 0
+    state.sessionIdle = false
+    try { fs.writeFileSync(STATUS_FILE, JSON.stringify(state)) } catch {}
+    startTranscriptPoll()
+    noteIdleActivity()
+  })()
   void handleInbound(msg)
 }
 

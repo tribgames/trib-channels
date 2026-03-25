@@ -128,8 +128,38 @@ process.stdin.on('end', async () => {
     // Poll for result
     const startTime = Date.now();
 
+    const STOP_FLAG = path.join(tmpDir, 'claude2bot-stop.flag');
+
     while (Date.now() - startTime < TIMEOUT) {
       await new Promise(r => setTimeout(r, POLL_INTERVAL));
+
+      // STOP 플래그 체크 — /claude stop 명령 시 즉시 중단
+      try {
+        if (fs.existsSync(STOP_FLAG)) {
+          const ts = parseInt(fs.readFileSync(STOP_FLAG, 'utf8').trim(), 10);
+          if (Date.now() - ts < 30000) {
+            fs.unlinkSync(STOP_FLAG);
+            // cleanup
+            try { fs.unlinkSync(pendingFile); } catch {}
+            try { fs.unlinkSync(resultFile); } catch {}
+            // Discord 메시지 수정
+            if (messageId) {
+              await discordApi('PATCH', '/api/v10/channels/' + channelId + '/messages/' + messageId, token, {
+                content: content + '\n\n⛔ 작업이 중단되었습니다.',
+                components: []
+              });
+            }
+            // deny + interrupt
+            process.stdout.write(JSON.stringify({
+              hookSpecificOutput: {
+                hookEventName: 'PermissionRequest',
+                decision: { behavior: 'deny', message: '사용자가 작업을 중단했습니다.', interrupt: true }
+              }
+            }));
+            process.exit(0);
+          }
+        }
+      } catch {}
 
       if (fs.existsSync(resultFile)) {
         let decision;

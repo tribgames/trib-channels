@@ -97,6 +97,11 @@ export interface ChannelBackend {
   react(chatId: string, messageId: string, emoji: string): Promise<void>
 
   /**
+   * Remove the bot's emoji reaction from a message.
+   */
+  removeReaction(chatId: string, messageId: string, emoji: string): Promise<void>
+
+  /**
    * Edit a previously sent message. Returns the edited message ID.
    */
   editMessage(chatId: string, messageId: string, text: string): Promise<string>
@@ -111,6 +116,18 @@ export interface ChannelBackend {
    * Throws if the channel is not in the allowlist.
    */
   validateChannel(chatId: string): Promise<void>
+
+  /**
+   * Start the typing indicator for a channel.
+   * Sends the initial typing event and sets up a repeating interval.
+   */
+  startTyping(channelId: string): void
+
+  /**
+   * Stop the typing indicator for a channel.
+   * Clears the repeating interval if active.
+   */
+  stopTyping(channelId: string): void
 
   /**
    * Callback invoked when an inbound message passes the access gate.

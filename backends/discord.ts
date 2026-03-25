@@ -168,7 +168,10 @@ export class DiscordBackend implements ChannelBackend {
       if (msg.author.id === this.client.user?.id) {
         // If typing is active for this channel, keep it going; otherwise do nothing
         if (this.typingIntervals.has(msg.channelId)) {
-          // Still processing — typing continues via existing interval
+          // typing 활성 상태 → 봇 메시지 전송으로 끊긴 typing 즉시 복구
+          if ('sendTyping' in msg.channel) {
+            void (msg.channel as any).sendTyping().catch(() => {})
+          }
         }
         return
       }
@@ -237,7 +240,21 @@ export class DiscordBackend implements ChannelBackend {
     this.client.destroy()
   }
 
-  private stopTyping(channelId: string): void {
+  startTyping(channelId: string): void {
+    this.stopTyping(channelId)
+    const ch = this.client.channels.cache.get(channelId)
+    if (ch && 'sendTyping' in ch) {
+      void (ch as any).sendTyping().catch(() => {})
+      const interval = setInterval(() => {
+        if ('sendTyping' in (ch as any)) {
+          (ch as any).sendTyping().catch(() => {})
+        }
+      }, 9000)
+      this.typingIntervals.set(channelId, interval)
+    }
+  }
+
+  stopTyping(channelId: string): void {
     const interval = this.typingIntervals.get(channelId)
     if (interval) {
       clearInterval(interval)
@@ -318,6 +335,16 @@ export class DiscordBackend implements ChannelBackend {
     const ch = await this.fetchAllowedChannel(chatId)
     const msg = await ch.messages.fetch(messageId)
     await msg.react(emoji)
+  }
+
+  async removeReaction(chatId: string, messageId: string, emoji: string): Promise<void> {
+    const ch = await this.fetchAllowedChannel(chatId)
+    const msg = await ch.messages.fetch(messageId)
+    const me = this.client.user?.id
+    if (me) {
+      const reaction = msg.reactions.cache.get(emoji)
+      if (reaction) await reaction.users.remove(me)
+    }
   }
 
   async editMessage(chatId: string, messageId: string, text: string): Promise<string> {
@@ -487,18 +514,6 @@ export class DiscordBackend implements ChannelBackend {
         process.stderr.write(`claude2bot discord: failed to send pairing code: ${err}\n`)
       }
       return
-    }
-
-    // Typing indicator — repeat every 9s until reply
-    this.stopTyping(msg.channelId)
-    if ('sendTyping' in msg.channel) {
-      void msg.channel.sendTyping().catch(() => {})
-      const interval = setInterval(() => {
-        if ('sendTyping' in msg.channel) {
-          msg.channel.sendTyping().catch(() => {})
-        }
-      }, 12000)
-      this.typingIntervals.set(msg.channelId, interval)
     }
 
     // Ack reaction

@@ -13,6 +13,14 @@ import { tmpdir } from 'os'
 import type { PluginConfig } from '../backends/types.js'
 import type { Scheduler } from './scheduler.js'
 import { DATA_DIR } from './config.js'
+import { handleBotCommand, handleProfileCommand } from './custom-commands.js'
+import type { CommandContext } from './custom-commands.js'
+
+// ── Constants ────────────────────────────────────────────────────────
+
+const EMBED_COLOR = 0x5865F2 // Discord blurple
+
+interface EmbedField { name: string; value: string; inline: boolean }
 
 // ── i18n ─────────────────────────────────────────────────────────────
 
@@ -636,6 +644,73 @@ function buildCommands(): SlashCommandBuilder {
       }),
   )
 
+  // /claude bot (subcommand group)
+  claude.addSubcommandGroup(group =>
+    group.setName('bot').setDescription('Bot settings')
+      .setDescriptionLocalizations({
+        ko: '봇 설정',
+        ja: 'ボット設定',
+        'zh-CN': '机器人设置',
+        'zh-TW': '機器人設定',
+      })
+      .addSubcommand(sub =>
+        sub.setName('status').setDescription('Bot status overview')
+          .setDescriptionLocalizations({
+            ko: '봇 상태 개요',
+            ja: 'ボットステータス',
+            'zh-CN': '机器人状态概览',
+            'zh-TW': '機器人狀態概覽',
+          }),
+      )
+      .addSubcommand(sub =>
+        sub.setName('schedule').setDescription('Schedule management')
+          .setDescriptionLocalizations({
+            ko: '스케줄 관리',
+            ja: 'スケジュール管理',
+            'zh-CN': '计划管理',
+            'zh-TW': '排程管理',
+          }),
+      )
+      .addSubcommand(sub =>
+        sub.setName('autotalk').setDescription('Autonomous chat settings')
+          .setDescriptionLocalizations({
+            ko: '자율 대화 설정',
+            ja: '自律チャット設定',
+            'zh-CN': '自主聊天设置',
+            'zh-TW': '自主聊天設定',
+          }),
+      )
+      .addSubcommand(sub =>
+        sub.setName('quiet').setDescription('Do not disturb settings')
+          .setDescriptionLocalizations({
+            ko: '방해금지 설정',
+            ja: 'おやすみモード設定',
+            'zh-CN': '免打扰设置',
+            'zh-TW': '勿擾設定',
+          }),
+      )
+      .addSubcommand(sub =>
+        sub.setName('activity').setDescription('Activity channels')
+          .setDescriptionLocalizations({
+            ko: '활동 채널 목록',
+            ja: 'アクティビティチャンネル',
+            'zh-CN': '活动频道',
+            'zh-TW': '活動頻道',
+          }),
+      ),
+  )
+
+  // /claude profile
+  claude.addSubcommand(sub =>
+    sub.setName('profile').setDescription('User profile settings')
+      .setDescriptionLocalizations({
+        ko: '사용자 프로필 설정',
+        ja: 'ユーザープロフィール設定',
+        'zh-CN': '用户资料设置',
+        'zh-TW': '使用者個人資料設定',
+      }),
+  )
+
   return claude
 }
 
@@ -646,16 +721,33 @@ export async function registerSlashCommands(client: Client, token: string): Prom
   const rest = new REST({ version: '10' }).setToken(token)
   const commands = [buildCommands().toJSON()]
 
+  // cache가 비어있으면 fetch 시도
+  let guilds = client.guilds.cache
+  if (guilds.size === 0) {
+    process.stderr.write('claude2bot: guild cache empty, fetching...\n')
+    try {
+      const fetched = await client.guilds.fetch()
+      guilds = fetched as any
+    } catch (e) {
+      process.stderr.write(`claude2bot: guild fetch failed: ${e}\n`)
+    }
+  }
+
+  if (guilds.size === 0) {
+    process.stderr.write('claude2bot: WARNING: no guilds found, slash commands not registered\n')
+    return
+  }
+
   // Register to all guilds the bot is in (guild commands propagate instantly)
-  for (const guild of client.guilds.cache.values()) {
+  for (const guild of guilds.values()) {
     try {
       await rest.put(
         Routes.applicationGuildCommands(client.user.id, guild.id),
         { body: commands },
       )
-      process.stderr.write(`claude2bot: slash commands registered in guild ${guild.name}\n`)
+      process.stderr.write(`claude2bot: slash commands registered in guild ${(guild as any).name ?? guild.id}\n`)
     } catch (err) {
-      process.stderr.write(`claude2bot: failed to register slash commands in ${guild.name}: ${err}\n`)
+      process.stderr.write(`claude2bot: failed to register slash commands in ${(guild as any).name ?? guild.id}: ${err}\n`)
     }
   }
 }
@@ -666,6 +758,12 @@ export async function handleSlashCommand(
   interaction: ChatInputCommandInteraction,
   ctx: SlashCommandContext,
 ): Promise<void> {
+  // Check for subcommand group first (e.g. /claude bot status)
+  const group = interaction.options.getSubcommandGroup(false)
+  if (group === 'bot') {
+    return handleBotSub(interaction, ctx)
+  }
+
   const sub = interaction.options.getSubcommand()
 
   switch (sub) {
@@ -678,32 +776,28 @@ export async function handleSlashCommand(
       const startStr = startTime.toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })
       const schedules = ctx.scheduler.getStatus()
       const activeSchedules = schedules.filter(s => s.running).length
-      const lines = [
-        `**Status**`,
-        `Backend: ${ctx.config.backend}`,
-        `PID: ${ctx.serverProcess.pid}`,
-        `${t('status.started', interaction.locale)}: ${startStr}`,
-        `Uptime: ${uptimeMin}m`,
-        `Memory: ${memMB}MB`,
-        `Schedules: ${schedules.length} total, ${activeSchedules} running`,
+
+      const fields: EmbedField[] = [
+        { name: 'Backend', value: ctx.config.backend, inline: true },
+        { name: 'PID', value: String(ctx.serverProcess.pid), inline: true },
+        { name: 'Uptime', value: `${uptimeMin}m`, inline: true },
+        { name: 'Memory', value: `${memMB}MB`, inline: true },
+        { name: t('status.started', interaction.locale), value: startStr, inline: true },
+        { name: 'Schedules', value: `${schedules.length} total, ${activeSchedules} running`, inline: true },
       ]
 
-      // Claude session data from statusLine
       try {
         const sessionPath = '/tmp/claude-session-data.json'
         if (existsSync(sessionPath)) {
-          const raw = readFileSync(sessionPath, 'utf-8')
-          const data = JSON.parse(raw)
-
+          const data = JSON.parse(readFileSync(sessionPath, 'utf-8'))
           const model = data.model?.display_name ?? data.model?.id ?? 'unknown'
-          lines.push('', `**Claude Session**`)
-          lines.push(`Model: ${model}`)
+          fields.push({ name: 'Model', value: model, inline: true })
 
           const inTok = data.context_window?.total_input_tokens
           const outTok = data.context_window?.total_output_tokens
           if (inTok != null || outTok != null) {
             const fmt = (n: number) => n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1_000 ? `${Math.round(n / 1_000)}K` : `${n}`
-            lines.push(`Tokens: in ${fmt(inTok ?? 0)} / out ${fmt(outTok ?? 0)}`)
+            fields.push({ name: 'Tokens', value: `in ${fmt(inTok ?? 0)} / out ${fmt(outTok ?? 0)}`, inline: true })
           }
 
           const fiveH = data.rate_limits?.five_hour?.used_percentage
@@ -712,28 +806,27 @@ export async function handleSlashCommand(
             const parts: string[] = []
             if (fiveH != null) parts.push(`5h ${Math.round(fiveH)}%`)
             if (sevenD != null) parts.push(`7d ${Math.round(sevenD)}%`)
-            lines.push(`Rate limit: ${parts.join(' / ')}`)
+            fields.push({ name: 'Rate Limit', value: parts.join(' / '), inline: true })
           }
 
           const ctxPct = data.context_window?.used_percentage
-          if (ctxPct != null) lines.push(`Context: ${Math.round(ctxPct)}%`)
+          if (ctxPct != null) fields.push({ name: 'Context', value: `${Math.round(ctxPct)}%`, inline: true })
         }
-      } catch { /* graceful fallback — show basic info only */ }
+      } catch { /* graceful fallback */ }
 
-      await interaction.reply({ content: lines.join('\n'), flags: 64 })
+      await interaction.reply({ embeds: [{ title: '\u{1f4ca} Status', fields, color: EMBED_COLOR }], flags: 64 })
       return
     }
     case 'config': {
-      const lines = [
-        `**Configuration**`,
-        `Backend: ${ctx.config.backend}`,
-        `Channels: ${Object.keys(ctx.config.channelsConfig?.channels ?? {}).length}`,
-        `Voice: ${ctx.config.voice?.enabled ? 'enabled' : 'disabled'}`,
-        `Proactive: ${ctx.config.proactive ? `freq ${ctx.config.proactive.frequency}` : 'disabled'}`,
-        `Interactive schedules: ${(ctx.config.interactive ?? []).length}`,
-        `Non-interactive schedules: ${(ctx.config.nonInteractive ?? []).length}`,
+      const fields: EmbedField[] = [
+        { name: 'Backend', value: ctx.config.backend, inline: true },
+        { name: 'Channels', value: String(Object.keys(ctx.config.channelsConfig?.channels ?? {}).length), inline: true },
+        { name: 'Voice', value: ctx.config.voice?.enabled ? 'Enabled' : 'Disabled', inline: true },
+        { name: 'Proactive', value: ctx.config.proactive ? `freq ${ctx.config.proactive.frequency}` : 'Disabled', inline: true },
+        { name: 'Interactive', value: String((ctx.config.interactive ?? []).length), inline: true },
+        { name: 'Non-interactive', value: String((ctx.config.nonInteractive ?? []).length), inline: true },
       ]
-      await interaction.reply({ content: lines.join('\n'), flags: 64 })
+      await interaction.reply({ embeds: [{ title: '\u{2699}\u{fe0f} Configuration', fields, color: EMBED_COLOR }], flags: 64 })
       return
     }
     case 'model':
@@ -756,6 +849,8 @@ export async function handleSlashCommand(
       return handleDoctor(interaction, ctx)
     case 'help':
       return handleHelp(interaction)
+    case 'profile':
+      return handleProfileSub(interaction, ctx)
     default:
       await interaction.reply({ content: t('unknown_command', interaction.locale, { cmd: sub }), flags: 64 })
   }
@@ -767,9 +862,22 @@ async function handleStop(
   interaction: ChatInputCommandInteraction,
   _ctx: SlashCommandContext,
 ): Promise<void> {
+  // 1. 플래그 파일 생성 (도구 호출 시 PreToolUse에서 잡힘)
   const flagFile = join(tmpdir(), 'claude2bot-stop.flag')
   writeFileSync(flagFile, String(Date.now()))
-  await interaction.reply({ content: t('stop.sent', interaction.locale, { pid: process.pid }), flags: 64 })
+
+  // 2. SIGINT도 보냄 (thinking 중 즉시 중단 — Ctrl+C와 동일)
+  const ppid = process.ppid
+  if (ppid && ppid > 1) {
+    try {
+      process.kill(ppid, 'SIGINT')
+    } catch {}
+  }
+
+  await interaction.reply({
+    embeds: [{ title: '\u{1f6d1} Stop', description: t('stop.sent', interaction.locale, { pid: ppid || 0 }), color: 0xED4245 }],
+    flags: 64,
+  })
 }
 
 async function handleModel(
@@ -786,7 +894,7 @@ async function handleModel(
   )
 
   await interaction.reply({
-    content: t('model.switched', interaction.locale, { model }),
+    embeds: [{ title: '\u{1f916} Model', description: t('model.switched', interaction.locale, { model }), color: EMBED_COLOR }],
     flags: 64,
   })
 }
@@ -800,7 +908,7 @@ async function handleCompact(
     `slash:${interaction.user.username}`,
     'Please compact the conversation now.',
   )
-  await interaction.reply({ content: t('compact.forwarded', interaction.locale), flags: 64 })
+  await interaction.reply({ embeds: [{ title: '\u{1f4e6} Compact', description: t('compact.forwarded', interaction.locale), color: EMBED_COLOR }], flags: 64 })
 }
 
 async function handleClear(
@@ -812,7 +920,7 @@ async function handleClear(
     `slash:${interaction.user.username}`,
     'Please clear the conversation.',
   )
-  await interaction.reply({ content: t('clear.forwarded', interaction.locale), flags: 64 })
+  await interaction.reply({ embeds: [{ title: '\u{1f9f9} Clear', description: t('clear.forwarded', interaction.locale), color: EMBED_COLOR }], flags: 64 })
 }
 
 async function handleNew(
@@ -824,7 +932,7 @@ async function handleNew(
     `slash:${interaction.user.username}`,
     'Please start a new session.',
   )
-  await interaction.reply({ content: t('new.forwarded', interaction.locale), flags: 64 })
+  await interaction.reply({ embeds: [{ title: '\u{2728} New Session', description: t('new.forwarded', interaction.locale), color: EMBED_COLOR }], flags: 64 })
 }
 
 async function handleResume(
@@ -836,7 +944,7 @@ async function handleResume(
     `slash:${interaction.user.username}`,
     'Please resume the previous session.',
   )
-  await interaction.reply({ content: t('resume.forwarded', interaction.locale), flags: 64 })
+  await interaction.reply({ embeds: [{ title: '\u{25b6}\u{fe0f} Resume', description: t('resume.forwarded', interaction.locale), color: EMBED_COLOR }], flags: 64 })
 }
 
 async function handleLanguage(
@@ -851,10 +959,10 @@ async function handleLanguage(
     const { writeFileSync } = await import('fs')
     writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n')
     invalidateConfigLangCache()
-    await interaction.reply({ content: t('language.set', lang), flags: 64 })
+    await interaction.reply({ embeds: [{ title: '\u{1f310} Language', description: t('language.set', lang), color: EMBED_COLOR }], flags: 64 })
   } catch (err) {
     await interaction.reply({
-      content: `Failed: ${err instanceof Error ? err.message : String(err)}`,
+      embeds: [{ title: '\u{1f310} Language', description: `Failed: ${err instanceof Error ? err.message : String(err)}`, color: 0xED4245 }],
       flags: 64,
     })
   }
@@ -869,7 +977,7 @@ async function handleAccess(
   const accessPath = join(stateDir, 'access.json')
 
   if (!existsSync(accessPath)) {
-    await interaction.reply({ content: t('access.not_found', locale), flags: 64 })
+    await interaction.reply({ embeds: [{ title: '\u{1f512} Access', description: t('access.not_found', locale), color: 0xFEE75C }], flags: 64 })
     return
   }
 
@@ -880,17 +988,16 @@ async function handleAccess(
     const chCount = Object.keys(access.channels ?? {}).length
     const pendingCount = (access.pendingPairings ?? []).length
 
-    const lines = [
-      t('access.title', locale),
-      t('access.dm_policy', locale, { policy: dmPolicy }),
-      t('access.allow_from', locale, { count: userCount }),
-      t('access.channels', locale, { count: chCount }),
-      t('access.pending', locale, { count: pendingCount }),
+    const fields: EmbedField[] = [
+      { name: 'DM Policy', value: dmPolicy, inline: true },
+      { name: 'Allowed Users', value: String(userCount), inline: true },
+      { name: 'Channels', value: String(chCount), inline: true },
+      { name: 'Pending', value: String(pendingCount), inline: true },
     ]
-    await interaction.reply({ content: lines.join('\n'), flags: 64 })
+    await interaction.reply({ embeds: [{ title: '\u{1f512} Access', fields, color: EMBED_COLOR }], flags: 64 })
   } catch (err) {
     await interaction.reply({
-      content: t('access.parse_failed', locale, { error: err instanceof Error ? err.message : String(err) }),
+      embeds: [{ title: '\u{1f512} Access', description: t('access.parse_failed', locale, { error: err instanceof Error ? err.message : String(err) }), color: 0xED4245 }],
       flags: 64,
     })
   }
@@ -907,21 +1014,21 @@ async function handleSchedule(
     case 'list': {
       const statuses = ctx.scheduler.getStatus()
       if (statuses.length === 0) {
-        await interaction.reply({ content: t('schedule.no_schedules', interaction.locale), flags: 64 })
+        await interaction.reply({ embeds: [{ title: '\u{1f4c5} Schedule', description: t('schedule.no_schedules', interaction.locale), color: 0xFEE75C }], flags: 64 })
         return
       }
-      const lines = statuses.map(s => {
-        const state = s.running ? ' **[RUNNING]**' : ''
-        const last = s.lastFired ? ` | last: ${s.lastFired}` : ''
-        return `\`${s.name}\` — ${s.time} ${s.days} (${s.type})${state}${last}`
+      const fields: EmbedField[] = statuses.map(s => {
+        const state = s.running ? ' [RUNNING]' : ''
+        const last = s.lastFired ? `\nLast: ${s.lastFired}` : ''
+        return { name: `${s.name}${state}`, value: `${s.time} ${s.days} (${s.type})${last}`, inline: false }
       })
-      await interaction.reply({ content: lines.join('\n'), flags: 64 })
+      await interaction.reply({ embeds: [{ title: '\u{1f4c5} Schedule', fields, color: EMBED_COLOR }], flags: 64 })
       return
     }
 
     case 'remove': {
       if (!name) {
-        await interaction.reply({ content: t('schedule.name_required_remove', interaction.locale), flags: 64 })
+        await interaction.reply({ embeds: [{ title: '\u{1f4c5} Schedule', description: t('schedule.name_required_remove', interaction.locale), color: 0xFEE75C }], flags: 64 })
         return
       }
       try {
@@ -939,15 +1046,15 @@ async function handleSchedule(
           }
         }
         if (!found) {
-          await interaction.reply({ content: t('schedule.not_found', interaction.locale, { name }), flags: 64 })
+          await interaction.reply({ embeds: [{ title: '\u{1f4c5} Schedule', description: t('schedule.not_found', interaction.locale, { name }), color: 0xFEE75C }], flags: 64 })
           return
         }
         const { writeFileSync } = await import('fs')
         writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n')
-        await interaction.reply({ content: t('schedule.removed', interaction.locale, { name }), flags: 64 })
+        await interaction.reply({ embeds: [{ title: '\u{1f4c5} Schedule', description: t('schedule.removed', interaction.locale, { name }), color: 0x57F287 }], flags: 64 })
       } catch (err) {
         await interaction.reply({
-          content: t('schedule.remove_failed', interaction.locale, { error: err instanceof Error ? err.message : String(err) }),
+          embeds: [{ title: '\u{1f4c5} Schedule', description: t('schedule.remove_failed', interaction.locale, { error: err instanceof Error ? err.message : String(err) }), color: 0xED4245 }],
           flags: 64,
         })
       }
@@ -956,7 +1063,7 @@ async function handleSchedule(
 
     case 'add': {
       if (!name) {
-        await interaction.reply({ content: t('schedule.name_required_add', interaction.locale), flags: 64 })
+        await interaction.reply({ embeds: [{ title: '\u{1f4c5} Schedule', description: t('schedule.name_required_add', interaction.locale), color: 0xFEE75C }], flags: 64 })
         return
       }
       const time = interaction.options.getString('time')
@@ -964,7 +1071,7 @@ async function handleSchedule(
       const prompt = interaction.options.getString('prompt')
       if (!time || !channel || !prompt) {
         await interaction.reply({
-          content: t('schedule.add_missing_options', interaction.locale),
+          embeds: [{ title: '\u{1f4c5} Schedule', description: t('schedule.add_missing_options', interaction.locale), color: 0xFEE75C }],
           flags: 64,
         })
         return
@@ -976,27 +1083,25 @@ async function handleSchedule(
         const targetKey = mode === 'non-interactive' ? 'nonInteractive' : 'interactive'
         if (!config[targetKey]) (config as any)[targetKey] = []
         const targetArr = (config as any)[targetKey] as Array<any>
-        // Check both arrays for duplicate name
         const existsI = (config.interactive ?? []).find(s => s.name === name)
         const existsN = (config.nonInteractive ?? []).find(s => s.name === name)
         if (existsI || existsN) {
-          await interaction.reply({ content: t('schedule.already_exists', interaction.locale, { name }), flags: 64 })
+          await interaction.reply({ embeds: [{ title: '\u{1f4c5} Schedule', description: t('schedule.already_exists', interaction.locale, { name }), color: 0xFEE75C }], flags: 64 })
           return
         }
         targetArr.push({ name, time, channel, enabled: true })
         const { writeFileSync } = await import('fs')
         writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n')
-        // Write prompt file
         const promptsDir = ctx.config.promptsDir ?? join(DATA_DIR, 'prompts')
         const promptPath = join(promptsDir, `${name}.md`)
         writeFileSync(promptPath, prompt + '\n', 'utf8')
         await interaction.reply({
-          content: t('schedule.added', interaction.locale, { name, time, channel }),
+          embeds: [{ title: '\u{1f4c5} Schedule', description: t('schedule.added', interaction.locale, { name, time, channel }), color: 0x57F287 }],
           flags: 64,
         })
       } catch (err) {
         await interaction.reply({
-          content: t('schedule.add_failed', interaction.locale, { error: err instanceof Error ? err.message : String(err) }),
+          embeds: [{ title: '\u{1f4c5} Schedule', description: t('schedule.add_failed', interaction.locale, { error: err instanceof Error ? err.message : String(err) }), color: 0xED4245 }],
           flags: 64,
         })
       }
@@ -1005,7 +1110,7 @@ async function handleSchedule(
 
     case 'restart': {
       ctx.scheduler.restart()
-      await interaction.reply({ content: t('schedule.restarted', interaction.locale), flags: 64 })
+      await interaction.reply({ embeds: [{ title: '\u{1f4c5} Schedule', description: t('schedule.restarted', interaction.locale), color: 0x57F287 }], flags: 64 })
       return
     }
   }
@@ -1015,22 +1120,21 @@ async function handleDoctor(
   interaction: ChatInputCommandInteraction,
   ctx: SlashCommandContext,
 ): Promise<void> {
-  const locale = interaction.locale
-  const lines: string[] = []
+  const fields: EmbedField[] = []
+  let allPass = true
 
   // 1. Config
   const configPath = join(DATA_DIR, 'config.json')
-  if (existsSync(configPath)) {
-    lines.push(t('doctor.config_exists', locale))
-  } else {
-    lines.push(t('doctor.config_missing', locale))
-  }
+  const configOk = existsSync(configPath)
+  fields.push({ name: 'Config', value: configOk ? '\u{2705} Found' : '\u{274c} Missing', inline: true })
+  if (!configOk) allPass = false
 
   // 2. Bot token
   const hasToken =
     (ctx.config.backend === 'discord' && ctx.config.discord?.token) ||
     (ctx.config.backend === 'telegram' && ctx.config.telegram?.token)
-  lines.push(hasToken ? t('doctor.token_ok', locale) : t('doctor.token_missing', locale))
+  fields.push({ name: 'Token', value: hasToken ? '\u{2705} OK' : '\u{274c} Missing', inline: true })
+  if (!hasToken) allPass = false
 
   // 3. Access control
   const stateDir = ctx.config.discord?.stateDir ?? join(DATA_DIR, 'discord')
@@ -1040,162 +1144,232 @@ async function handleDoctor(
       const access = JSON.parse(readFileSync(accessPath, 'utf8'))
       const userCount = (access.allowFrom ?? []).length
       const chCount = Object.keys(access.channels ?? {}).length
-      lines.push(`[PASS] Access: ${userCount} users, ${chCount} channels`)
+      fields.push({ name: 'Access', value: `\u{2705} ${userCount} users, ${chCount} channels`, inline: true })
     } catch {
-      lines.push(t('doctor.access_parse_failed', locale))
+      fields.push({ name: 'Access', value: '\u{274c} Parse failed', inline: true })
+      allPass = false
     }
   } else {
-    lines.push(t('doctor.access_missing', locale))
+    fields.push({ name: 'Access', value: '\u{26a0}\u{fe0f} Not configured', inline: true })
   }
 
   // 4. Schedules
   const statuses = ctx.scheduler.getStatus()
-  lines.push(`[INFO] ${statuses.length} schedules registered`)
-
-  // Check prompt files
   const promptsDir = ctx.config.promptsDir ?? join(DATA_DIR, 'prompts')
-  for (const s of statuses) {
-    if (s.type === 'proactive') continue
-    const promptFile = join(promptsDir, `${s.name}.md`)
-    if (!existsSync(promptFile)) {
-      lines.push(`[WARN] Prompt missing: ${s.name}.md`)
-    }
+  const missingPrompts = statuses.filter(s => s.type !== 'proactive' && !existsSync(join(promptsDir, `${s.name}.md`)))
+  let schedVal = `\u{2705} ${statuses.length} registered`
+  if (missingPrompts.length > 0) {
+    schedVal += `\n\u{26a0}\u{fe0f} Missing prompts: ${missingPrompts.map(s => s.name).join(', ')}`
   }
+  fields.push({ name: 'Schedules', value: schedVal, inline: false })
 
   // 5. Channels
   if (ctx.config.channelsConfig) {
     const chCount = Object.keys(ctx.config.channelsConfig.channels).length
-    lines.push(`[PASS] ${chCount} channels configured`)
+    fields.push({ name: 'Channels', value: `\u{2705} ${chCount} configured`, inline: true })
   } else {
-    lines.push(t('doctor.channels_not_set', locale))
+    fields.push({ name: 'Channels', value: '\u{26a0}\u{fe0f} Not configured', inline: true })
   }
 
   // 6. Voice
-  if (ctx.config.voice?.enabled) {
-    lines.push(t('doctor.voice_enabled', locale))
-  }
+  fields.push({ name: 'Voice', value: ctx.config.voice?.enabled ? '\u{2705} Enabled' : 'Disabled', inline: true })
 
   // 7. Process health
-  lines.push(`[INFO] PID ${process.pid}, uptime ${Math.floor(process.uptime() / 60)}m`)
+  fields.push({ name: 'Process', value: `PID ${process.pid}, uptime ${Math.floor(process.uptime() / 60)}m`, inline: true })
 
-  await interaction.reply({ content: '```\n' + lines.join('\n') + '\n```', flags: 64 })
+  await interaction.reply({
+    embeds: [{ title: '\u{1fa7a} Doctor', fields, color: allPass ? 0x57F287 : 0xFEE75C }],
+    flags: 64,
+  })
 }
 
-// ── Help (locale-aware) ──────────────────────────────────────────────
+// ── Help (locale-aware, embed) ───────────────────────────────────────
 
-const HELP_EN = [
-  '**Claude Bot Help**',
-  '',
-  '**Chat** -- Send a message in the channel and Claude will respond. Task progress is shown in real time.',
-  '**Voice** -- Send a voice message and it will be automatically transcribed.',
-  '**Permissions** -- When a tool runs, [Approve] [Session Approve] [Deny] buttons appear.',
-  '**Schedules** -- Tasks run automatically at set times. Interactive schedules run within the current session, non-interactive ones run in a separate session, and proactive ones let Claude start conversations on its own.',
-  '',
-  '**Commands**',
-  '`/claude stop` -- Stop current task immediately',
-  '`/claude status` -- Check model, tokens, session status',
-  '`/claude config` -- View current configuration',
-  '`/claude model [sonnet|opus]` -- Switch AI model',
-  '`/claude language [en|ko|ja|zh]` -- Set display language',
-  '`/claude compact` -- Compact conversation (free up context)',
-  '`/claude clear` -- Clear conversation (keep session)',
-  '`/claude new` -- Start new session',
-  '`/claude resume` -- Resume previous session',
-  '`/claude schedule list` -- List registered schedules',
-  '`/claude schedule add` -- Add new schedule',
-  '`/claude schedule remove` -- Remove schedule',
-  '`/claude access` -- Show access control status',
-  '`/claude doctor` -- System diagnostics (connections, hooks, config)',
-].join('\n')
+interface HelpData { features: string; commands: string }
 
-const HELP_KO = [
-  '**Claude Bot 도움말**',
-  '',
-  '**대화** -- 채널에 메시지를 보내면 Claude가 응답합니다. 작업 진행 상황은 실시간으로 표시됩니다.',
-  '**음성** -- 음성 메시지를 보내면 자동으로 텍스트 변환됩니다.',
-  '**권한** -- 도구 실행 시 [승인] [세션승인] [거부] 버튼이 나타납니다.',
-  '**스케줄** -- 정해진 시간에 자동으로 작업을 실행합니다. 대화형(interactive)은 현재 세션에서 진행되고, 비대화형(non-interactive)은 별도 세션에서 실행됩니다. 자율형(proactive)은 Claude가 먼저 대화를 시작합니다.',
-  '',
-  '**명령어**',
-  '`/claude stop` -- 현재 작업 즉시 중단',
-  '`/claude status` -- 모델, 토큰, 세션 상태 확인',
-  '`/claude config` -- 현재 설정 확인',
-  '`/claude model [sonnet|opus]` -- AI 모델 전환',
-  '`/claude language [en|ko|ja|zh]` -- 표시 언어 설정',
-  '`/claude compact` -- 대화 기록 압축 (컨텍스트 확보)',
-  '`/claude clear` -- 대화 초기화 (세션 유지)',
-  '`/claude new` -- 새 세션 시작',
-  '`/claude resume` -- 이전 세션 이어하기',
-  '`/claude schedule list` -- 등록된 스케줄 목록',
-  '`/claude schedule add` -- 새 스케줄 추가',
-  '`/claude schedule remove` -- 스케줄 삭제',
-  '`/claude access` -- 접근 제어 상태 확인',
-  '`/claude doctor` -- 시스템 진단 (연결, 훅, 설정 상태)',
-].join('\n')
+const HELP_EN: HelpData = {
+  features: [
+    '**Chat** -- Send a message and Claude will respond. Progress shown in real time.',
+    '**Voice** -- Send a voice message for automatic transcription.',
+    '**Permissions** -- [Approve] [Session Approve] [Deny] buttons on tool use.',
+    '**Schedules** -- Auto-tasks: interactive (current session), non-interactive (separate), proactive (Claude-initiated).',
+  ].join('\n'),
+  commands: [
+    '`/claude stop` -- Stop current task',
+    '`/claude status` -- Session status',
+    '`/claude config` -- View config',
+    '`/claude model` -- Switch model',
+    '`/claude language` -- Set language',
+    '`/claude compact` -- Compact conversation',
+    '`/claude clear` -- Clear conversation',
+    '`/claude new` -- New session',
+    '`/claude resume` -- Resume session',
+    '`/claude schedule` -- Manage schedules',
+    '`/claude access` -- Access control',
+    '`/claude doctor` -- System diagnostics',
+    '`/claude bot` -- Bot settings',
+    '`/claude profile` -- User profile',
+  ].join('\n'),
+}
 
-const HELP_JA = [
-  '**Claude Bot ヘルプ**',
-  '',
-  '**チャット** -- チャンネルにメッセージを送るとClaudeが応答します。タスクの進行状況はリアルタイムで表示されます。',
-  '**音声** -- 音声メッセージを送ると自動的にテキストに変換されます。',
-  '**権限** -- ツール実行時に[承認] [セッション承認] [拒否]ボタンが表示されます。',
-  '**スケジュール** -- 設定した時間に自動でタスクを実行します。対話型(interactive)は現在のセッションで進行し、非対話型(non-interactive)は別セッションで実行されます。自律型(proactive)はClaudeが自ら会話を開始します。',
-  '',
-  '**コマンド**',
-  '`/claude stop` -- 現在のタスクを即座に停止',
-  '`/claude status` -- モデル、トークン、セッション状態確認',
-  '`/claude config` -- 現在の設定確認',
-  '`/claude model [sonnet|opus]` -- AIモデル切替',
-  '`/claude language [en|ko|ja|zh]` -- 表示言語を設定',
-  '`/claude compact` -- 会話履歴を圧縮 (コンテキスト確保)',
-  '`/claude clear` -- 会話をクリア (セッション維持)',
-  '`/claude new` -- 新しいセッション開始',
-  '`/claude resume` -- 前のセッションを再開',
-  '`/claude schedule list` -- 登録済みスケジュール一覧',
-  '`/claude schedule add` -- 新しいスケジュール追加',
-  '`/claude schedule remove` -- スケジュール削除',
-  '`/claude access` -- アクセス制御状態を表示',
-  '`/claude doctor` -- システム診断 (接続、フック、設定状態)',
-].join('\n')
+const HELP_KO: HelpData = {
+  features: [
+    '**\uB300\uD654** -- \uCC44\uB110\uC5D0 \uBA54\uC2DC\uC9C0\uB97C \uBCF4\uB0B4\uBA74 Claude\uAC00 \uC751\uB2F5\uD569\uB2C8\uB2E4.',
+    '**\uC74C\uC131** -- \uC74C\uC131 \uBA54\uC2DC\uC9C0\uB97C \uBCF4\uB0B4\uBA74 \uC790\uB3D9 \uBCC0\uD658\uB429\uB2C8\uB2E4.',
+    '**\uAD8C\uD55C** -- \uB3C4\uAD6C \uC2E4\uD589 \uC2DC [\uC2B9\uC778] [\uC138\uC158\uC2B9\uC778] [\uAC70\uBD80] \uBC84\uD2BC\uC774 \uB098\uD0C0\uB0A9\uB2C8\uB2E4.',
+    '**\uC2A4\uCF00\uC904** -- \uC815\uD574\uC9C4 \uC2DC\uAC04\uC5D0 \uC790\uB3D9 \uC2E4\uD589\uB429\uB2C8\uB2E4.',
+  ].join('\n'),
+  commands: [
+    '`/claude stop` -- \uC791\uC5C5 \uC911\uB2E8',
+    '`/claude status` -- \uC138\uC158 \uC0C1\uD0DC',
+    '`/claude config` -- \uC124\uC815 \uD655\uC778',
+    '`/claude model` -- \uBAA8\uB378 \uC804\uD658',
+    '`/claude language` -- \uC5B8\uC5B4 \uC124\uC815',
+    '`/claude compact` -- \uB300\uD654 \uC555\uCD95',
+    '`/claude clear` -- \uB300\uD654 \uCD08\uAE30\uD654',
+    '`/claude new` -- \uC0C8 \uC138\uC158',
+    '`/claude resume` -- \uC138\uC158 \uC774\uC5B4\uD558\uAE30',
+    '`/claude schedule` -- \uC2A4\uCF00\uC904 \uAD00\uB9AC',
+    '`/claude access` -- \uC811\uADFC \uC81C\uC5B4',
+    '`/claude doctor` -- \uC2DC\uC2A4\uD15C \uC9C4\uB2E8',
+    '`/claude bot` -- \uBD07 \uC124\uC815',
+    '`/claude profile` -- \uC0AC\uC6A9\uC790 \uD504\uB85C\uD544',
+  ].join('\n'),
+}
 
-const HELP_ZH = [
-  '**Claude Bot 帮助**',
-  '',
-  '**聊天** -- 在频道发送消息，Claude会自动回复。任务进度实时显示。',
-  '**语音** -- 发送语音消息会自动转换为文字。',
-  '**权限** -- 工具执行时会显示[批准] [会话批准] [拒绝]按钮。',
-  '**计划任务** -- 在设定时间自动执行任务。交互式(interactive)在当前会话中运行，非交互式(non-interactive)在独立会话中运行，主动式(proactive)由Claude主动发起对话。',
-  '',
-  '**命令**',
-  '`/claude stop` -- 立即停止当前任务',
-  '`/claude status` -- 查看模型、令牌、会话状态',
-  '`/claude config` -- 查看当前配置',
-  '`/claude model [sonnet|opus]` -- 切换AI模型',
-  '`/claude language [en|ko|ja|zh]` -- 设置显示语言',
-  '`/claude compact` -- 压缩对话记录 (释放上下文)',
-  '`/claude clear` -- 清除对话 (保持会话)',
-  '`/claude new` -- 开始新会话',
-  '`/claude resume` -- 恢复上一个会话',
-  '`/claude schedule list` -- 查看已注册的计划',
-  '`/claude schedule add` -- 添加新计划',
-  '`/claude schedule remove` -- 删除计划',
-  '`/claude access` -- 查看访问控制状态',
-  '`/claude doctor` -- 系统诊断 (连接、钩子、配置状态)',
-].join('\n')
+const HELP_JA: HelpData = {
+  features: [
+    '**\u30C1\u30E3\u30C3\u30C8** -- \u30E1\u30C3\u30BB\u30FC\u30B8\u3092\u9001\u308B\u3068Claude\u304C\u5FDC\u7B54\u3057\u307E\u3059\u3002',
+    '**\u97F3\u58F0** -- \u97F3\u58F0\u30E1\u30C3\u30BB\u30FC\u30B8\u3092\u9001\u308B\u3068\u81EA\u52D5\u5909\u63DB\u3055\u308C\u307E\u3059\u3002',
+    '**\u6A29\u9650** -- \u30C4\u30FC\u30EB\u5B9F\u884C\u6642\u306B[\u627F\u8A8D] [\u30BB\u30C3\u30B7\u30E7\u30F3\u627F\u8A8D] [\u62D2\u5426]\u30DC\u30BF\u30F3\u304C\u8868\u793A\u3055\u308C\u307E\u3059\u3002',
+    '**\u30B9\u30B1\u30B8\u30E5\u30FC\u30EB** -- \u8A2D\u5B9A\u3057\u305F\u6642\u9593\u306B\u81EA\u52D5\u5B9F\u884C\u3057\u307E\u3059\u3002',
+  ].join('\n'),
+  commands: [
+    '`/claude stop` -- \u30BF\u30B9\u30AF\u505C\u6B62',
+    '`/claude status` -- \u30B9\u30C6\u30FC\u30BF\u30B9',
+    '`/claude config` -- \u8A2D\u5B9A\u78BA\u8A8D',
+    '`/claude model` -- \u30E2\u30C7\u30EB\u5207\u66FF',
+    '`/claude language` -- \u8A00\u8A9E\u8A2D\u5B9A',
+    '`/claude compact` -- \u4F1A\u8A71\u5727\u7E2E',
+    '`/claude clear` -- \u4F1A\u8A71\u30AF\u30EA\u30A2',
+    '`/claude new` -- \u65B0\u30BB\u30C3\u30B7\u30E7\u30F3',
+    '`/claude resume` -- \u30BB\u30C3\u30B7\u30E7\u30F3\u518D\u958B',
+    '`/claude schedule` -- \u30B9\u30B1\u30B8\u30E5\u30FC\u30EB\u7BA1\u7406',
+    '`/claude access` -- \u30A2\u30AF\u30BB\u30B9\u5236\u5FA1',
+    '`/claude doctor` -- \u30B7\u30B9\u30C6\u30E0\u8A3A\u65AD',
+    '`/claude bot` -- \u30DC\u30C3\u30C8\u8A2D\u5B9A',
+    '`/claude profile` -- \u30D7\u30ED\u30D5\u30A3\u30FC\u30EB',
+  ].join('\n'),
+}
+
+const HELP_ZH: HelpData = {
+  features: [
+    '**\u804A\u5929** -- \u53D1\u9001\u6D88\u606F\uFF0CClaude\u4F1A\u81EA\u52A8\u56DE\u590D\u3002',
+    '**\u8BED\u97F3** -- \u53D1\u9001\u8BED\u97F3\u6D88\u606F\u4F1A\u81EA\u52A8\u8F6C\u6362\u4E3A\u6587\u5B57\u3002',
+    '**\u6743\u9650** -- \u5DE5\u5177\u6267\u884C\u65F6\u663E\u793A[\u6279\u51C6] [\u4F1A\u8BDD\u6279\u51C6] [\u62D2\u7EDD]\u6309\u94AE\u3002',
+    '**\u8BA1\u5212\u4EFB\u52A1** -- \u5728\u8BBE\u5B9A\u65F6\u95F4\u81EA\u52A8\u6267\u884C\u3002',
+  ].join('\n'),
+  commands: [
+    '`/claude stop` -- \u505C\u6B62\u4EFB\u52A1',
+    '`/claude status` -- \u72B6\u6001',
+    '`/claude config` -- \u914D\u7F6E',
+    '`/claude model` -- \u5207\u6362\u6A21\u578B',
+    '`/claude language` -- \u8BBE\u7F6E\u8BED\u8A00',
+    '`/claude compact` -- \u538B\u7F29\u5BF9\u8BDD',
+    '`/claude clear` -- \u6E05\u9664\u5BF9\u8BDD',
+    '`/claude new` -- \u65B0\u4F1A\u8BDD',
+    '`/claude resume` -- \u6062\u590D\u4F1A\u8BDD',
+    '`/claude schedule` -- \u8BA1\u5212\u7BA1\u7406',
+    '`/claude access` -- \u8BBF\u95EE\u63A7\u5236',
+    '`/claude doctor` -- \u7CFB\u7EDF\u8BCA\u65AD',
+    '`/claude bot` -- \u673A\u5668\u4EBA\u8BBE\u7F6E',
+    '`/claude profile` -- \u7528\u6237\u8D44\u6599',
+  ].join('\n'),
+}
+
+function getHelpData(lang: Lang): HelpData {
+  if (lang === 'ko') return HELP_KO
+  if (lang === 'ja') return HELP_JA
+  if (lang === 'zh') return HELP_ZH
+  return HELP_EN
+}
 
 async function handleHelp(
   interaction: ChatInputCommandInteraction,
 ): Promise<void> {
-  const lang = getLang(interaction.locale)
-  let content: string
-  if (lang === 'ko') {
-    content = HELP_KO
-  } else if (lang === 'ja') {
-    content = HELP_JA
-  } else if (lang === 'zh') {
-    content = HELP_ZH
-  } else {
-    content = HELP_EN
+  const help = getHelpData(getLang(interaction.locale))
+  await interaction.reply({
+    embeds: [{
+      title: '\u{2753} Help',
+      fields: [
+        { name: 'Features', value: help.features, inline: false },
+        { name: 'Commands', value: help.commands, inline: false },
+      ],
+      color: EMBED_COLOR,
+    }],
+    flags: 64,
+  })
+}
+
+// ── /claude bot & /claude profile handlers ──────────────────────────
+
+/** Convert Discord locale to CommandContext lang ('ko' | 'en') */
+function getCmdLang(locale: string): 'ko' | 'en' {
+  return getLang(locale) === 'ko' ? 'ko' : 'en'
+}
+
+/** Reply to interaction with CommandResult (text, embeds, components) */
+async function replyWithResult(
+  interaction: ChatInputCommandInteraction,
+  result: { text?: string; embeds?: Record<string, unknown>[]; components?: Record<string, unknown>[] },
+): Promise<void> {
+  const payload: Record<string, unknown> = { flags: 64 }
+  if (result.text) payload.content = result.text
+  if (result.embeds?.length) payload.embeds = result.embeds
+  if (result.components?.length) payload.components = result.components
+  if (!result.text && !result.embeds?.length) payload.content = 'OK'
+  await interaction.reply(payload as any)
+}
+
+async function handleBotSub(
+  interaction: ChatInputCommandInteraction,
+  ctx: SlashCommandContext,
+): Promise<void> {
+  const sub = interaction.options.getSubcommand(false) ?? 'status'
+  const cmdCtx: CommandContext = {
+    scheduler: ctx.scheduler,
+    channelId: interaction.channelId,
+    userId: interaction.user.id,
+    lang: getCmdLang(interaction.locale),
   }
-  await interaction.reply({ content, flags: 64 })
+  try {
+    const result = await handleBotCommand(
+      { cmd: 'bot', args: [sub], params: {} },
+      cmdCtx,
+    )
+    await replyWithResult(interaction, result)
+  } catch (err) {
+    await interaction.reply({ content: `Error: ${err instanceof Error ? err.message : String(err)}`, flags: 64 })
+  }
+}
+
+async function handleProfileSub(
+  interaction: ChatInputCommandInteraction,
+  ctx: SlashCommandContext,
+): Promise<void> {
+  const cmdCtx: CommandContext = {
+    scheduler: ctx.scheduler,
+    channelId: interaction.channelId,
+    userId: interaction.user.id,
+    lang: getCmdLang(interaction.locale),
+  }
+  try {
+    const result = handleProfileCommand(
+      { cmd: 'profile', args: [], params: {} },
+      cmdCtx,
+    )
+    await replyWithResult(interaction, result)
+  } catch (err) {
+    await interaction.reply({ content: `Error: ${err instanceof Error ? err.message : String(err)}`, flags: 64 })
+  }
 }
