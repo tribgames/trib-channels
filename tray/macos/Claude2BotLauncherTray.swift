@@ -14,6 +14,8 @@ struct LauncherState: Decodable {
 struct LauncherConfig: Decodable {
     let workspacePath: String?
     let displayMode: String?
+    let sleepEnabled: Bool?
+    let sleepTime: String?
 }
 
 struct BotConfig: Decodable {
@@ -47,7 +49,7 @@ final class SettingsWindowController: NSObject {
     func show() {
         if let w = window, w.isVisible { w.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); return }
 
-        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 360, height: 286),
+        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 360, height: 350),
                          styleMask: [.titled, .closable], backing: .buffered, defer: false)
         w.title = "Claude2Bot Settings"
         w.center()
@@ -62,7 +64,7 @@ final class SettingsWindowController: NSObject {
         let rEdge: CGFloat = ww - p // right edge = all controls end here
         let cw: CGFloat = 80 // standard control/button width
         let row: CGFloat = 28 // row height
-        var y: CGFloat = 248
+        var y: CGFloat = 310
 
         // ── Workspace ──
         addLabel(to: content, text: "Workspace", x: p, y: y, bold: true)
@@ -81,7 +83,8 @@ final class SettingsWindowController: NSObject {
         let autotalkOn = botConfig?.autotalk?.enabled ?? false
         let autotalkFreq = max(1, min(5, botConfig?.autotalk?.freq ?? 3))
 
-        addLabel(to: content, text: "Autotalk", x: p, y: y)
+        addLabelWithHelp(to: content, text: "Autotalk", x: p, y: y,
+            help: "Proactive conversation frequency. Claude initiates topics based on context and schedule.")
         let freqLabels = ["OFF", "Very Low", "Low", "Medium", "High", "Very High"]
         let freqPopup = NSPopUpButton(frame: NSRect(x: rEdge - cw, y: y - 2, width: cw, height: 24), pullsDown: false)
         freqPopup.font = .systemFont(ofSize: 12)
@@ -99,7 +102,8 @@ final class SettingsWindowController: NSObject {
         let quietFrom = quietParts.count >= 1 ? quietParts[0] : "22:00"
         let quietTo = quietParts.count >= 2 ? quietParts[1] : "08:00"
 
-        addLabel(to: content, text: "Quiet Hours", x: p, y: y)
+        addLabelWithHelp(to: content, text: "Quiet Hours", x: p, y: y,
+            help: "No scheduled messages or autotalk during these hours.")
         let qToggle = NSPopUpButton(frame: NSRect(x: rEdge - cw, y: y - 2, width: cw, height: 24), pullsDown: false)
         qToggle.font = .systemFont(ofSize: 12)
         qToggle.addItem(withTitle: "OFF")
@@ -136,9 +140,40 @@ final class SettingsWindowController: NSObject {
         content.addSubview(toField)
         y -= row
 
+        // ── Sleeping Mode ──
+        let config = delegate.launcherConfig()
+        let sleepOn = config?.sleepEnabled ?? true // default ON
+        let sleepTime = config?.sleepTime ?? "03:00"
+
+        addLabelWithHelp(to: content, text: "Sleeping Mode", x: p, y: y,
+            help: "Summarizes today's conversation, updates your profile, and restarts the session at the scheduled time.")
+        let sleepToggle = NSPopUpButton(frame: NSRect(x: rEdge - cw, y: y - 2, width: cw, height: 24), pullsDown: false)
+        sleepToggle.font = .systemFont(ofSize: 12)
+        sleepToggle.addItem(withTitle: "OFF")
+        sleepToggle.addItem(withTitle: "ON")
+        sleepToggle.selectItem(at: sleepOn ? 1 : 0)
+        sleepToggle.tag = 300
+        sleepToggle.target = self
+        sleepToggle.action = #selector(sleepToggleChanged(_:))
+        content.addSubview(sleepToggle)
+        y -= row
+
+        addLabel(to: content, text: "Sleep Time", x: p, y: y)
+        let sleepField = NSTextField(string: sleepTime)
+        sleepField.frame = NSRect(x: rEdge - cw, y: y - 1, width: cw, height: 22)
+        sleepField.alignment = .center
+        sleepField.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+        sleepField.tag = 301
+        sleepField.isEnabled = sleepOn
+        sleepField.target = self
+        sleepField.action = #selector(sleepTimeChanged(_:))
+        content.addSubview(sleepField)
+        y -= row
+
         // ── Auto-start on Login ──
         let autostart = isLoginItemEnabled()
-        addLabel(to: content, text: "Auto-start on Login", x: p, y: y)
+        addLabelWithHelp(to: content, text: "Auto-start", x: p, y: y,
+            help: "Automatically launch Claude2Bot when you log in to your Mac.")
         let asCheck = NSButton(checkboxWithTitle: "", target: self, action: #selector(autostartToggled(_:)))
         asCheck.frame = NSRect(x: rEdge - 18, y: y, width: 20, height: 20)
         asCheck.state = autostart ? .on : .off
@@ -147,7 +182,8 @@ final class SettingsWindowController: NSObject {
 
         // ── Voice (only show if not installed) ──
         if !hasWhisper() {
-            addLabel(to: content, text: "Voice Support", x: p, y: y)
+            addLabelWithHelp(to: content, text: "Voice", x: p, y: y,
+                help: "Install whisper.cpp for voice message transcription.")
             addSmallButton(to: content, title: "Install", x: rEdge - cw, y: y, width: cw, target: self, action: #selector(installVoice))
             y -= row
         }
@@ -171,6 +207,32 @@ final class SettingsWindowController: NSObject {
         label.font = bold ? .boldSystemFont(ofSize: 13) : .systemFont(ofSize: 13)
         view.addSubview(label)
         return label
+    }
+
+    @discardableResult
+    private func addLabelWithHelp(to view: NSView, text: String, x: CGFloat, y: CGFloat, help: String, bold: Bool = false) -> NSTextField {
+        let label = addLabel(to: view, text: "\(text)  ", x: x, y: y, bold: bold)
+        let font = bold ? NSFont.boldSystemFont(ofSize: 13) : NSFont.systemFont(ofSize: 13)
+        let textWidth = (text as NSString).size(withAttributes: [.font: font]).width
+        let helpBtn = NSButton(frame: NSRect(x: x + textWidth + 6, y: y + 1, width: 16, height: 16))
+        helpBtn.bezelStyle = .helpButton
+        helpBtn.controlSize = .small
+        helpBtn.toolTip = help
+        helpBtn.target = self
+        helpBtn.action = #selector(showHelp(_:))
+        view.addSubview(helpBtn)
+        return label
+    }
+
+    @objc private func showHelp(_ sender: NSButton) {
+        if let tip = sender.toolTip {
+            let alert = NSAlert()
+            alert.messageText = "Help"
+            alert.informativeText = tip
+            alert.alertStyle = .informational
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+        }
     }
 
     private func addSeparator(to view: NSView, y: CGFloat) {
@@ -229,6 +291,36 @@ final class SettingsWindowController: NSObject {
             self?.delegate.runLauncher(["launch"])
         }
         closeSettings()
+    }
+
+    @objc private func sleepToggleChanged(_ sender: NSPopUpButton) {
+        let on = sender.indexOfSelectedItem == 1
+        if let contentView = sender.window?.contentView {
+            if let f = contentView.viewWithTag(301) as? NSTextField { f.isEnabled = on }
+        }
+        var config = readLauncherConfigRaw()
+        config["sleepEnabled"] = on
+        writeLauncherConfig(config)
+    }
+
+    @objc private func sleepTimeChanged(_ sender: NSTextField) {
+        var config = readLauncherConfigRaw()
+        config["sleepTime"] = sender.stringValue
+        writeLauncherConfig(config)
+    }
+
+    private func readLauncherConfigRaw() -> [String: Any] {
+        let path = NSString(string: "~/.claude2bot-launcher.json").expandingTildeInPath
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [:] }
+        return json
+    }
+
+    private func writeLauncherConfig(_ config: [String: Any]) {
+        let path = NSString(string: "~/.claude2bot-launcher.json").expandingTildeInPath
+        if let data = try? JSONSerialization.data(withJSONObject: config, options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: URL(fileURLWithPath: path))
+        }
     }
 
     @objc private func autotalkChanged(_ sender: NSPopUpButton) {
@@ -337,6 +429,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let menu = NSMenu()
     private var timer: Timer?
     private var lastLaunchAttempt = Date.distantPast
+    private var lastSleepDate = ""
     private lazy var settingsController = SettingsWindowController(delegate: self)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -344,6 +437,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         rebuildMenu()
         timer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             self?.ensureLauncherRunningIfNeeded()
+            self?.checkSleepSchedule()
             self?.rebuildMenu()
         }
         DispatchQueue.global(qos: .utility).async { [weak self] in
@@ -408,6 +502,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if Date().timeIntervalSince(lastLaunchAttempt) < 10 { return }
         lastLaunchAttempt = Date()
         runLauncher(["launch"])
+    }
+
+    private func checkSleepSchedule() {
+        let config = launcherConfig()
+        guard config?.sleepEnabled ?? true else { return }
+        let sleepTime = config?.sleepTime ?? "03:00"
+
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm"
+        let now = formatter.string(from: Date())
+        let today = DateFormatter.localizedString(from: Date(), dateStyle: .short, timeStyle: .none)
+
+        // Only trigger once per day, within 2-minute window of sleep time
+        guard now >= sleepTime, now < addMinutes(sleepTime, 2), lastSleepDate != today else { return }
+        lastSleepDate = today
+
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            self?.runLauncherSync(["sleep-cycle"])
+        }
+    }
+
+    private func addMinutes(_ time: String, _ mins: Int) -> String {
+        let parts = time.split(separator: ":").compactMap { Int($0) }
+        guard parts.count == 2 else { return time }
+        let total = parts[0] * 60 + parts[1] + mins
+        return String(format: "%02d:%02d", (total / 60) % 24, total % 60)
     }
 
     @objc private func actionLaunch() { runLauncher(["launch"]) }

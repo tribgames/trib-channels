@@ -16,6 +16,8 @@ const STATE_PATH = join(homedir(), '.claude2bot-launcher-state.json')
 const WEZTERM_DATA_HOME = join(homedir(), '.local', 'share', 'wezterm')
 const WEZTERM_RUNTIME_DIR = join(homedir(), '.local', 'share', 'wezterm')
 const WEZTERM_SOCKET_PATH = join(WEZTERM_RUNTIME_DIR, 'sock')
+const PLUGIN_DATA_DIR = join(homedir(), '.claude', 'plugins', 'data', 'claude2bot-claude2bot')
+const HISTORY_DIR = join(PLUGIN_DATA_DIR, 'history')
 const WEZTERM_WORKSPACE = 'default'
 const WEZTERM_PROCESS_NAME = 'wezterm-gui'
 const STARTUP_CONFIRM_SEQUENCE =
@@ -73,6 +75,7 @@ function printHelp() {
     '  doctor                 Show environment and installation status',
     '  workspace [path]       Show or set the default workspace path',
     '  display [hide|view]    Show or set the launcher display mode',
+    '  sleep-cycle            Run sleeping mode: summarize, restart session',
     '',
     'Options:',
     `  --scope <scope>        Plugin install scope (default: ${DEFAULT_SCOPE})`,
@@ -853,8 +856,268 @@ function launchClaude(workspacePath, displayMode) {
   throw new Error('WezTerm backend is required and no supported WezTerm installation was found.')
 }
 
+// ── Sleep Cycle ─────────────────────────────────────────────────────
+
+function extractPingPong(transcriptPath) {
+  try {
+    const lines = readFileSync(transcriptPath, 'utf8').split('\n').filter(Boolean)
+    const results = []
+    for (const line of lines) {
+      try {
+        const d = JSON.parse(line)
+        const role = d.message?.role
+        if (!role || (role !== 'user' && role !== 'assistant')) continue
+        const content = d.message?.content
+        let text = ''
+        if (typeof content === 'string') {
+          text = content
+        } else if (Array.isArray(content)) {
+          text = content
+            .filter(c => c.type === 'text')
+            .map(c => c.text)
+            .join('\n')
+        }
+        if (!text.trim()) continue
+        // Skip system/hook messages
+        if (text.includes('<system-reminder>') || text.includes('<schedule-context>')) continue
+        results.push(`${role}: ${text.trim()}`)
+      } catch { /* skip malformed lines */ }
+    }
+    return results.join('\n\n')
+  } catch {
+    return ''
+  }
+}
+
+function findLatestTranscript(workspacePath) {
+  const projectKey = workspacePath.replace(/\//g, '-')
+  const projectDir = join(homedir(), '.claude', 'projects', projectKey)
+  try {
+    const files = readdirSync(projectDir)
+      .filter(f => f.endsWith('.jsonl'))
+      .map(f => ({ name: f, mtime: statSync(join(projectDir, f)).mtimeMs }))
+      .sort((a, b) => b.mtime - a.mtime)
+    return files.length > 0 ? join(projectDir, files[0].name) : null
+  } catch {
+    return null
+  }
+}
+
+function buildContextFile() {
+  const dirs = { daily: join(HISTORY_DIR, 'daily') }
+  const lifetime = join(HISTORY_DIR, 'lifetime.md')
+  const identity = join(HISTORY_DIR, 'identity.md')
+  const interests = join(HISTORY_DIR, 'interests.json')
+  const ongoing = join(HISTORY_DIR, 'ongoing.md')
+  const contextPath = join(HISTORY_DIR, 'context.md')
+
+  const parts = []
+
+  // Identity (fallback: lifetime)
+  const identityContent = existsSync(identity) ? readFileSync(identity, 'utf8').trim() : ''
+  if (identityContent) parts.push(`## Identity\n${identityContent}`)
+
+  // Lifetime (fallback chain: lifetime → yearly → monthly → weekly → daily)
+  let historyContent = ''
+  if (existsSync(lifetime)) {
+    historyContent = readFileSync(lifetime, 'utf8').trim()
+  } else {
+    for (const level of ['yearly', 'monthly', 'weekly', 'daily']) {
+      const dir = join(HISTORY_DIR, level)
+      if (!existsSync(dir)) continue
+      const files = readdirSync(dir).filter(f => f.endsWith('.md')).sort().reverse()
+      if (files.length > 0) {
+        historyContent = files.slice(0, 3).map(f => readFileSync(join(dir, f), 'utf8').trim()).join('\n\n')
+        break
+      }
+    }
+  }
+  if (historyContent) parts.push(`## History\n${historyContent}`)
+
+  // Interests (top 10)
+  if (existsSync(interests)) {
+    try {
+      const data = JSON.parse(readFileSync(interests, 'utf8'))
+      const sorted = Object.entries(data).sort((a, b) => b[1].count - a[1].count).slice(0, 10)
+      if (sorted.length > 0) {
+        parts.push(`## Interests\n${sorted.map(([k, v]) => `${k}(${v.count})`).join(', ')}`)
+      }
+    } catch { /* skip */ }
+  }
+
+  // Ongoing
+  const ongoingContent = existsSync(ongoing) ? readFileSync(ongoing, 'utf8').trim() : ''
+  if (ongoingContent) parts.push(`## Ongoing\n${ongoingContent}`)
+
+  // Recent 7 days daily
+  if (existsSync(dirs.daily)) {
+    const dailyFiles = readdirSync(dirs.daily).filter(f => f.endsWith('.md')).sort().reverse().slice(0, 7)
+    if (dailyFiles.length > 0) {
+      const dailyContent = dailyFiles.map(f => readFileSync(join(dirs.daily, f), 'utf8').trim()).join('\n\n')
+      parts.push(`## Recent Activity\n${dailyContent}`)
+    }
+  }
+
+  mkdirSync(HISTORY_DIR, { recursive: true })
+  writeFileSync(contextPath, `<!-- Auto-generated by sleep-cycle -->\n\n${parts.join('\n\n')}\n`)
+  return contextPath
+}
+
+function sleepCycle(workspacePath) {
+  const ws = workspacePath || getConfiguredWorkspace()
+  process.stderr.write(`[sleep-cycle] Starting for workspace: ${ws}\n`)
+
+  // 1. Find transcript and extract ping-pong
+  const transcript = findLatestTranscript(ws)
+  if (!transcript) {
+    process.stderr.write('[sleep-cycle] No transcript found, skipping summary.\n')
+  }
+
+  // 2. Stop current session
+  stopLauncher()
+
+  // 3. Run claude -p to generate daily + update lifetime/identity/ongoing/interests
+  if (transcript) {
+    const pingpong = extractPingPong(transcript)
+    if (pingpong) {
+      const today = new Date().toISOString().slice(0, 10)
+      const promptPath = join(resourceDir(), 'sleep-prompt.md')
+      const sleepPrompt = existsSync(promptPath)
+        ? readFileSync(promptPath, 'utf8')
+        : 'Summarize the conversation.'
+
+      // Read existing files for context
+      const existingLifetime = existsSync(join(HISTORY_DIR, 'lifetime.md'))
+        ? readFileSync(join(HISTORY_DIR, 'lifetime.md'), 'utf8') : ''
+      const existingIdentity = existsSync(join(HISTORY_DIR, 'identity.md'))
+        ? readFileSync(join(HISTORY_DIR, 'identity.md'), 'utf8') : ''
+      const existingOngoing = existsSync(join(HISTORY_DIR, 'ongoing.md'))
+        ? readFileSync(join(HISTORY_DIR, 'ongoing.md'), 'utf8') : ''
+      const existingInterests = existsSync(join(HISTORY_DIR, 'interests.json'))
+        ? readFileSync(join(HISTORY_DIR, 'interests.json'), 'utf8') : '{}'
+
+      const fullPrompt = sleepPrompt
+        .replace('{{DATE}}', today)
+        .replace('{{PINGPONG}}', pingpong.slice(-30000)) // limit to ~30K chars
+        .replace('{{LIFETIME}}', existingLifetime)
+        .replace('{{IDENTITY}}', existingIdentity)
+        .replace('{{ONGOING}}', existingOngoing)
+        .replace('{{INTERESTS}}', existingInterests)
+        .replace('{{HISTORY_DIR}}', HISTORY_DIR)
+
+      mkdirSync(join(HISTORY_DIR, 'daily'), { recursive: true })
+      mkdirSync(join(HISTORY_DIR, 'weekly'), { recursive: true })
+      mkdirSync(join(HISTORY_DIR, 'monthly'), { recursive: true })
+      mkdirSync(join(HISTORY_DIR, 'yearly'), { recursive: true })
+
+      try {
+        execFileSync('claude', ['-p', fullPrompt, '--cwd', ws], {
+          stdio: 'inherit',
+          timeout: 180000,
+          env: { ...process.env, CLAUDE_MODEL: 'sonnet' },
+        })
+        process.stderr.write('[sleep-cycle] Summary complete.\n')
+      } catch (e) {
+        process.stderr.write(`[sleep-cycle] claude -p failed: ${e.message}\n`)
+      }
+
+      // Check if weekly/monthly/yearly need to be created
+      generateRollups(today)
+    }
+  }
+
+  // 4. Build context.md
+  buildContextFile()
+
+  // 5. Update plugin
+  try { updatePlugin() } catch { /* best effort */ }
+
+  // 6. Launch new session
+  const displayMode = getConfiguredDisplayMode()
+  launchClaude(ws, displayMode)
+  process.stderr.write('[sleep-cycle] New session launched.\n')
+}
+
+function generateRollups(today) {
+  const [year, month, day] = today.split('-').map(Number)
+  const weekNum = getWeekNumber(new Date(year, month - 1, day))
+
+  // Weekly: if new week and last week's file doesn't exist
+  const lastWeek = `${year}-W${String(weekNum - 1 || 52).padStart(2, '0')}`
+  const lastWeekFile = join(HISTORY_DIR, 'weekly', `${lastWeek}.md`)
+  if (new Date().getDay() === 1 && !existsSync(lastWeekFile)) {
+    // Collect last 7 days of dailies
+    const dailyDir = join(HISTORY_DIR, 'daily')
+    if (existsSync(dailyDir)) {
+      const files = readdirSync(dailyDir).filter(f => f.endsWith('.md')).sort().reverse().slice(0, 7)
+      if (files.length > 0) {
+        const content = files.map(f => readFileSync(join(dailyDir, f), 'utf8').trim()).join('\n\n')
+        try {
+          const summary = execFileSync('claude', ['-p',
+            `Compress these daily summaries into a concise weekly summary. Write in English except proper nouns. Output only the summary, no explanations:\n\n${content}`
+          ], { encoding: 'utf8', timeout: 60000, env: { ...process.env, CLAUDE_MODEL: 'haiku' } }).trim()
+          mkdirSync(join(HISTORY_DIR, 'weekly'), { recursive: true })
+          writeFileSync(lastWeekFile, `# ${lastWeek}\n\n${summary}\n`)
+        } catch { /* skip */ }
+      }
+    }
+  }
+
+  // Monthly: if new month and last month's file doesn't exist
+  const lastMonth = month === 1 ? `${year - 1}-12` : `${year}-${String(month - 1).padStart(2, '0')}`
+  const lastMonthFile = join(HISTORY_DIR, 'monthly', `${lastMonth}.md`)
+  if (day <= 7 && !existsSync(lastMonthFile)) {
+    const weeklyDir = join(HISTORY_DIR, 'weekly')
+    if (existsSync(weeklyDir)) {
+      const files = readdirSync(weeklyDir).filter(f => f.startsWith(lastMonth.slice(0, 4))).sort().reverse().slice(0, 5)
+      if (files.length > 0) {
+        const content = files.map(f => readFileSync(join(weeklyDir, f), 'utf8').trim()).join('\n\n')
+        try {
+          const summary = execFileSync('claude', ['-p',
+            `Compress these weekly summaries into a concise monthly summary. Write in English except proper nouns. Output only the summary:\n\n${content}`
+          ], { encoding: 'utf8', timeout: 60000, env: { ...process.env, CLAUDE_MODEL: 'haiku' } }).trim()
+          mkdirSync(join(HISTORY_DIR, 'monthly'), { recursive: true })
+          writeFileSync(lastMonthFile, `# ${lastMonth}\n\n${summary}\n`)
+        } catch { /* skip */ }
+      }
+    }
+  }
+
+  // Yearly: if new year and last year's file doesn't exist
+  const lastYear = `${year - 1}`
+  const lastYearFile = join(HISTORY_DIR, 'yearly', `${lastYear}.md`)
+  if (month === 1 && day <= 7 && !existsSync(lastYearFile)) {
+    const monthlyDir = join(HISTORY_DIR, 'monthly')
+    if (existsSync(monthlyDir)) {
+      const files = readdirSync(monthlyDir).filter(f => f.startsWith(lastYear)).sort()
+      if (files.length > 0) {
+        const content = files.map(f => readFileSync(join(monthlyDir, f), 'utf8').trim()).join('\n\n')
+        try {
+          const summary = execFileSync('claude', ['-p',
+            `Compress these monthly summaries into a concise yearly summary. Write in English except proper nouns. Output only the summary:\n\n${content}`
+          ], { encoding: 'utf8', timeout: 60000, env: { ...process.env, CLAUDE_MODEL: 'haiku' } }).trim()
+          mkdirSync(join(HISTORY_DIR, 'yearly'), { recursive: true })
+          writeFileSync(lastYearFile, `# ${lastYear}\n\n${summary}\n`)
+        } catch { /* skip */ }
+      }
+    }
+  }
+}
+
+function getWeekNumber(date) {
+  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()))
+  d.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay() || 7))
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1))
+  return Math.ceil(((d - yearStart) / 86400000 + 1) / 7)
+}
+
 function stopLauncher() {
   const state = readLauncherState()
+
+  // 0. Kill ALL orphan claude --channels processes (ensure single instance)
+  try {
+    execFileSync('pkill', ['-f', `claude.*${PLUGIN_SPEC}`], { stdio: 'ignore' })
+  } catch { /* none running */ }
 
   // 1. Kill watcher process
   if (state?.watcherPid) {
@@ -1111,6 +1374,9 @@ async function main() {
       break
     case 'stop':
       stopLauncher()
+      break
+    case 'sleep-cycle':
+      sleepCycle(cliWorkspace)
       break
     case 'doctor': {
       const workspacePath = cliWorkspace ? resolve(cliWorkspace) : getConfiguredWorkspace()

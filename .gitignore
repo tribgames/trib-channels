@@ -5,3 +5,4 @@ settings.local.md
 *.tsbuildinfo
 config.json
 prompts/
+.DS_Store
