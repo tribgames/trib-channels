@@ -27,13 +27,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.ensureLauncherRunningIfNeeded()
             self?.rebuildMenu()
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-            self?.ensureLauncherRunningIfNeeded()
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            // Clean up any stale sessions from previous runs, then launch fresh
+            self?.runLauncherSync(["stop"])
+            self?.runLauncher(["launch"])
         }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         timer?.invalidate()
+        // Stop all launcher processes when tray quits
+        runLauncherSync(["stop"])
     }
 
     private func launcherState() -> LauncherState? {
@@ -48,19 +52,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return try? JSONDecoder().decode(LauncherConfig.self, from: data)
     }
 
-    private func runLauncher(_ args: [String]) {
-        let state = launcherState()
-        let execPath = Bundle.main.path(forResource: "claude2bot-launcher", ofType: nil)
-            ?? state?.launcherExecPath
+    private func launcherExecPath() -> String {
+        return Bundle.main.path(forResource: "claude2bot-launcher", ofType: nil)
+            ?? launcherState()?.launcherExecPath
             ?? ProcessInfo.processInfo.environment["CLAUDE2BOT_LAUNCHER_EXEC"]
             ?? ""
-        guard !execPath.isEmpty else { return }
+    }
 
+    private func runLauncher(_ args: [String]) {
+        let execPath = launcherExecPath()
+        guard !execPath.isEmpty else { return }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/bash")
         process.arguments = [execPath] + args
         process.currentDirectoryURL = URL(fileURLWithPath: NSString(string: "~").expandingTildeInPath)
         try? process.run()
+    }
+
+    private func runLauncherSync(_ args: [String]) {
+        let execPath = launcherExecPath()
+        guard !execPath.isEmpty else { return }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = [execPath] + args
+        process.currentDirectoryURL = URL(fileURLWithPath: NSString(string: "~").expandingTildeInPath)
+        try? process.run()
+        process.waitUntilExit()
     }
 
     private func ensureLauncherRunningIfNeeded() {
@@ -80,7 +97,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func actionLaunch() { runLauncher(["launch"]) }
-    @objc private func actionRestart() { runLauncher(["restart"]) }
+    @objc private func actionRestart() {
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            self?.runLauncherSync(["stop"])
+            self?.runLauncher(["launch"])
+        }
+    }
     @objc private func actionDisplayHide() { runLauncher(["display", "hide"]) }
     @objc private func actionDisplayView() { runLauncher(["display", "view"]) }
     @objc private func actionQuit() { NSApp.terminate(nil) }

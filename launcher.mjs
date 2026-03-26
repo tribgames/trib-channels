@@ -69,6 +69,7 @@ function printHelp() {
     '  update                 Update the plugin and marketplace metadata',
     '  launch                 Open Claude Code in launcher mode',
     '  restart                Restart the launcher-managed Claude session',
+  '  stop                   Stop all launcher processes and clean up',
     '  doctor                 Show environment and installation status',
     '  workspace [path]       Show or set the default workspace path',
     '  display [hide|view]    Show or set the launcher display mode',
@@ -854,6 +855,34 @@ function launchClaude(workspacePath, displayMode) {
   throw new Error('WezTerm backend is required and no supported WezTerm installation was found.')
 }
 
+function stopLauncher() {
+  const state = readLauncherState()
+
+  // 1. Kill watcher process
+  if (state?.watcherPid) {
+    try { process.kill(state.watcherPid) } catch { /* already gone */ }
+  }
+
+  // 2. Kill Claude pane in mux
+  if (state?.weztermPaneId != null) {
+    try { weztermCli(['kill-pane', '--pane-id', String(state.weztermPaneId)]) } catch { /* already gone */ }
+  }
+
+  // 3. Kill WezTerm GUI
+  hideWezTermApp()
+
+  // 4. Kill mux server
+  const pidFile = join(WEZTERM_DATA_HOME, 'pid')
+  try {
+    const muxPid = Number(readFileSync(pidFile, 'utf8').trim())
+    if (muxPid) process.kill(muxPid)
+  } catch { /* no mux running */ }
+
+  // 5. Reset state
+  resetLauncherState({ phase: 'stopped', connected: false })
+  process.stdout.write('Launcher stopped.\n')
+}
+
 function doctor(scope, workspacePath) {
   const displayMode = getConfiguredDisplayMode()
   const lines = []
@@ -1081,6 +1110,9 @@ async function main() {
       break
     case 'restart':
       await restartLauncherWindow(scope, cliWorkspace)
+      break
+    case 'stop':
+      stopLauncher()
       break
     case 'doctor': {
       const workspacePath = cliWorkspace ? resolve(cliWorkspace) : getConfiguredWorkspace()
