@@ -1,84 +1,116 @@
 ---
-description: Post-install claude2bot setup and reconfiguration. Use this after the bot is already connected.
+description: View and configure claude2bot settings — channels, access, profile, voice, quiet hours, autotalk.
+args: "[status|channels|access|profile|voice|quiet|autotalk] [detail]"
 allowed-tools:
   - AskUserQuestion
   - Read
   - Write
-  - Bash(node *)
-  - Bash(mkdir *)
+  - Edit
 ---
 
 # claude2bot Setup
 
-Walk the user through post-install claude2bot configuration.
+Manage post-install configuration. Parse the command arguments to determine the action.
 
-If the bot is not connected yet, prefer the install flow first.
+## Config Files
+| File | Path |
+|------|------|
+| config.json | `${CLAUDE_PLUGIN_DATA}/config.json` |
+| bot.json | `${CLAUDE_PLUGIN_DATA}/bot.json` |
+| profile.json | `${CLAUDE_PLUGIN_DATA}/profile.json` |
+| access.json | `${CLAUDE_PLUGIN_DATA}/discord/access.json` |
 
-**Plugin root**: `${CLAUDE_PLUGIN_ROOT}`
-**Data directory**: `${CLAUDE_PLUGIN_DATA}`
+## Actions
 
-## Language Rule
-- Write this guide in English.
-- During the actual conversation, always respond in the user's language.
-- Keep messages short and action-focused.
+### status (default)
+Read all four config files and display a compact summary of current settings: channels (main + count), access (DM policy + user count), profile (name, role, lang, tone), voice (enabled/disabled), quiet hours, and autotalk state.
 
-## Scope
-Use this flow for:
-- adding or changing channels
-- reviewing access policy
-- editing profile values
-- enabling voice features
-- quiet/autotalk settings
-- advanced maintenance tasks
+### channels
+Manage `channelsConfig` in config.json.
 
-## Entry
-Start by checking whether the basic install is already complete:
-- config exists
-- bot token exists
-- main channel exists
+If no detail is given, display current channels and return.
 
-If not, tell the user to run the install flow first.
+To **add** a channel:
+1. Ask for label (kebab-case), channel ID, mode (`interactive` or `monitor`) using AskUserQuestion
+2. Add to `channelsConfig.channels` in `${CLAUDE_PLUGIN_DATA}/config.json`
+3. Also add `channels.{id}` entry in `${CLAUDE_PLUGIN_DATA}/discord/access.json` with `{ "requireMention": true, "allowFrom": [] }`
 
-If yes, offer a short menu:
-- Channels & Access
-- Profile
-- Voice
-- Quiet / Autotalk
-- Restart Helper
-- launchd
+To **remove** a channel:
+1. Delete from `channelsConfig.channels` in config.json
+2. Remove corresponding channel ID entry from access.json
 
-## Channels & Access
-Treat channels and access as one configuration area.
+To **set main**:
+- Update `channelsConfig.main` in config.json to the given label.
 
-Cover:
-- main channel
-- extra channels
-- interactive / monitor mode
-- requireMention
-- allowFrom
-- DM policy
+To **change mode**:
+- Update the channel's `mode` field in config.json.
 
-## Profile
-Update profile fields such as:
-- name
-- role
-- lang
-- tone
+### access
+Manage `${CLAUDE_PLUGIN_DATA}/discord/access.json`.
 
-## Voice
-Handle voice enablement and voice-related config.
-If system dependencies are missing, guide the user to the voice setup flow.
+If no detail is given, display current DM policy, allowed users, and per-channel policies.
 
-## Quiet / Autotalk
-Update bot.json settings for:
-- schedule quiet hours
-- autotalk quiet hours
-- holiday country
-- autotalk frequency / enabled state
+To **change DM policy**:
+- Set `dmPolicy` to `pairing`, `allowlist`, or `disabled`.
 
-## Restart Helper / launchd
-Treat these as advanced optional features.
-Only guide the user into them when explicitly requested.
+To **allow a user**:
+- Add user ID to top-level `allowFrom` array (skip if already present).
 
-## Completion
-Show a short summary of what changed and the relevant file paths.
+To **deny a user**:
+- Remove user ID from top-level `allowFrom` array.
+
+To **update channel policy**:
+- Set `channels.{channelId}.requireMention` and `channels.{channelId}.allowFrom`.
+
+### profile
+Manage `${CLAUDE_PLUGIN_DATA}/profile.json`.
+
+If no detail is given, display current profile values (name, role, lang, tone).
+
+To **update fields**:
+1. Read current profile.json — show each field's current value or "not set"
+2. Ask for each field using AskUserQuestion: name, role, lang, tone — allow skip per field
+3. Write only changed fields to profile.json
+
+Fields:
+- **name** — display name for the bot to address you
+- **role** — your role (e.g., "game developer")
+- **lang** — preferred language code (e.g., "ko", "en")
+- **tone** — response tone (e.g., "casual", "professional")
+
+### voice
+Manage `voice` section in `${CLAUDE_PLUGIN_DATA}/config.json`.
+
+If no detail is given, display current voice settings (enabled, command, model, language).
+
+To **toggle**: flip `voice.enabled`. Create `voice` object if missing.
+
+To **set command**: set `voice.command` to the whisper binary path. Use `"auto"` to clear.
+
+To **set model**: set `voice.model` to the GGML model path. Use `"default"` to clear.
+
+To **set language**: set `voice.language` to a BCP-47 code or `"auto"`.
+
+### quiet
+Manage quiet hours in `${CLAUDE_PLUGIN_DATA}/bot.json` and proactive DND in `${CLAUDE_PLUGIN_DATA}/config.json`.
+
+If no detail is given, display current quiet hours and proactive DND settings.
+
+To **set schedule quiet**: set `quiet.schedule` to `"HH:MM-HH:MM"` (e.g., `"23:00-07:00"`). Set to `null` or delete the key to remove.
+
+To **set autotalk quiet**: set `quiet.autotalk` to `"HH:MM-HH:MM"`. Set to `null` or delete the key to remove.
+
+To **set holidays**: set `quiet.holidays` to ISO country code (e.g., `"KR"`). Set to `null` or delete the key to remove.
+
+To **set timezone**: set `quiet.timezone` to IANA timezone (e.g., `"Asia/Seoul"`). Set to `null` or delete the key to remove.
+
+To **set proactive DND**: set `proactive.dndStart` and `proactive.dndEnd` in `${CLAUDE_PLUGIN_DATA}/config.json` to `"HH:MM"` format (e.g., `"23:00"`, `"07:00"`). Set to `null` or delete the keys to remove.
+
+### autotalk
+Manage autotalk settings in `${CLAUDE_PLUGIN_DATA}/bot.json`.
+
+If no detail is given, display current autotalk state (enabled, frequency).
+
+To **toggle autotalk**: flip `autotalk.enabled` in bot.json.
+
+To **set frequency**: set `autotalk.freq` to 1-5 (1=~1/day, 5=~10/day) in bot.json.

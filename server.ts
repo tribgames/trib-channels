@@ -24,6 +24,7 @@ import { handleSlashCommand, type SlashCommandContext } from './lib/slash-comman
 import { routeCustomCommand, type CommandContext } from './lib/custom-commands.js'
 import { OutputForwarder, discoverTranscriptPath } from './lib/output-forwarder.js'
 import { controlClaudeSession } from './lib/session-control.js'
+import { detectRuntimeMode } from './lib/runtime-mode.js'
 import {
   ensureRuntimeDirs,
   clearServerPid,
@@ -861,6 +862,7 @@ const slashCtx: SlashCommandContext = {
   scheduler,
   instanceId: INSTANCE_ID,
   turnEndFile: TURN_END_FILE,
+  runtimeMode: detectRuntimeMode(),
   reloadRuntimeConfig,
   refreshSessionContext: refreshSlashSessionContext,
   notify: (channelId: string, user: string, text: string) => {

@@ -15,6 +15,7 @@ import { DATA_DIR } from './config.js'
 import { handleBotCommand } from './custom-commands.js'
 import type { CommandContext } from './custom-commands.js'
 import { controlClaudeSession } from './session-control.js'
+import { detectRuntimeMode, runtimeModeHint, runtimeModeLabel, supportsSessionControl, type RuntimeMode } from './runtime-mode.js'
 
 // ── Constants ────────────────────────────────────────────────────────
 
@@ -110,6 +111,7 @@ export interface SlashCommandContext {
   scheduler: Scheduler
   instanceId: string
   turnEndFile: string
+  runtimeMode: RuntimeMode
   reloadRuntimeConfig: () => void
   /** Re-discover and rebind the current transcript/session context for a channel */
   refreshSessionContext: (channelId: string, mode?: 'same' | 'new') => Promise<void>
@@ -339,7 +341,11 @@ function buildClaude2BotCommand(): SlashCommandBuilder {
 export async function registerSlashCommands(client: Client, token: string): Promise<void> {
   if (!client.user) return
   const rest = new REST({ version: '10' }).setToken(token)
-  const commands = [buildClaudeCommand().toJSON(), buildClaude2BotCommand().toJSON()]
+  const runtimeMode = detectRuntimeMode()
+  const commands = [buildClaude2BotCommand().toJSON()]
+  if (supportsSessionControl(runtimeMode)) {
+    commands.unshift(buildClaudeCommand().toJSON())
+  }
 
   // Fetch guilds if the local cache is empty.
   let guilds = client.guilds.cache
@@ -365,7 +371,7 @@ export async function registerSlashCommands(client: Client, token: string): Prom
         Routes.applicationGuildCommands(client.user.id, guild.id),
         { body: commands },
       )
-      process.stderr.write(`claude2bot: slash commands registered in guild ${(guild as any).name ?? guild.id}\n`)
+      process.stderr.write(`claude2bot: slash commands registered in guild ${(guild as any).name ?? guild.id} (mode=${runtimeMode})\n`)
     } catch (err) {
       process.stderr.write(`claude2bot: failed to register slash commands in ${(guild as any).name ?? guild.id}: ${err}\n`)
     }
@@ -536,6 +542,10 @@ async function handleDoctor(
     lines.push(`**Channels** \u{2705} ${Object.keys(ctx.config.channelsConfig.channels).length} configured`)
   } else { lines.push('**Channels** \u{26a0}\u{fe0f} Not configured') }
 
+  const mode = runtimeModeLabel(ctx.runtimeMode)
+  const sessionControl = supportsSessionControl(ctx.runtimeMode)
+  lines.push(`**Runtime** ${mode}`)
+  lines.push(`**Session Control** ${sessionControl ? '\u{2705}' : '\u{26a0}\u{fe0f}'} ${runtimeModeHint(ctx.runtimeMode)}`)
   lines.push(`**Voice** ${ctx.config.voice?.enabled ? '\u{2705} Enabled' : 'Disabled'}`)
   lines.push(`**Process** PID ${process.pid}, uptime ${Math.floor(process.uptime() / 60)}m`)
 
