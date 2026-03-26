@@ -891,24 +891,6 @@ function extractPingPong(transcriptPaths) {
   return results.join('\n\n')
 }
 
-function findTranscriptsForDate(workspacePath, dateStr) {
-  // dateStr: "2026-03-27" → 해당 날짜에 수정된 모든 transcript
-  const projectKey = workspacePath.replace(/\//g, '-')
-  const projectDir = join(homedir(), '.claude', 'projects', projectKey)
-  try {
-    const targetDate = new Date(dateStr + 'T00:00:00+09:00') // KST
-    const nextDate = new Date(targetDate.getTime() + 24 * 60 * 60 * 1000)
-    return readdirSync(projectDir)
-      .filter(f => f.endsWith('.jsonl') && !f.startsWith('agent-'))
-      .map(f => ({ path: join(projectDir, f), mtime: statSync(join(projectDir, f)).mtimeMs }))
-      .filter(f => f.mtime >= targetDate.getTime() && f.mtime < nextDate.getTime())
-      .sort((a, b) => a.mtime - b.mtime)
-      .map(f => f.path)
-  } catch {
-    return []
-  }
-}
-
 function findTranscriptsSince(workspacePath, sinceTimestamp) {
   const projectKey = workspacePath.replace(/\//g, '-')
   const projectDir = join(homedir(), '.claude', 'projects', projectKey)
@@ -924,23 +906,7 @@ function findTranscriptsSince(workspacePath, sinceTimestamp) {
   }
 }
 
-function findTranscriptsForRange(workspacePath, fromDate, toDate) {
-  // fromDate/toDate: "2026-03-20", "2026-03-27"
-  const projectKey = workspacePath.replace(/\//g, '-')
-  const projectDir = join(homedir(), '.claude', 'projects', projectKey)
-  try {
-    const from = new Date(fromDate + 'T00:00:00+09:00').getTime()
-    const to = new Date(toDate + 'T23:59:59+09:00').getTime()
-    return readdirSync(projectDir)
-      .filter(f => f.endsWith('.jsonl') && !f.startsWith('agent-'))
-      .map(f => ({ path: join(projectDir, f), mtime: statSync(join(projectDir, f)).mtimeMs }))
-      .filter(f => f.mtime >= from && f.mtime <= to)
-      .sort((a, b) => a.mtime - b.mtime)
-      .map(f => f.path)
-  } catch {
-    return []
-  }
-}
+
 
 function buildContextFile() {
   const dirs = { daily: join(HISTORY_DIR, 'daily') }
@@ -1029,35 +995,55 @@ function sleepCycle(workspacePath) {
   const promptPath = join(resourceDir(), 'sleep-prompt.md')
   const sleepPrompt = existsSync(promptPath) ? readFileSync(promptPath, 'utf8') : 'Summarize the conversation.'
 
-  if (transcripts.length > 0) {
+  // Daily: 최대 7개 (1주치)
+  const dailyDir = join(HISTORY_DIR, 'daily')
+  const existingDailies = existsSync(dailyDir) ? readdirSync(dailyDir).filter(f => f.endsWith('.md')).length : 0
+
+  if (existingDailies >= 7) {
+    process.stderr.write(`[sleep-cycle] Daily limit reached (${existingDailies}/7). Skipping daily generation.\n`)
+  } else if (transcripts.length > 0) {
     const pingpong = extractPingPong(transcripts)
     if (pingpong) {
-      // Daily: Sleep 시점 날짜로 생성
       runSleepPrompt(sleepPrompt, { date: today, pingpong, ws })
-      process.stderr.write(`[sleep-cycle] Daily ${today} generated.\n`)
+      process.stderr.write(`[sleep-cycle] Daily ${today} generated. (${existingDailies + 1}/7)\n`)
     }
   } else {
     process.stderr.write('[sleep-cycle] No transcripts since last sleep.\n')
   }
 
-  // 3. Rollups: weekly/monthly/yearly (파일 없으면 생성)
-  const weeklyFile = join(HISTORY_DIR, 'weekly', `${weekKey}.md`)
-  if (!existsSync(weeklyFile)) {
-    const content = collectDailiesForWeek(weekNum, year)
-    if (content) runRollup('weekly', weekKey, content)
+  // 3. Rollups: weekly/monthly/yearly (파일 없으면 생성, 최대 제한)
+  // Weekly: 최대 4개 (1달치)
+  const weeklyDir = join(HISTORY_DIR, 'weekly')
+  const existingWeeklies = existsSync(weeklyDir) ? readdirSync(weeklyDir).filter(f => f.endsWith('.md')).length : 0
+  if (existingWeeklies < 4) {
+    const weeklyFile = join(weeklyDir, `${weekKey}.md`)
+    if (!existsSync(weeklyFile)) {
+      const content = collectDailiesForWeek(weekNum, year)
+      if (content) runRollup('weekly', weekKey, content)
+    }
   }
 
+  // Monthly: 최대 12개 (1년치)
   const monthKey = `${year}-${month}`
-  const monthlyFile = join(HISTORY_DIR, 'monthly', `${monthKey}.md`)
-  if (!existsSync(monthlyFile)) {
-    const content = collectFilesForMonth(HISTORY_DIR, 'weekly', year, month)
-    if (content) runRollup('monthly', monthKey, content)
+  const monthlyDir = join(HISTORY_DIR, 'monthly')
+  const existingMonthlies = existsSync(monthlyDir) ? readdirSync(monthlyDir).filter(f => f.endsWith('.md')).length : 0
+  if (existingMonthlies < 12) {
+    const monthlyFile = join(monthlyDir, `${monthKey}.md`)
+    if (!existsSync(monthlyFile)) {
+      const content = collectFilesForMonth(HISTORY_DIR, 'weekly', year, month)
+      if (content) runRollup('monthly', monthKey, content)
+    }
   }
 
-  const yearlyFile = join(HISTORY_DIR, 'yearly', `${year}.md`)
-  if (!existsSync(yearlyFile)) {
-    const content = collectFilesForYear(HISTORY_DIR, 'monthly', year)
-    if (content) runRollup('yearly', year, content)
+  // Yearly: 최대 3개 (3년치)
+  const yearlyDir = join(HISTORY_DIR, 'yearly')
+  const existingYearlies = existsSync(yearlyDir) ? readdirSync(yearlyDir).filter(f => f.endsWith('.md')).length : 0
+  if (existingYearlies < 3) {
+    const yearlyFile = join(yearlyDir, `${year}.md`)
+    if (!existsSync(yearlyFile)) {
+      const content = collectFilesForYear(HISTORY_DIR, 'monthly', year)
+      if (content) runRollup('yearly', year, content)
+    }
   }
 
   // 4. Lifetime merge

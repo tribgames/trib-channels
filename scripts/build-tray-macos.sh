@@ -8,8 +8,8 @@ CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
 
-SIGN_IDENTITY="${CODESIGN_IDENTITY:-Developer ID Application: DEVELOPER (TEAM_ID)}"
-TEAM_ID="${TEAM_ID:-TEAM_ID_VALUE}"
+SIGN_IDENTITY="${CODESIGN_IDENTITY:-}"
+TEAM_ID="${TEAM_ID:-}"
 BUNDLE_ID="com.tribgames.claude2bot.launcher"
 
 rm -rf "$APP_DIR"
@@ -65,7 +65,7 @@ PLIST
 chmod +x "$MACOS_DIR/$APP_NAME"
 
 # Code sign
-if [[ "${SKIP_SIGN:-}" != "1" ]]; then
+if [[ "${SKIP_SIGN:-}" != "1" ]] && [[ -n "$SIGN_IDENTITY" ]]; then
   codesign --force --deep --sign "$SIGN_IDENTITY" \
     --entitlements /dev/stdin \
     --options runtime \
