@@ -615,7 +615,42 @@ function setWezTermWindowTitle(windowId, title) {
   }
 }
 
+function ensureWezTermGuiRunning() {
+  // Check if WezTerm GUI is already running
+  if (process.platform === 'darwin') {
+    try {
+      const result = execFileSync(resolveCommand('swift') || 'swift', ['-e', `
+import AppKit
+let found = NSWorkspace.shared.runningApplications.contains(where: {
+  let name = ($0.localizedName ?? "").lowercased()
+  let path = ($0.executableURL?.path ?? "").lowercased()
+  return name.contains("wezterm") || path.hasSuffix("/${WEZTERM_PROCESS_NAME}")
+})
+print(found ? "1" : "0")
+`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+      if (result === '1') return // GUI already running
+    } catch { /* fall through */ }
+  }
+
+  // Start GUI by connecting to mux
+  const wezterm = resolveWezTermCommand()
+  if (!wezterm) return
+  spawn(wezterm, [
+    '--config-file', resolveWezTermConfigPath(),
+    'connect',
+    'unix',
+  ], {
+    detached: true,
+    env: weztermEnv(),
+    stdio: 'ignore',
+  }).unref()
+
+  // Wait briefly for GUI to start
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2000)
+}
+
 function showWezTermWindow(paneId) {
+  ensureWezTermGuiRunning()
   try {
     weztermCli(['activate-pane', '--pane-id', String(paneId)], false)
   } catch (e) {
