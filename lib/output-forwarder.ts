@@ -264,9 +264,10 @@ export class OutputForwarder {
   // ── Single-send gate ──────────────────────────────────────────────
   // All Discord sends pass through sendOnce() so duplicate concurrent sends are avoided.
 
+  // Texts that should never be forwarded to Discord (Claude's internal status lines)
   private static readonly SKIP_TEXTS = new Set([
     'No response requested.', 'No response requested',
-    '유저 응답 대기.', '유저 응답 대기', 'Waiting for user response.', 'Waiting for user response',
+    'Waiting for user response.', 'Waiting for user response',
   ])
 
   private async sendOnce(text: string): Promise<void> {

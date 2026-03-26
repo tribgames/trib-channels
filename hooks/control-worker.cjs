@@ -141,3 +141,9 @@ function tick() {
 }
 
 setInterval(tick, 200);
+
+// Orphan guard: exit if parent process dies
+const ppid = process.ppid;
+setInterval(() => {
+  try { process.kill(ppid, 0); } catch { process.exit(0); }
+}, 2000);

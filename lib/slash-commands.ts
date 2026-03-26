@@ -8,8 +8,8 @@
 import { REST, Routes, SlashCommandBuilder } from 'discord.js'
 import type { ChatInputCommandInteraction, Client } from 'discord.js'
 import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'fs'
-import { tmpdir } from 'os'
 import { join } from 'path'
+import { readActiveInstance } from './runtime-paths.js'
 import type { PluginConfig } from '../backends/types.js'
 import type { Scheduler } from './scheduler.js'
 import { DATA_DIR } from './config.js'
@@ -795,20 +795,32 @@ export async function handleSlashCommand(
     case 'status': {
       let desc = ''
       try {
-        const sessionPath = join(tmpdir(), 'claude-session-data.json')
-        if (existsSync(sessionPath)) {
-          const data = JSON.parse(readFileSync(sessionPath, 'utf-8'))
-          const model = data.model?.display_name ?? data.model?.id ?? 'unknown'
-          const fmtTime = (ts: number) => new Date(ts * 1000).toLocaleString(undefined, { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+        const inst = readActiveInstance()
+        if (inst) {
           const lines: string[] = []
-          const effort = data.effort ?? data.output_style?.effort ?? ''
-          lines.push(`**Model** ${model}${effort ? ` (effort: ${effort})` : ''}`)
-          const ctxPct = data.context_window?.used_percentage
-          if (ctxPct != null) lines.push(`**Context** ${Math.round(ctxPct)}%`)
-          const fiveH = data.rate_limits?.five_hour
-          if (fiveH) lines.push(`**5h** ${Math.round(fiveH.used_percentage)}% (reset ${fmtTime(fiveH.resets_at)})`)
-          const sevenD = data.rate_limits?.seven_day
-          if (sevenD) lines.push(`**Weekly** ${Math.round(sevenD.used_percentage)}% (reset ${fmtTime(sevenD.resets_at)})`)
+          lines.push(`**Instance** ${inst.instanceId}`)
+          lines.push(`**PID** ${inst.pid}`)
+          if (inst.channelId) lines.push(`**Channel** <#${inst.channelId}>`)
+          const uptime = Date.now() - inst.startedAt
+          const mins = Math.floor(uptime / 60000)
+          lines.push(`**Uptime** ${mins < 60 ? `${mins}m` : `${Math.floor(mins / 60)}h ${mins % 60}m`}`)
+          // try to extract model from transcript last lines
+          if (inst.transcriptPath && existsSync(inst.transcriptPath)) {
+            try {
+              const raw = readFileSync(inst.transcriptPath, 'utf-8')
+              const jsonLines = raw.trim().split('\n')
+              for (let i = jsonLines.length - 1; i >= Math.max(0, jsonLines.length - 20); i--) {
+                try {
+                  const entry = JSON.parse(jsonLines[i])
+                  const model = entry.model ?? entry.message?.model
+                  if (model) {
+                    lines.push(`**Model** ${model}`)
+                    break
+                  }
+                } catch { /* skip non-json lines */ }
+              }
+            } catch { /* transcript read error */ }
+          }
           desc = lines.join('\n')
         }
       } catch { /* graceful fallback */ }

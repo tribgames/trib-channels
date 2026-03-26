@@ -231,6 +231,8 @@ export interface PluginConfig {
   promptsDir?: string
   /** Voice message transcription settings */
   voice?: VoiceConfig
+  /** UI / response language override (e.g. "ko", "en", "ja") */
+  language?: string
 }
 
 // ── Bot config (bot.json) ─────────────────────────────────────────────

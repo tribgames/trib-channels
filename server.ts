@@ -849,7 +849,7 @@ backend.onSlashCommand = (interaction) => {
 
 backend.onCustomCommand = (text, channelId, userId, replyFn) => {
   scheduler.noteActivity()
-  const ctx = makeCommandContext(channelId, userId, (config as any).language === 'en' ? 'en' : 'ko')
+  const ctx = makeCommandContext(channelId, userId, config.language === 'en' ? 'en' : 'ko')
   void (async () => {
     try {
       const result = await routeCustomCommand(text, ctx)

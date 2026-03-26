@@ -30,7 +30,7 @@ Paste your bot token:
 Run the discovery helper:
 
 ```bash
-node ${CLAUDE_PLUGIN_ROOT}/lib/discover-channels.js discord "THE_TOKEN"
+node ${CLAUDE_PLUGIN_ROOT}/lib/discover-channels.cjs discord "THE_TOKEN"
 ```
 
 If the connection fails, show the error and ask the user to check their token.

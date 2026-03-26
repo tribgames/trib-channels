@@ -47,10 +47,6 @@ export function getControlResponsePath(instanceId: string): string {
   return join(RUNTIME_ROOT, `control-${sanitize(instanceId)}.response.json`)
 }
 
-export function getPermissionPendingPath(instanceId: string, uuid: string): string {
-  return join(RUNTIME_ROOT, `perm-${sanitize(instanceId)}-${sanitize(uuid)}.pending`)
-}
-
 export function getPermissionResultPath(instanceId: string, uuid: string): string {
   return join(RUNTIME_ROOT, `perm-${sanitize(instanceId)}-${sanitize(uuid)}.result`)
 }
