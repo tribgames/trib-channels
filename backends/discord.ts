@@ -226,15 +226,30 @@ export class DiscordBackend implements ChannelBackend {
       }
     })
 
-    this.client.once('ready', async c => {
+    this.client.on('ready', async c => {
       process.stderr.write(`claude2bot discord: gateway connected as ${c.user.tag}\n`)
-      // Register slash commands on ready
       try {
         const { registerSlashCommands } = await import('../lib/slash-commands.js')
         await registerSlashCommands(this.client, this.token)
       } catch (err) {
         process.stderr.write(`claude2bot discord: slash command registration failed: ${err}\n`)
       }
+    })
+
+    this.client.on('shardDisconnect', (ev, id) => {
+      process.stderr.write(`claude2bot discord: shard ${id} disconnected (code ${ev.code}). Will auto-reconnect.\n`)
+    })
+
+    this.client.on('shardReconnecting', id => {
+      process.stderr.write(`claude2bot discord: shard ${id} reconnecting...\n`)
+    })
+
+    this.client.on('shardResume', (id, replayedEvents) => {
+      process.stderr.write(`claude2bot discord: shard ${id} resumed (replayed ${replayedEvents} events)\n`)
+    })
+
+    this.client.on('warn', msg => {
+      process.stderr.write(`claude2bot discord: warn: ${msg}\n`)
     })
 
     await this.client.login(this.token)
