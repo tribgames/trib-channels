@@ -1096,7 +1096,7 @@ function runSleepPrompt(template, { date, pingpong, ws }) {
     execFileSync('claude', ['-p', prompt], {
       cwd: ws,
       stdio: 'inherit', timeout: 180000,
-      env: { ...process.env, CLAUDE_MODEL: 'sonnet' },
+      env: process.env,
     })
   } catch (e) {
     process.stderr.write(`[sleep-cycle] claude -p failed: ${e.message}\n`)
@@ -1108,7 +1108,7 @@ function runRollup(level, key, content) {
   try {
     const summary = execFileSync('claude', ['-p',
       `Compress these summaries into a concise ${level} summary. Write in English except proper nouns. Output only the summary:\n\n${content}`
-    ], { encoding: 'utf8', timeout: 60000, env: { ...process.env, CLAUDE_MODEL: 'haiku' } }).trim()
+    ], { encoding: 'utf8', timeout: 120000 }).trim()
     writeFileSync(outFile, `# ${key}\n\n${summary}\n`)
     process.stderr.write(`[sleep-cycle] ${level} ${key} generated.\n`)
   } catch (e) {
@@ -1174,7 +1174,7 @@ function generateLifetimeMerge() {
   try {
     const merged = execFileSync('claude', ['-p',
       `Merge and compress this into a single lifetime summary. Remove duplicates, keep only the most important history and patterns. Write in English except proper nouns. Output only the summary:\n\n${mergeInput}`
-    ], { encoding: 'utf8', timeout: 60000, env: { ...process.env, CLAUDE_MODEL: 'haiku' } }).trim()
+    ], { encoding: 'utf8', timeout: 120000 }).trim()
     writeFileSync(lifetimePath, merged + '\n')
     process.stderr.write('[sleep-cycle] lifetime.md updated.\n')
   } catch (e) {
