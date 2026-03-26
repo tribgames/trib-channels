@@ -21,10 +21,32 @@ import { loadConfig, createBackend, loadBotConfig, loadProfileConfig } from './l
 import { loadSettings } from './lib/settings.js'
 import { Scheduler } from './lib/scheduler.js'
 import { handleSlashCommand, type SlashCommandContext } from './lib/slash-commands.js'
-import { routeCustomCommand, type CommandContext } from './lib/custom-commands.js'
-import { OutputForwarder, discoverTranscriptPath } from './lib/output-forwarder.js'
+import {
+  routeCustomCommand,
+  runBotCommand,
+  runProfileCommand,
+  type CommandContext,
+  type CommandResult,
+} from './lib/custom-commands.js'
+import { OutputForwarder, discoverSessionBoundTranscript } from './lib/output-forwarder.js'
 import { controlClaudeSession } from './lib/session-control.js'
 import { detectRuntimeMode } from './lib/runtime-mode.js'
+import { JsonStateFile, ensureDir, removeFileIfExists, writeTextFile, type StatusState } from './lib/state-file.js'
+import {
+  buildActivityAddPanel,
+  buildAutotalkFrequencyPanel,
+  buildQuietHoursPanel,
+  buildScheduleAddPanel,
+  buildScheduleEditPanel,
+  type InteractionPanel,
+} from './lib/interaction-panels.js'
+import {
+  buildModalExecutionPlan,
+  buildModalRequestSpec,
+  getPendingSelectUpdate,
+  PendingInteractionStore,
+  type CommandInvocation,
+} from './lib/interaction-workflows.js'
 import {
   ensureRuntimeDirs,
   clearServerPid,
@@ -97,31 +119,17 @@ const mcp = new Server(
 let typingChannelId: string | null = null
 let controlWorker: import('child_process').ChildProcess | null = null
 
-// ── Pending setup state (Select Menu → Modal 2-step flow) ────────────
-const pendingSetup = new Map<string, Record<string, string>>()
-
-function getPendingSetupKey(userId: string, channelId: string): string {
-  return `${userId}:${channelId}`
+type BackendInteraction = {
+  type: string
+  customId: string
+  userId: string
+  channelId: string
+  values?: string[]
+  fields?: Record<string, string>
+  message?: { id: string }
 }
 
-function getPendingState(userId: string, channelId: string): Record<string, string> {
-  return pendingSetup.get(getPendingSetupKey(userId, channelId)) ?? {}
-}
-
-function setPendingState(userId: string, channelId: string, state: Record<string, string>): void {
-  pendingSetup.set(getPendingSetupKey(userId, channelId), state)
-}
-
-function deletePendingState(userId: string, channelId: string): void {
-  pendingSetup.delete(getPendingSetupKey(userId, channelId))
-}
-
-function rememberPendingMessage(userId: string, channelId: string, messageId?: string): void {
-  if (!messageId) return
-  const pending = getPendingState(userId, channelId)
-  pending._msgId = messageId
-  setPendingState(userId, channelId, pending)
-}
+const pendingSetup = new PendingInteractionStore()
 
 function makeCommandContext(channelId: string, userId: string, lang: 'ko' | 'en' = 'ko'): CommandContext {
   return {
@@ -131,6 +139,58 @@ function makeCommandContext(channelId: string, userId: string, lang: 'ko' | 'en'
     lang,
     reloadRuntimeConfig,
   }
+}
+
+async function editCommandResult(
+  channelId: string,
+  messageId: string | undefined,
+  result: CommandResult | null,
+): Promise<void> {
+  if (!messageId || !channelId || (!result?.text && !result?.embeds?.length)) return
+  await backend.editMessage(channelId, messageId, result.text ?? '', {
+    embeds: result.embeds as any,
+    components: result.components as any,
+  })
+}
+
+async function editInteractionPanel(
+  channelId: string,
+  messageId: string | undefined,
+  panel: InteractionPanel,
+): Promise<void> {
+  if (!messageId || !channelId) return
+  await backend.editMessage(channelId, messageId, '', {
+    embeds: panel.embeds as any,
+    components: panel.components as any,
+  })
+}
+
+async function showBotPanel(
+  interaction: BackendInteraction,
+  args: string[],
+  params: Record<string, string> = {},
+  messageId = interaction.message?.id,
+): Promise<void> {
+  const result = await runBotCommand(args, params, makeCommandContext(interaction.channelId, interaction.userId))
+  await editCommandResult(interaction.channelId, messageId, result)
+}
+
+async function applyBotCommand(
+  interaction: BackendInteraction,
+  args: string[],
+  params: Record<string, string> = {},
+): Promise<CommandResult> {
+  return runBotCommand(args, params, makeCommandContext(interaction.channelId, interaction.userId))
+}
+
+async function runInteractionCommand(
+  invocation: CommandInvocation,
+  ctx: CommandContext,
+): Promise<CommandResult> {
+  if (invocation.target === 'profile') {
+    return runProfileCommand(invocation.args, invocation.params, ctx)
+  }
+  return runBotCommand(invocation.args, invocation.params, ctx)
 }
 
 function startServerTyping(channelId: string): void {
@@ -150,20 +210,40 @@ function stopServerTyping(): void {
 
 // ── Stop hook file watch (turn-end signal) ─────────────────────────
 const TURN_END_FILE = getTurnEndPath(INSTANCE_ID)
-try { fs.unlinkSync(TURN_END_FILE) } catch {} // Clean up any stale turn-end marker on startup
+removeFileIfExists(TURN_END_FILE) // Clean up any stale turn-end marker on startup
 fs.watchFile(TURN_END_FILE, { interval: 500 }, (curr) => {
   if (curr.size > 0) {
     // Turn ended — stop typing + forward final text
     stopServerTyping()
     void forwarder.forwardFinalText()
-    try { fs.unlinkSync(TURN_END_FILE) } catch {}
+    removeFileIfExists(TURN_END_FILE)
   }
 })
 
 // Status file — used for IPC with permission-request hook and state persistence
 const STATUS_FILE = getStatusPath(INSTANCE_ID)
-if (!fs.existsSync(STATUS_FILE)) {
-  try { fs.writeFileSync(STATUS_FILE, '{}') } catch {}
+const statusState = new JsonStateFile<StatusState>(STATUS_FILE, {})
+statusState.ensure()
+
+function sessionIdFromTranscriptPath(transcriptPath: string): string {
+  const base = path.basename(transcriptPath)
+  return base.endsWith('.jsonl') ? base.slice(0, -6) : ''
+}
+
+function getPersistedTranscriptPath(): string {
+  const state = statusState.read()
+  if (typeof state.transcriptPath === 'string' && state.transcriptPath) return state.transcriptPath
+  return readActiveInstance()?.transcriptPath ?? ''
+}
+
+function pickUsableTranscriptPath(
+  bound: ReturnType<typeof discoverSessionBoundTranscript>,
+  previousPath: string,
+): string {
+  if (bound?.exists) return bound.transcriptPath
+  if (!previousPath) return ''
+  if (!bound?.sessionId) return previousPath
+  return sessionIdFromTranscriptPath(previousPath) === bound.sessionId ? previousPath : ''
 }
 
 // ── Transcript file watch (replaces polling) ────────────────────────
@@ -175,7 +255,7 @@ const forwarder = new OutputForwarder({
   send: (ch, text) => backend.sendMessage(ch, text).then(() => {}),
   react: (ch, mid, emoji) => backend.react(ch, mid, emoji),
   removeReaction: (ch, mid, emoji) => backend.removeReaction(ch, mid, emoji),
-}, STATUS_FILE)
+}, statusState)
 
 refreshActiveInstance(INSTANCE_ID)
 
@@ -193,6 +273,68 @@ forwarder.setOnIdle(() => {
   stopServerTyping()
   void forwarder.forwardFinalText()
 })
+
+function applyTranscriptBinding(
+  channelId: string,
+  transcriptPath: string,
+  options: { replayFromStart?: boolean; persistStatus?: boolean } = {},
+): void {
+  if (!transcriptPath) return
+  forwarder.setContext(channelId, transcriptPath, { replayFromStart: options.replayFromStart })
+  forwarder.startWatch()
+  refreshActiveInstance(INSTANCE_ID, { channelId, transcriptPath })
+  if (options.persistStatus !== false) {
+    statusState.update(state => {
+      state.channelId = channelId
+      state.transcriptPath = transcriptPath
+    })
+  }
+}
+
+async function rebindTranscriptContext(
+  channelId: string,
+  options: {
+    previousPath?: string
+    mode?: 'same' | 'new'
+    catchUp?: boolean
+    persistStatus?: boolean
+  } = {},
+): Promise<string> {
+  const previousPath = options.previousPath ?? ''
+  const mode = options.mode ?? 'same'
+  let sawPendingTranscript = false
+  let pendingSessionId = ''
+
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    const bound = discoverSessionBoundTranscript()
+    if (bound?.exists) {
+      const acceptable = mode === 'same' || !previousPath || bound.transcriptPath !== previousPath
+      if (acceptable) {
+        const replayFromStart = Boolean(
+          options.catchUp &&
+          !previousPath &&
+          sawPendingTranscript &&
+          pendingSessionId === bound.sessionId,
+        )
+        applyTranscriptBinding(channelId, bound.transcriptPath, {
+          replayFromStart,
+          persistStatus: options.persistStatus,
+        })
+        if (replayFromStart) {
+          await forwarder.forwardNewText()
+        }
+        return bound.transcriptPath
+      }
+    } else if (bound?.sessionId) {
+      sawPendingTranscript = true
+      pendingSessionId = bound.sessionId
+    }
+
+    await new Promise(resolve => setTimeout(resolve, 150))
+  }
+
+  return previousPath
+}
 
 // ── Scheduler ──────────────────────────────────────────────────────────
 
@@ -275,65 +417,32 @@ backend.onModalRequest = async (rawInteraction: any) => {
   const { ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder } = await import('discord.js')
   const customId = rawInteraction.customId
   const channelId = rawInteraction.channelId ?? ''
-  rememberPendingMessage(rawInteraction.user.id, channelId, rawInteraction.message?.id)
+  pendingSetup.rememberMessage(rawInteraction.user.id, channelId, rawInteraction.message?.id)
 
-  if (customId === 'sched_add_next') {
-    const pending = getPendingState(rawInteraction.user.id, channelId)
-    const hasScript = pending?.exec?.includes('script')
-    const modal = new ModalBuilder().setCustomId('modal_sched_add').setTitle('Add Schedule')
-    const rows: any[] = [
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('name').setLabel('Name').setStyle(TextInputStyle.Short).setRequired(true)),
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('time').setLabel('Time (HH:MM / hourly / every5m)').setStyle(TextInputStyle.Short).setRequired(true)),
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('channel').setLabel('Channel').setStyle(TextInputStyle.Short).setValue('general')),
-    ]
-    if (hasScript) {
-      rows.push(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('script').setLabel('Script filename').setStyle(TextInputStyle.Short).setRequired(true)))
-    }
-    ;(modal as any).addComponents(...rows)
-    await rawInteraction.showModal(modal)
-  } else if (customId === 'quiet_set_next') {
-    const modal = new ModalBuilder().setCustomId('modal_quiet').setTitle('Quiet Hours')
-    ;(modal as any).addComponents(
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('schedule').setLabel('Schedule quiet hours (e.g. 23:00-07:00)').setStyle(TextInputStyle.Short)),
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('autotalk').setLabel('Autotalk quiet hours (e.g. 23:00-09:00)').setStyle(TextInputStyle.Short)),
-    )
-    await rawInteraction.showModal(modal)
-  } else if (customId === 'sched_edit_next') {
-    const pending = getPendingState(rawInteraction.user.id, channelId)
-    const hasScript = pending?.exec?.includes('script')
-    const name = pending?.editName ?? 'Schedule'
-    const modal = new ModalBuilder().setCustomId('modal_sched_edit').setTitle(`${name} Edit`)
-    const rows: any[] = [
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('time').setLabel('Time (HH:MM / hourly / every5m)').setStyle(TextInputStyle.Short).setRequired(false)),
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('channel').setLabel('Channel').setStyle(TextInputStyle.Short).setRequired(false)),
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('dnd').setLabel('Quiet hours (e.g. 23:00-07:00, leave empty to disable)').setStyle(TextInputStyle.Short).setRequired(false)),
-    ]
-    if (hasScript) {
-      rows.push(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('script').setLabel('Script filename').setStyle(TextInputStyle.Short).setRequired(false)))
-    }
-    ;(modal as any).addComponents(...rows)
-    await rawInteraction.showModal(modal)
-  } else if (customId === 'activity_add_next') {
-    const modal = new ModalBuilder().setCustomId('modal_activity_add').setTitle('Add Activity Channel')
-    ;(modal as any).addComponents(
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('name').setLabel('Channel Name').setStyle(TextInputStyle.Short).setRequired(true)),
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('id').setLabel('Channel ID').setStyle(TextInputStyle.Short).setRequired(true)),
-    )
-    await rawInteraction.showModal(modal)
-  } else if (customId === 'profile_edit') {
-    const profile = loadProfileConfig()
-    const modal = new ModalBuilder().setCustomId('modal_profile_edit').setTitle('Edit Profile')
-    ;(modal as any).addComponents(
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('name').setLabel('Name').setStyle(TextInputStyle.Short).setValue(profile.name ?? '').setRequired(false)),
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('role').setLabel('Role').setStyle(TextInputStyle.Short).setValue(profile.role ?? '').setRequired(false)),
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('lang').setLabel('Language (ko / en / ja / zh)').setStyle(TextInputStyle.Short).setValue(profile.lang ?? '').setRequired(false)),
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('tone').setLabel('Tone').setStyle(TextInputStyle.Short).setValue(profile.tone ?? '').setRequired(false)),
-    )
-    await rawInteraction.showModal(modal)
-  }
+  const modalSpec = buildModalRequestSpec(
+    customId,
+    pendingSetup.get(rawInteraction.user.id, channelId),
+    loadProfileConfig(),
+  )
+  if (!modalSpec) return
+
+  const modal = new ModalBuilder().setCustomId(modalSpec.customId).setTitle(modalSpec.title)
+  const rows = modalSpec.fields.map(field =>
+    new ActionRowBuilder().addComponents((() => {
+      const input = new TextInputBuilder()
+        .setCustomId(field.id)
+        .setLabel(field.label)
+        .setStyle(TextInputStyle.Short)
+        .setRequired(field.required)
+      if (field.value) input.setValue(field.value)
+      return input
+    })()),
+  )
+  ;(modal as any).addComponents(...rows)
+  await rawInteraction.showModal(modal)
 }
 
-backend.onInteraction = (interaction: any) => {
+backend.onInteraction = (interaction: BackendInteraction) => {
   scheduler.noteActivity()
 
   // ── Permission button handling (perm-{uuid}-{action}) ──
@@ -378,7 +487,7 @@ backend.onInteraction = (interaction: any) => {
   if (interaction.customId === 'stop_task') {
     void controlClaudeSession(INSTANCE_ID, { type: 'interrupt' })
     // Create the turn-end marker so typing stops immediately.
-    try { fs.writeFileSync(TURN_END_FILE, String(Date.now())) } catch {}
+    writeTextFile(TURN_END_FILE, String(Date.now()))
     return
   }
 
@@ -390,17 +499,31 @@ backend.onInteraction = (interaction: any) => {
     return
   }
 
+  if (
+    interaction.customId === 'launcher_launch' ||
+    interaction.customId === 'launcher_mode_view' ||
+    interaction.customId === 'launcher_mode_hide' ||
+    interaction.customId === 'launcher_restart'
+  ) {
+    void (async () => {
+      const action =
+        interaction.customId === 'launcher_launch'
+          ? 'launch'
+          : interaction.customId === 'launcher_mode_view'
+            ? 'mode-view'
+            : interaction.customId === 'launcher_mode_hide'
+              ? 'mode-hide'
+              : 'restart'
+      await applyBotCommand(interaction, ['launcher', action])
+      await showBotPanel(interaction, ['launcher', 'list'])
+    })()
+    return
+  }
+
   // ── GUI back: return to the main dashboard ──
   if (interaction.customId === 'gui_back') {
     void (async () => {
-      const cmdCtx = makeCommandContext(interaction.channelId, interaction.userId)
-      const result = await routeCustomCommand('/bot(status)', cmdCtx)
-      if (interaction.message?.id && interaction.channelId && result?.embeds) {
-        await backend.editMessage(interaction.channelId, interaction.message.id, '', {
-          embeds: result.embeds as any,
-          components: result.components as any,
-        })
-      }
+      await showBotPanel(interaction, ['status'])
     })()
     return
   }
@@ -408,50 +531,18 @@ backend.onInteraction = (interaction: any) => {
   // bot_* buttons switch the current panel by editing the same message.
   if (interaction.customId?.startsWith('bot_')) {
     const sub = interaction.customId.replace('bot_', '')
-    const cmd = sub === 'status' ? '/bot(status)' : `/bot(${sub}, list)`
     void (async () => {
-      const cmdCtx = makeCommandContext(interaction.channelId, interaction.userId)
-      const result = await routeCustomCommand(cmd, cmdCtx)
-      if (interaction.message?.id && interaction.channelId && (result?.text || result?.embeds)) {
-        await backend.editMessage(interaction.channelId, interaction.message.id, result.text ?? '', {
-          embeds: result.embeds as any,
-          components: result.components as any,
-        })
-      }
+      await showBotPanel(interaction, sub === 'status' ? ['status'] : [sub, 'list'])
     })()
     return
   }
 
   // ── Schedule add: step 1 — render select menus on the same message ──
   if (interaction.customId === 'sched_add') {
-    setPendingState(interaction.userId, interaction.channelId, {})
-    rememberPendingMessage(interaction.userId, interaction.channelId, interaction.message?.id)
+    pendingSetup.set(interaction.userId, interaction.channelId, {})
+    pendingSetup.rememberMessage(interaction.userId, interaction.channelId, interaction.message?.id)
     if (interaction.message?.id && interaction.channelId) {
-      void backend.editMessage(interaction.channelId, interaction.message.id, '', {
-        embeds: [{ title: '\uD83D\uDCC5 Add Schedule', description: 'Select options and press **Next**', color: 0x5865F2 }],
-        components: [
-          { type: 1, components: [{ type: 3, custom_id: 'sched_add_period', placeholder: 'Select Period', options: [
-            { label: 'Daily', value: 'daily' },
-            { label: 'Weekday', value: 'weekday' },
-            { label: 'Hourly', value: 'hourly' },
-            { label: 'Once', value: 'once' },
-          ]}]},
-          { type: 1, components: [{ type: 3, custom_id: 'sched_add_exec', placeholder: 'Exec Mode', options: [
-            { label: 'Prompt (.md)', value: 'prompt' },
-            { label: 'Script (.js/.py)', value: 'script' },
-            { label: 'Script + Prompt', value: 'script+prompt' },
-          ]}]},
-          { type: 1, components: [{ type: 3, custom_id: 'sched_add_mode', placeholder: 'Mode', options: [
-            { label: 'Interactive', value: 'interactive' },
-            { label: 'Non-interactive', value: 'non-interactive' },
-          ]}]},
-          { type: 1, components: [
-            { type: 2, style: 1, label: 'Next \u2192', custom_id: 'sched_add_next' },
-            { type: 2, style: 2, label: '← List', custom_id: 'bot_schedule' },
-            { type: 2, style: 4, label: '\u2715', custom_id: 'gui_close' },
-          ]},
-        ] as any,
-      }).catch(() => {})
+      void editInteractionPanel(interaction.channelId, interaction.message.id, buildScheduleAddPanel()).catch(() => {})
     }
     return
   }
@@ -459,70 +550,25 @@ backend.onInteraction = (interaction: any) => {
   // ── Schedule edit: step 1 — render select menus on the same message ──
   if (interaction.customId?.startsWith('sched_edit:') && interaction.type === 'button') {
     const name = interaction.customId.split(':')[1]
-    setPendingState(interaction.userId, interaction.channelId, { editName: name })
-    rememberPendingMessage(interaction.userId, interaction.channelId, interaction.message?.id)
+    pendingSetup.set(interaction.userId, interaction.channelId, { editName: name })
+    pendingSetup.rememberMessage(interaction.userId, interaction.channelId, interaction.message?.id)
     if (interaction.message?.id && interaction.channelId) {
-      void backend.editMessage(interaction.channelId, interaction.message.id, '', {
-        embeds: [{ title: `\uD83D\uDCC4 ${name} Edit`, description: 'Select options and press **Next**', color: 0x5865F2 }],
-        components: [
-          { type: 1, components: [{ type: 3, custom_id: 'sched_edit_period', placeholder: 'Select Period', options: [
-            { label: 'Daily', value: 'daily' },
-            { label: 'Weekday', value: 'weekday' },
-            { label: 'Hourly', value: 'hourly' },
-            { label: 'Once', value: 'once' },
-          ]}]},
-          { type: 1, components: [{ type: 3, custom_id: 'sched_edit_exec', placeholder: 'Exec Mode', options: [
-            { label: 'Prompt (.md)', value: 'prompt' },
-            { label: 'Script (.js/.py)', value: 'script' },
-            { label: 'Script + Prompt', value: 'script+prompt' },
-          ]}]},
-          { type: 1, components: [{ type: 3, custom_id: 'sched_edit_mode', placeholder: 'Mode', options: [
-            { label: 'Interactive', value: 'interactive' },
-            { label: 'Non-interactive', value: 'non-interactive' },
-          ]}]},
-          { type: 1, components: [
-            { type: 2, style: 1, label: 'Next \u2192', custom_id: 'sched_edit_next' },
-            { type: 2, style: 2, label: '← List', custom_id: 'bot_schedule' },
-            { type: 2, style: 4, label: '\u2715', custom_id: 'gui_close' },
-          ]},
-        ] as any,
-      }).catch(() => {})
+      void editInteractionPanel(interaction.channelId, interaction.message.id, buildScheduleEditPanel(name)).catch(() => {})
     }
     return
   }
 
   // ── Schedule select handlers (persist staged selection state) ──
-  const schedSelectMatch = interaction.customId?.match(/^sched_(add|edit)_(period|exec|mode)$/)
-  if (schedSelectMatch && interaction.type === 'select') {
-    const [, , key] = schedSelectMatch
-    const val = interaction.values?.[0]
-    if (key && val) {
-      const pending = getPendingState(interaction.userId, interaction.channelId)
-      ;(pending as any)[key] = val
-      setPendingState(interaction.userId, interaction.channelId, pending)
-    }
+  const pendingSelectUpdate = getPendingSelectUpdate(interaction.customId, interaction.values)
+  if (interaction.type === 'select' && pendingSelectUpdate) {
+    pendingSetup.patch(interaction.userId, interaction.channelId, pendingSelectUpdate)
     return
   }
 
   // ── Autotalk frequency: render the select menu on the same message ──
   if (interaction.customId === 'autotalk_freq') {
     if (interaction.message?.id && interaction.channelId) {
-      void backend.editMessage(interaction.channelId, interaction.message.id, '', {
-        embeds: [{ title: '\uD83D\uDCAC Autotalk Frequency', description: 'Select frequency', color: 0x5865F2 }],
-        components: [
-          { type: 1, components: [{ type: 3, custom_id: 'autotalk_freq_select', placeholder: 'Frequency (1~5)', options: [
-            { label: '1 — Min', value: '1' },
-            { label: '2 — Low', value: '2' },
-            { label: '3 — Normal', value: '3', default: true },
-            { label: '4 — High', value: '4' },
-            { label: '5 — Max', value: '5' },
-          ]}]},
-          { type: 1, components: [
-            { type: 2, style: 2, label: '← Autotalk', custom_id: 'bot_autotalk' },
-            { type: 2, style: 4, label: '\u2715', custom_id: 'gui_close' },
-          ]},
-        ] as any,
-      }).catch(() => {})
+      void editInteractionPanel(interaction.channelId, interaction.message.id, buildAutotalkFrequencyPanel()).catch(() => {})
     }
     return
   }
@@ -531,82 +577,29 @@ backend.onInteraction = (interaction: any) => {
   if (interaction.customId === 'autotalk_freq_select' && interaction.values?.length) {
     const freq = interaction.values[0]
     void (async () => {
-      const cmdCtx = makeCommandContext(interaction.channelId, interaction.userId)
-      await routeCustomCommand(`/bot(autotalk, freq=${freq})`, cmdCtx)
-      // Return to the autotalk panel after applying the change.
-      const result = await routeCustomCommand('/bot(autotalk, list)', cmdCtx)
-      if (interaction.message?.id && interaction.channelId && result?.embeds) {
-        await backend.editMessage(interaction.channelId, interaction.message.id, '', {
-          embeds: result.embeds as any,
-          components: result.components as any,
-        })
-      }
+      await applyBotCommand(interaction, ['autotalk'], { freq })
+      await showBotPanel(interaction, ['autotalk', 'list'])
     })()
     return
   }
 
   // ── Quiet settings: select menu + modal flow on the same message ──
   if (interaction.customId === 'quiet_set') {
-    setPendingState(interaction.userId, interaction.channelId, {})
-    rememberPendingMessage(interaction.userId, interaction.channelId, interaction.message?.id)
+    pendingSetup.set(interaction.userId, interaction.channelId, {})
+    pendingSetup.rememberMessage(interaction.userId, interaction.channelId, interaction.message?.id)
     if (interaction.message?.id && interaction.channelId) {
-      void backend.editMessage(interaction.channelId, interaction.message.id, '', {
-        embeds: [{ title: '\uD83D\uDD15 Quiet Hours', description: 'Select holiday country and press **Next**', color: 0x5865F2 }],
-        components: [
-          { type: 1, components: [{ type: 3, custom_id: 'quiet_holidays_select', placeholder: 'Holiday Country (optional)', options: [
-            { label: 'None', value: 'none' },
-            { label: '\uD83C\uDDF0\uD83C\uDDF7 Korea', value: 'KR' },
-            { label: '\uD83C\uDDEF\uD83C\uDDF5 Japan', value: 'JP' },
-            { label: '\uD83C\uDDFA\uD83C\uDDF8 USA', value: 'US' },
-            { label: '\uD83C\uDDE8\uD83C\uDDF3 China', value: 'CN' },
-            { label: '\uD83C\uDDEC\uD83C\uDDE7 UK', value: 'GB' },
-            { label: '\uD83C\uDDE9\uD83C\uDDEA Germany', value: 'DE' },
-          ]}]},
-          { type: 1, components: [
-            { type: 2, style: 1, label: 'Next \u2192', custom_id: 'quiet_set_next' },
-            { type: 2, style: 2, label: '← Quiet', custom_id: 'bot_quiet' },
-            { type: 2, style: 4, label: '\u2715', custom_id: 'gui_close' },
-          ]},
-        ] as any,
-      }).catch(() => {})
+      void editInteractionPanel(interaction.channelId, interaction.message.id, buildQuietHoursPanel()).catch(() => {})
     }
-    return
-  }
-
-  if (interaction.customId === 'quiet_holidays_select' && interaction.values?.length) {
-    const pending = getPendingState(interaction.userId, interaction.channelId)
-    pending.holidays = interaction.values[0]
-    setPendingState(interaction.userId, interaction.channelId, pending)
     return
   }
 
   // ── Activity add: mode select + modal flow on the same message ──
   if (interaction.customId === 'activity_add') {
-    setPendingState(interaction.userId, interaction.channelId, {})
-    rememberPendingMessage(interaction.userId, interaction.channelId, interaction.message?.id)
+    pendingSetup.set(interaction.userId, interaction.channelId, {})
+    pendingSetup.rememberMessage(interaction.userId, interaction.channelId, interaction.message?.id)
     if (interaction.message?.id && interaction.channelId) {
-      void backend.editMessage(interaction.channelId, interaction.message.id, '', {
-        embeds: [{ title: '\uD83D\uDCE1 Add Activity Channel', description: 'Select mode and press **Next**', color: 0x5865F2 }],
-        components: [
-          { type: 1, components: [{ type: 3, custom_id: 'activity_mode_select', placeholder: 'Select Mode', options: [
-            { label: 'Interactive \u2014 Participate', value: 'interactive' },
-            { label: 'Monitor \u2014 Read-only', value: 'monitor' },
-          ]}]},
-          { type: 1, components: [
-            { type: 2, style: 1, label: 'Next \u2192', custom_id: 'activity_add_next' },
-            { type: 2, style: 2, label: '← Channels', custom_id: 'bot_activity' },
-            { type: 2, style: 4, label: '\u2715', custom_id: 'gui_close' },
-          ]},
-        ] as any,
-      }).catch(() => {})
+      void editInteractionPanel(interaction.channelId, interaction.message.id, buildActivityAddPanel()).catch(() => {})
     }
-    return
-  }
-
-  if (interaction.customId === 'activity_mode_select' && interaction.values?.length) {
-    const pending = getPendingState(interaction.userId, interaction.channelId)
-    pending.activityMode = interaction.values[0]
-    setPendingState(interaction.userId, interaction.channelId, pending)
     return
   }
 
@@ -614,14 +607,7 @@ backend.onInteraction = (interaction: any) => {
   if (interaction.customId === 'schedule_select' && interaction.values?.length) {
     const name = interaction.values[0]
     void (async () => {
-      const cmdCtx = makeCommandContext(interaction.channelId, interaction.userId)
-      const result = await routeCustomCommand(`/bot(schedule, detail, "${name}")`, cmdCtx)
-      if (interaction.message?.id && interaction.channelId && (result?.text || result?.embeds)) {
-        await backend.editMessage(interaction.channelId, interaction.message.id, result.text ?? '', {
-          embeds: result.embeds as any,
-          components: result.components as any,
-        })
-      }
+      await showBotPanel(interaction, ['schedule', 'detail', name])
     })()
     return
   }
@@ -629,111 +615,23 @@ backend.onInteraction = (interaction: any) => {
   // ── Modal submit handling (apply changes, then restore the relevant panel) ──
   if (interaction.type === 'modal' && interaction.fields) {
     void (async () => {
+      const fields = interaction.fields as Record<string, string>
       const cmdCtx = makeCommandContext(interaction.channelId, interaction.userId)
-      const pending = getPendingState(interaction.userId, interaction.channelId)
+      const pending = pendingSetup.get(interaction.userId, interaction.channelId)
       const msgId = interaction.message?.id ?? pending._msgId
+      const plan = buildModalExecutionPlan(interaction.customId, pending, fields)
+      pendingSetup.delete(interaction.userId, interaction.channelId)
+      if (!plan) return
 
-      if (interaction.customId === 'modal_sched_add') {
-        const { name, time, channel, script } = interaction.fields!
-        const period = pending.period || 'daily'
-        const exec = pending.exec || 'prompt'
-        const mode = pending.mode || 'non-interactive'
-        deletePendingState(interaction.userId, interaction.channelId)
-        const params = [`time="${time}"`, `channel="${channel || 'general'}"`, `mode="${mode}"`, `period="${period}"`, `exec="${exec}"`]
-        if (script) params.push(`script="${script}"`)
-        const cmd = `/bot(schedule, add, "${name}", ${params.join(', ')})`
-        await routeCustomCommand(cmd, cmdCtx)
-        // Return to the schedule list.
-        const listResult = await routeCustomCommand('/bot(schedule, list)', cmdCtx)
-        if (msgId && interaction.channelId && listResult?.embeds) {
-          await backend.editMessage(interaction.channelId, msgId, '', {
-            embeds: listResult.embeds as any,
-            components: listResult.components as any,
-          })
-        }
+      for (const command of plan.commands) {
+        await runInteractionCommand(command, cmdCtx)
       }
-
-      if (interaction.customId === 'modal_quiet') {
-        const schedule = interaction.fields!.schedule || ''
-        const autotalk = interaction.fields!.autotalk || ''
-        const holidays = pending.holidays && pending.holidays !== 'none' ? pending.holidays : ''
-        deletePendingState(interaction.userId, interaction.channelId)
-        const cmds: string[] = []
-        if (schedule) cmds.push(`/bot(quiet, schedule, "${schedule}")`)
-        if (autotalk) cmds.push(`/bot(quiet, autotalk, "${autotalk}")`)
-        if (holidays) cmds.push(`/bot(quiet, holidays, "${holidays}")`)
-        for (const cmd of cmds) await routeCustomCommand(cmd, cmdCtx)
-        // Return to the quiet settings panel.
-        const quietResult = await routeCustomCommand('/bot(quiet, list)', cmdCtx)
-        if (msgId && interaction.channelId && quietResult?.embeds) {
-          await backend.editMessage(interaction.channelId, msgId, '', {
-            embeds: quietResult.embeds as any,
-            components: quietResult.components as any,
-          })
-        }
-      }
-
-      if (interaction.customId === 'modal_sched_edit') {
-        const name = pending.editName
-        if (!name) return
-        const params: string[] = []
-        const { time, channel, script, dnd } = interaction.fields!
-        if (time) params.push(`time="${time}"`)
-        if (channel) params.push(`channel="${channel}"`)
-        if (pending.period) params.push(`period="${pending.period}"`)
-        if (pending.exec) params.push(`exec="${pending.exec}"`)
-        if (pending.mode) params.push(`mode="${pending.mode}"`)
-        if (script) params.push(`script="${script}"`)
-        deletePendingState(interaction.userId, interaction.channelId)
-        const cmd = `/bot(schedule, edit, "${name}"${params.length ? ', ' + params.join(', ') : ''})`
-        await routeCustomCommand(cmd, cmdCtx)
-        if (dnd) await routeCustomCommand(`/bot(quiet, schedule, "${dnd}")`, cmdCtx)
-        // Return to schedule details.
-        const detailResult = await routeCustomCommand(`/bot(schedule, detail, "${name}")`, cmdCtx)
-        if (msgId && interaction.channelId && detailResult?.embeds) {
-          await backend.editMessage(interaction.channelId, msgId, '', {
-            embeds: detailResult.embeds as any,
-            components: detailResult.components as any,
-          })
-        }
-      }
-
-      if (interaction.customId === 'modal_activity_add') {
-        const { name, id } = interaction.fields!
-        const mode = pending.activityMode || 'interactive'
-        deletePendingState(interaction.userId, interaction.channelId)
-        const cmd = `/bot(activity, add, "${name}", id="${id}", mode="${mode}")`
-        await routeCustomCommand(cmd, cmdCtx)
-        // Return to the activity channels panel.
-        const actResult = await routeCustomCommand('/bot(activity, list)', cmdCtx)
-        if (msgId && interaction.channelId && actResult?.embeds) {
-          await backend.editMessage(interaction.channelId, msgId, '', {
-            embeds: actResult.embeds as any,
-            components: actResult.components as any,
-          })
-        }
-      }
-
-      if (interaction.customId === 'modal_profile_edit') {
-        const { name, role, lang, tone } = interaction.fields!
-        const params: string[] = []
-        if (name) params.push(`name="${name}"`)
-        if (role) params.push(`role="${role}"`)
-        if (lang) params.push(`lang="${lang}"`)
-        if (tone) params.push(`tone="${tone}"`)
-        if (params.length > 0) {
-          const cmd = `/profile(set, ${params.join(', ')})`
-          await routeCustomCommand(cmd, cmdCtx)
-        }
-        deletePendingState(interaction.userId, interaction.channelId)
-        // Return to the profile panel.
-        const profResult = await routeCustomCommand('/bot(profile, list)', cmdCtx)
-        if (msgId && interaction.channelId && profResult?.embeds) {
-          await backend.editMessage(interaction.channelId, msgId, '', {
-            embeds: profResult.embeds as any,
-            components: profResult.components as any,
-          })
-        }
+      if (plan.followup) {
+        await editCommandResult(
+          interaction.channelId,
+          msgId,
+          await runInteractionCommand(plan.followup, cmdCtx),
+        )
       }
     })()
     return
@@ -742,16 +640,8 @@ backend.onInteraction = (interaction: any) => {
   // ── Autotalk on/off buttons → apply and return to the autotalk panel ──
   if (interaction.customId === 'autotalk_on' || interaction.customId === 'autotalk_off') {
     void (async () => {
-      const cmdCtx = makeCommandContext(interaction.channelId, interaction.userId)
-      const cmd = interaction.customId === 'autotalk_on' ? '/bot(autotalk, on)' : '/bot(autotalk, off)'
-      await routeCustomCommand(cmd, cmdCtx)
-      const result = await routeCustomCommand('/bot(autotalk, list)', cmdCtx)
-      if (interaction.message?.id && interaction.channelId && result?.embeds) {
-        await backend.editMessage(interaction.channelId, interaction.message.id, '', {
-          embeds: result.embeds as any,
-          components: result.components as any,
-        })
-      }
+      await applyBotCommand(interaction, ['autotalk', interaction.customId === 'autotalk_on' ? 'on' : 'off'])
+      await showBotPanel(interaction, ['autotalk', 'list'])
     })()
     return
   }
@@ -760,15 +650,8 @@ backend.onInteraction = (interaction: any) => {
   if (interaction.customId?.startsWith('sched_remove:')) {
     const name = interaction.customId.split(':')[1]
     void (async () => {
-      const cmdCtx = makeCommandContext(interaction.channelId, interaction.userId)
-      await routeCustomCommand(`/bot(schedule, remove, "${name}")`, cmdCtx)
-      const result = await routeCustomCommand('/bot(schedule, list)', cmdCtx)
-      if (interaction.message?.id && interaction.channelId && result?.embeds) {
-        await backend.editMessage(interaction.channelId, interaction.message.id, '', {
-          embeds: result.embeds as any,
-          components: result.components as any,
-        })
-      }
+      await applyBotCommand(interaction, ['schedule', 'remove', name])
+      await showBotPanel(interaction, ['schedule', 'list'])
     })()
     return
   }
@@ -777,8 +660,7 @@ backend.onInteraction = (interaction: any) => {
   if (interaction.customId?.startsWith('sched_test:')) {
     const name = interaction.customId.split(':')[1]
     void (async () => {
-      const cmdCtx = makeCommandContext(interaction.channelId, interaction.userId)
-      await routeCustomCommand(`/bot(schedule, test, "${name}")`, cmdCtx)
+      await applyBotCommand(interaction, ['schedule', 'test', name])
     })()
     return
   }
@@ -787,15 +669,8 @@ backend.onInteraction = (interaction: any) => {
   if (interaction.customId?.startsWith('activity_remove:')) {
     const name = interaction.customId.split(':')[1]
     void (async () => {
-      const cmdCtx = makeCommandContext(interaction.channelId, interaction.userId)
-      await routeCustomCommand(`/bot(activity, remove, "${name}")`, cmdCtx)
-      const result = await routeCustomCommand('/bot(activity, list)', cmdCtx)
-      if (interaction.message?.id && interaction.channelId && result?.embeds) {
-        await backend.editMessage(interaction.channelId, interaction.message.id, '', {
-          embeds: result.embeds as any,
-          components: result.components as any,
-        })
-      }
+      await applyBotCommand(interaction, ['activity', 'remove', name])
+      await showBotPanel(interaction, ['activity', 'list'])
     })()
     return
   }
@@ -827,34 +702,13 @@ async function refreshSlashSessionContext(
   channelId: string,
   mode: 'same' | 'new' = 'same',
 ): Promise<void> {
-  const previousPath = readActiveInstance()?.transcriptPath ?? ''
-
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    const transcriptPath = discoverTranscriptPath()
-    const acceptable =
-      transcriptPath &&
-      (mode === 'same' || !previousPath || transcriptPath !== previousPath)
-
-    if (acceptable) {
-      forwarder.setContext(channelId, transcriptPath)
-      forwarder.startWatch()
-      refreshActiveInstance(INSTANCE_ID, { channelId, transcriptPath })
-      const state: Record<string, any> = {}
-      try { Object.assign(state, JSON.parse(fs.readFileSync(STATUS_FILE, 'utf8'))) } catch {}
-      state.channelId = channelId
-      state.transcriptPath = transcriptPath
-      try { fs.writeFileSync(STATUS_FILE, JSON.stringify(state)) } catch {}
-      return
-    }
-
-    await new Promise(resolve => setTimeout(resolve, 150))
-  }
-
-  if (previousPath) {
-    forwarder.setContext(channelId, previousPath)
-    forwarder.startWatch()
-    refreshActiveInstance(INSTANCE_ID, { channelId, transcriptPath: previousPath })
-  }
+  const previousPath = getPersistedTranscriptPath()
+  await rebindTranscriptContext(channelId, {
+    previousPath,
+    mode,
+    catchUp: false,
+    persistStatus: true,
+  })
 }
 
 const slashCtx: SlashCommandContext = {
@@ -1241,7 +1095,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
 const INBOUND_DEDUP_TTL = 5 * 60_000 // 5 minutes
 const inboundSeen = new Map<string, number>()
 const INBOUND_DEDUP_DIR = path.join(os.tmpdir(), 'claude2bot-inbound')
-try { fs.mkdirSync(INBOUND_DEDUP_DIR, { recursive: true }) } catch {}
+ensureDir(INBOUND_DEDUP_DIR)
 
 function claimChannelOwner(channelId: string): boolean {
   const ownerPath = getChannelOwnerPath(channelId)
@@ -1283,14 +1137,14 @@ function shouldDropDuplicateInbound(msg: InboundMessage): boolean {
     const stat = fs.statSync(marker)
     if (now - stat.mtimeMs < INBOUND_DEDUP_TTL) return true
   } catch { /* not found */ }
-  try { fs.writeFileSync(marker, String(now)) } catch {}
+  writeTextFile(marker, String(now))
 
   // 3) Lazy cleanup for stale markers (roughly every tenth call).
   if (Math.random() < 0.1) {
     try {
       for (const f of fs.readdirSync(INBOUND_DEDUP_DIR)) {
         const fp = path.join(INBOUND_DEDUP_DIR, f)
-        try { if (now - fs.statSync(fp).mtimeMs > INBOUND_DEDUP_TTL) fs.unlinkSync(fp) } catch {}
+        try { if (now - fs.statSync(fp).mtimeMs > INBOUND_DEDUP_TTL) removeFileIfExists(fp) } catch {}
       }
     } catch {}
   }
@@ -1347,27 +1201,38 @@ backend.onMessage = (msg) => {
   backend.resetSendCount()
   forwarder.reset()
 
-  // Re-discover transcript path — may change between sessions
-  const transcriptPath = discoverTranscriptPath()
-  forwarder.setContext(route.targetChatId, transcriptPath)
-  refreshActiveInstance(INSTANCE_ID, { channelId: route.targetChatId, transcriptPath })
+  // Prefer the current parent Claude session. If the exact transcript is not
+  // available yet, keep a same-session binding only and retry in the background.
+  const previousPath = getPersistedTranscriptPath()
+  const boundTranscript = discoverSessionBoundTranscript()
+  const transcriptPath = pickUsableTranscriptPath(boundTranscript, previousPath)
+  if (transcriptPath) {
+    applyTranscriptBinding(route.targetChatId, transcriptPath)
+  } else {
+    refreshActiveInstance(INSTANCE_ID, { channelId: route.targetChatId })
+  }
 
   void (async () => {
     try {
       await backend.react(msg.chatId, msg.messageId, '\u{1F914}')
     } catch {}
     // Persist state for permission-request hook and forwarder recovery
-    const state: Record<string, any> = {}
-    try { Object.assign(state, JSON.parse(fs.readFileSync(STATUS_FILE, 'utf8'))) } catch {}
-    state.channelId = route.targetChatId
-    state.userMessageId = msg.messageId
-    state.emoji = '\u{1F914}'
-    state.transcriptPath = transcriptPath
-    state.sentCount = 0
-    state.sessionIdle = false
-    try { fs.writeFileSync(STATUS_FILE, JSON.stringify(state)) } catch {}
-    // startWatch handles path change detection — safe to call every time
-    forwarder.startWatch()
+    statusState.update(state => {
+      state.channelId = route.targetChatId
+      state.userMessageId = msg.messageId
+      state.emoji = '\u{1F914}'
+      state.sentCount = 0
+      state.sessionIdle = false
+      if (transcriptPath) state.transcriptPath = transcriptPath
+      else delete state.transcriptPath
+    })
+    if (!boundTranscript?.exists) {
+      await rebindTranscriptContext(route.targetChatId, {
+        previousPath: transcriptPath,
+        catchUp: true,
+        persistStatus: true,
+      })
+    }
   })()
   void handleInbound(msg, route)
 }
@@ -1448,15 +1313,15 @@ await mcp.connect(new StdioServerTransport())
 
 // Start transcript watch immediately — runs once, stays alive permanently
 {
-  const initialTranscript = discoverTranscriptPath()
+  const initialTranscript = discoverSessionBoundTranscript()
   // Resolve default channel ID from config
   const mainLabel = config.channelsConfig?.main || 'general'
   const defaultChannelId = config.channelsConfig?.channels?.[mainLabel]?.id || ''
-  if (initialTranscript) {
-    forwarder.setContext(defaultChannelId, initialTranscript)
-    forwarder.startWatch()
-    refreshActiveInstance(INSTANCE_ID, { channelId: defaultChannelId, transcriptPath: initialTranscript })
-    process.stderr.write(`claude2bot: watching transcript: ${initialTranscript}, channel: ${defaultChannelId}\n`)
+  if (initialTranscript?.exists) {
+    applyTranscriptBinding(defaultChannelId, initialTranscript.transcriptPath, {
+      persistStatus: false,
+    })
+    process.stderr.write(`claude2bot: watching transcript: ${initialTranscript.transcriptPath}, channel: ${defaultChannelId}\n`)
   }
 }
 

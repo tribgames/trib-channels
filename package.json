@@ -4,8 +4,18 @@
   "description": "Discord channel plugin for Claude Code with scheduler, voice transcription, and access control",
   "license": "Apache-2.0",
   "type": "module",
+  "bin": {
+    "claude2bot-launcher": "./launcher.mjs"
+  },
   "scripts": {
-    "start": "npx tsx server.ts"
+    "start": "npx tsx server.ts",
+    "launcher": "node launcher.mjs",
+    "launcher:install": "node launcher.mjs install",
+    "launcher:launch": "node launcher.mjs launch",
+    "build:launcher:bundle": "npx --yes esbuild@0.25.9 launcher.mjs --bundle --platform=node --format=cjs --target=node22 --outfile=dist/launcher.cjs",
+    "build:launcher:sea": "node scripts/build-launcher-sea.mjs",
+    "build:launcher": "npm run build:launcher:bundle && npm run build:launcher:sea",
+    "build:launcher:app:macos": "bash scripts/build-tray-macos.sh"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",

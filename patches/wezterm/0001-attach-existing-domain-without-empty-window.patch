@@ -1,0 +1,26 @@
+diff --git a/wezterm-gui/src/main.rs b/wezterm-gui/src/main.rs
+index a669a1e..d729d93 100644
+--- a/wezterm-gui/src/main.rs
++++ b/wezterm-gui/src/main.rs
+@@ -290,13 +290,20 @@ async fn spawn_tab_in_domain_if_mux_is_empty(
+     let mux = Mux::get();
+ 
+     let domain = domain.unwrap_or_else(|| mux.default_domain());
++    let already_have_panes = have_panes_in_domain_and_ws(&domain, &workspace);
+ 
+     if !is_connecting {
+-        if have_panes_in_domain_and_ws(&domain, &workspace) {
++        if already_have_panes {
+             return Ok(());
+         }
+     }
+ 
++    if is_connecting && already_have_panes {
++        domain.attach(None).await?;
++        trigger_and_log_gui_attached(MuxDomain(domain.domain_id())).await;
++        return Ok(());
++    }
++
+     let window_id = {
+         // Force the builder to notify the frontend early,
+         // so that the attach await below doesn't block it.

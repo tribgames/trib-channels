@@ -107,20 +107,58 @@ After installation, the normal start command is:
 claude --dangerously-load-development-channels plugin:claude2bot@claude2bot
 ```
 
-Recommended examples:
+## Launcher Mode
+
+The repository includes a WezTerm-based launcher for users who want a managed startup flow with a single macOS app entrypoint.
+
+Available commands:
 
 ```bash
-# macOS
-tmux new -s claude
-claude --dangerously-load-development-channels plugin:claude2bot@claude2bot
+node launcher.mjs install
+node launcher.mjs launch
+node launcher.mjs update
+node launcher.mjs doctor
+node launcher.mjs restart
+node launcher.mjs workspace /path/to/workspace
+node launcher.mjs display hide
+node launcher.mjs display view
 ```
 
+Build a local single-file launcher:
+
 ```bash
-# Windows via WSL
-wsl
-tmux new -s claude
-claude --dangerously-load-development-channels plugin:claude2bot@claude2bot
+npm run build:launcher
+npm run build:launcher:app:macos
 ```
+
+This produces platform-specific launcher artifacts under `dist/`.
+Tagged releases publish packaged launcher binaries to GitHub Releases via `.github/workflows/release-launcher.yml`.
+
+What launcher mode does:
+
+- verifies the Claude CLI is available
+- verifies WezTerm is available
+- ensures the `claude2bot` marketplace source exists
+- installs or enables the plugin if needed
+- opens Claude Code in a managed WezTerm session with `CLAUDE2BOT_LAUNCHER=1`
+- optionally auto-confirms the startup warning flow with the default sequence `1,1`
+- applies the saved launch mode (`hide` or `view`) on the next launch/restart
+- uses `restart` to apply launch mode changes
+
+You can disable the startup auto-confirm behavior:
+
+```bash
+CLAUDE2BOT_LAUNCHER_CONFIRM_SEQUENCE=0 node launcher.mjs launch
+```
+
+Launcher mode is the recommended managed path.
+The standard CLI launch flow still works when you do not need launcher-backed control.
+
+Release artifacts target:
+
+- macOS launcher binary: `claude2bot-launcher-macos.zip`
+- macOS launcher app: `claude2bot-launcher-app-macos.zip`
+- Windows launcher exe: `claude2bot-launcher-win-x64.zip`
 
 ## Slash Commands
 
@@ -163,8 +201,8 @@ Required:
 
 Recommended for full session control:
 
-- macOS/Linux: `tmux`
-- Windows: `WSL + tmux`
+- macOS: WezTerm launcher mode
+- Windows: WezTerm launcher mode
 
 Optional:
 

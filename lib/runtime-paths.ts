@@ -1,7 +1,8 @@
-import { mkdirSync, readFileSync, writeFileSync, readdirSync, statSync, unlinkSync } from 'fs'
+import { readFileSync, readdirSync, statSync, writeFileSync } from 'fs'
 import { execFileSync } from 'child_process'
 import { tmpdir } from 'os'
 import { join } from 'path'
+import { ensureDir, readJsonFile, removeFileIfExists, writeJsonFile } from './state-file.js'
 
 export type ActiveInstanceState = {
   instanceId: string
@@ -23,9 +24,17 @@ function sanitize(value: string): string {
   return value.replace(/[^a-zA-Z0-9._-]/g, '_')
 }
 
+function forEachFile(dirPath: string, visit: (fullPath: string, fileName: string) => void): void {
+  try {
+    for (const fileName of readdirSync(dirPath)) {
+      visit(join(dirPath, fileName), fileName)
+    }
+  } catch { /* ignore */ }
+}
+
 export function ensureRuntimeDirs(): void {
-  mkdirSync(RUNTIME_ROOT, { recursive: true })
-  mkdirSync(OWNER_DIR, { recursive: true })
+  ensureDir(RUNTIME_ROOT)
+  ensureDir(OWNER_DIR)
 }
 
 export function makeInstanceId(pid = process.pid): string {
@@ -61,16 +70,12 @@ export function getChannelOwnerPath(channelId: string): string {
 }
 
 export function readActiveInstance(): ActiveInstanceState | null {
-  try {
-    return JSON.parse(readFileSync(ACTIVE_INSTANCE_FILE, 'utf8')) as ActiveInstanceState
-  } catch {
-    return null
-  }
+  return readJsonFile<ActiveInstanceState | null>(ACTIVE_INSTANCE_FILE, null)
 }
 
 export function writeActiveInstance(state: ActiveInstanceState): void {
   ensureRuntimeDirs()
-  writeFileSync(ACTIVE_INSTANCE_FILE, JSON.stringify(state))
+  writeJsonFile(ACTIVE_INSTANCE_FILE, state)
 }
 
 export function buildActiveInstanceState(
@@ -143,30 +148,23 @@ export function writeServerPid(): void {
 export function clearServerPid(): void {
   try {
     const current = readFileSync(SERVER_PID_FILE, 'utf8').trim()
-    if (current === String(process.pid)) unlinkSync(SERVER_PID_FILE)
+    if (current === String(process.pid)) removeFileIfExists(SERVER_PID_FILE)
   } catch { /* ignore */ }
 }
 
 export function cleanupStaleRuntimeFiles(now = Date.now()): void {
   ensureRuntimeDirs()
-  try {
-    for (const file of readdirSync(RUNTIME_ROOT)) {
-      const fullPath = join(RUNTIME_ROOT, file)
-      if (file === 'owners' || file === 'active-instance.json') continue
-      try {
-        if (now - statSync(fullPath).mtimeMs > RUNTIME_STALE_TTL) unlinkSync(fullPath)
-      } catch { /* ignore */ }
-    }
-  } catch { /* ignore */ }
-
-  try {
-    for (const file of readdirSync(OWNER_DIR)) {
-      const fullPath = join(OWNER_DIR, file)
-      try {
-        if (now - statSync(fullPath).mtimeMs > RUNTIME_STALE_TTL) unlinkSync(fullPath)
-      } catch { /* ignore */ }
-    }
-  } catch { /* ignore */ }
+  forEachFile(RUNTIME_ROOT, (fullPath, file) => {
+    if (file === 'owners' || file === 'active-instance.json') return
+    try {
+      if (now - statSync(fullPath).mtimeMs > RUNTIME_STALE_TTL) removeFileIfExists(fullPath)
+    } catch { /* ignore */ }
+  })
+  forEachFile(OWNER_DIR, fullPath => {
+    try {
+      if (now - statSync(fullPath).mtimeMs > RUNTIME_STALE_TTL) removeFileIfExists(fullPath)
+    } catch { /* ignore */ }
+  })
 }
 
 export function cleanupInstanceRuntimeFiles(instanceId: string): void {
@@ -178,32 +176,25 @@ export function cleanupInstanceRuntimeFiles(instanceId: string): void {
     getStopFlagPath(instanceId),
   ]
   for (const target of targets) {
-    try { unlinkSync(target) } catch { /* ignore */ }
+    removeFileIfExists(target)
   }
 
-  try {
-    for (const file of readdirSync(RUNTIME_ROOT)) {
-      if (file.startsWith(`perm-${sanitize(instanceId)}-`)) {
-        try { unlinkSync(join(RUNTIME_ROOT, file)) } catch { /* ignore */ }
-      }
+  forEachFile(RUNTIME_ROOT, (fullPath, file) => {
+    if (file.startsWith(`perm-${sanitize(instanceId)}-`)) {
+      removeFileIfExists(fullPath)
     }
-  } catch { /* ignore */ }
+  })
 }
 
 export function releaseOwnedChannelLocks(instanceId: string): void {
-  try {
-    for (const file of readdirSync(OWNER_DIR)) {
-      const fullPath = join(OWNER_DIR, file)
-      try {
-        const owner = JSON.parse(readFileSync(fullPath, 'utf8')) as { instanceId?: string }
-        if (owner.instanceId === instanceId) unlinkSync(fullPath)
-      } catch { /* ignore */ }
-    }
-  } catch { /* ignore */ }
+  forEachFile(OWNER_DIR, fullPath => {
+    const owner = readJsonFile<{ instanceId?: string } | null>(fullPath, null)
+    if (owner?.instanceId === instanceId) removeFileIfExists(fullPath)
+  })
 }
 
 export function clearActiveInstance(instanceId: string): void {
   const active = readActiveInstance()
   if (active?.instanceId !== instanceId) return
-  try { unlinkSync(ACTIVE_INSTANCE_FILE) } catch { /* ignore */ }
+  removeFileIfExists(ACTIVE_INSTANCE_FILE)
 }

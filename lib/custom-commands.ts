@@ -7,11 +7,14 @@
  * - Quoted strings preserve spaces
  */
 
-import { readFileSync, writeFileSync, mkdirSync } from 'fs'
+import { writeFileSync, mkdirSync } from 'fs'
 import { join } from 'path'
-import { DATA_DIR, loadBotConfig, saveBotConfig, loadProfileConfig, saveProfileConfig } from './config.js'
+import { DATA_DIR, loadConfig, loadBotConfig, saveBotConfig, loadProfileConfig, saveProfileConfig } from './config.js'
 import type { PluginConfig, TimedSchedule } from '../backends/types.js'
 import type { Scheduler } from './scheduler.js'
+import { launcherStateConnected, readLauncherConfig, readLauncherState } from './launcher-state.js'
+import { controlLauncher } from './launcher-control.js'
+import { t } from './i18n.js'
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -33,6 +36,14 @@ export interface CommandContext {
   userId: string
   lang: 'ko' | 'en'
   reloadRuntimeConfig?: () => void
+}
+
+function makeParsedCommand(
+  cmd: ParsedCommand['cmd'],
+  args: string[] = [],
+  params: Record<string, string> = {},
+): ParsedCommand {
+  return { cmd, args, params }
 }
 
 // ── Parser ───────────────────────────────────────────────────────────
@@ -98,133 +109,9 @@ export function parseCommand(input: string): ParsedCommand | null {
 
 // ── Config helpers ───────────────────────────────────────────────────
 
-function loadPluginConfig(): PluginConfig {
-  const configPath = join(DATA_DIR, 'config.json')
-  return JSON.parse(readFileSync(configPath, 'utf8'))
-}
-
 function savePluginConfig(config: PluginConfig): void {
   const configPath = join(DATA_DIR, 'config.json')
   writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n')
-}
-
-// ── i18n ─────────────────────────────────────────────────────────────
-
-const msg: Record<string, Record<'ko' | 'en', string>> = {
-  'schedule.empty': {
-    ko: 'No schedules registered.',
-    en: 'No schedules configured.',
-  },
-  'schedule.added': {
-    ko: 'Schedule "{name}" added ({mode}, {time})',
-    en: 'Schedule "{name}" added ({mode}, {time})',
-  },
-  'schedule.exists': {
-    ko: 'Schedule "{name}" already exists.',
-    en: 'Schedule "{name}" already exists.',
-  },
-  'schedule.not_found': {
-    ko: 'Schedule "{name}" not found.',
-    en: 'Schedule "{name}" not found.',
-  },
-  'schedule.removed': {
-    ko: 'Schedule "{name}" deleted.',
-    en: 'Schedule "{name}" removed.',
-  },
-  'schedule.edited': {
-    ko: 'Schedule "{name}" updated.',
-    en: 'Schedule "{name}" updated.',
-  },
-  'schedule.triggered': {
-    ko: 'Running schedule "{name}"...',
-    en: 'Triggering schedule "{name}"...',
-  },
-  'schedule.missing_name': {
-    ko: 'Schedule name required.',
-    en: 'Schedule name is required.',
-  },
-  'schedule.missing_fields': {
-    ko: 'time and channel fields are required.',
-    en: 'time and channel fields are required.',
-  },
-  'profile.empty': {
-    ko: 'No profile configured.',
-    en: 'No profile configured.',
-  },
-  'profile.updated': {
-    ko: 'Profile updated.',
-    en: 'Profile updated.',
-  },
-  'unknown_action': {
-    ko: 'Unknown command: {action}',
-    en: 'Unknown action: {action}',
-  },
-  'unknown_sub': {
-    ko: 'Unknown subcommand: {sub}',
-    en: 'Unknown subcommand: {sub}',
-  },
-  'autotalk.status': {
-    ko: 'Autotalk Status',
-    en: 'Autotalk Status',
-  },
-  'autotalk.freq_updated': {
-    ko: 'Autotalk frequency changed to {freq}.',
-    en: 'Autotalk frequency updated to {freq}.',
-  },
-  'autotalk.enabled': {
-    ko: 'Autotalk enabled.',
-    en: 'Autotalk enabled.',
-  },
-  'autotalk.disabled': {
-    ko: 'Autotalk disabled.',
-    en: 'Autotalk disabled.',
-  },
-  'quiet.status': {
-    ko: 'Quiet Hours',
-    en: 'Quiet Settings',
-  },
-  'quiet.updated': {
-    ko: 'Quiet hours updated.',
-    en: 'Quiet settings updated.',
-  },
-  'activity.empty': {
-    ko: 'No activity channels registered.',
-    en: 'No activity channels configured.',
-  },
-  'activity.added': {
-    ko: 'Channel "{name}" added.',
-    en: 'Channel "{name}" added.',
-  },
-  'activity.exists': {
-    ko: 'Channel "{name}" already exists.',
-    en: 'Channel "{name}" already exists.',
-  },
-  'activity.not_found': {
-    ko: 'Channel "{name}" not found.',
-    en: 'Channel "{name}" not found.',
-  },
-  'activity.removed': {
-    ko: 'Channel "{name}" deleted.',
-    en: 'Channel "{name}" removed.',
-  },
-  'activity.missing_name': {
-    ko: 'Channel name required.',
-    en: 'Channel name is required.',
-  },
-  'activity.missing_id': {
-    ko: 'Channel ID required.',
-    en: 'Channel ID is required.',
-  },
-}
-
-function t(key: string, lang: 'ko' | 'en', vars?: Record<string, string>): string {
-  let text = msg[key]?.[lang] ?? msg[key]?.['en'] ?? key
-  if (vars) {
-    for (const [k, v] of Object.entries(vars)) {
-      text = text.replace(`{${k}}`, v)
-    }
-  }
-  return text
 }
 
 function refreshRuntime(ctx: CommandContext): void {
@@ -243,6 +130,8 @@ export async function handleBotCommand(
   switch (sub) {
     case 'schedule':
       return handleSchedule(parsed, ctx)
+    case 'launcher':
+      return handleLauncher(parsed, ctx)
     case 'autotalk':
       return handleAutotalk(parsed, ctx)
     case 'quiet':
@@ -261,8 +150,10 @@ export async function handleBotCommand(
 // ── /bot(status) ─────────────────────────────────────────────────────
 
 function handleBotStatus(_ctx: CommandContext): CommandResult {
-  const config = loadPluginConfig()
+  const config = loadConfig()
   const bot = loadBotConfig()
+  const launcher = readLauncherState()
+  const launcherConnected = launcherStateConnected(launcher)
   const ni = config.nonInteractive ?? []
   const i = config.interactive ?? []
 
@@ -282,6 +173,18 @@ function handleBotStatus(_ctx: CommandContext): CommandResult {
 
   const profile = loadProfileConfig()
   lines.push(`**Profile** ${profile.name || '-'}`)
+  lines.push(`**Launcher** ${launcherConnected ? `connected (${launcher?.workspacePath || '-'})` : 'not connected'}`)
+
+  const mainButtons = [
+    { type: 2, style: 1, label: 'Schedule', custom_id: 'bot_schedule' },
+    { type: 2, style: 1, label: 'Autotalk', custom_id: 'bot_autotalk' },
+    { type: 2, style: 1, label: 'Quiet', custom_id: 'bot_quiet' },
+    { type: 2, style: 1, label: 'Channels', custom_id: 'bot_activity' },
+    { type: 2, style: 2, label: 'Profile', custom_id: 'bot_profile' },
+  ]
+  if (launcherConnected) {
+    mainButtons.push({ type: 2, style: 2, label: 'Launcher', custom_id: 'bot_launcher' })
+  }
 
   return {
     embeds: [{
@@ -291,19 +194,120 @@ function handleBotStatus(_ctx: CommandContext): CommandResult {
     }],
     components: [{
       type: 1,
-      components: [
-        { type: 2, style: 1, label: 'Schedule', custom_id: 'bot_schedule' },
-        { type: 2, style: 1, label: 'Autotalk', custom_id: 'bot_autotalk' },
-        { type: 2, style: 1, label: 'Quiet', custom_id: 'bot_quiet' },
-        { type: 2, style: 1, label: 'Channels', custom_id: 'bot_activity' },
-        { type: 2, style: 2, label: 'Profile', custom_id: 'bot_profile' },
-      ],
-    }, {
+      components: mainButtons.slice(0, 5),
+    },
+    ...(mainButtons.length > 5 ? [{
+      type: 1,
+      components: mainButtons.slice(5),
+    }] : []),
+    {
       type: 1,
       components: [
         { type: 2, style: 4, label: '\u2715', custom_id: 'gui_close' },
       ],
-    }],
+    }, {
+      type: 1,
+      components: [],
+    }].filter((row: any) => row.components.length > 0),
+  }
+}
+
+function handleLauncher(parsed: ParsedCommand, ctx: CommandContext): CommandResult {
+  const action = parsed.args[1] ?? 'list'
+  const launcher = readLauncherState()
+  const launcherConfig = readLauncherConfig()
+  const launcherConnected = launcherStateConnected(launcher)
+  const launcherPhase = launcher?.phase ?? '-'
+  const launcherReady = launcherPhase === 'ready'
+  const activeDisplay = launcher?.displayMode ?? 'view'
+  const savedDisplay = launcherConfig?.displayMode ?? activeDisplay
+
+  if (!launcherConnected) {
+    return {
+      embeds: [{
+        title: '\uD83D\uDE80 Launcher',
+        description: 'Launcher is not connected.',
+        color: 0xFEE75C,
+      }],
+      components: [{
+        type: 1,
+        components: [
+          { type: 2, style: 1, label: 'Launch', custom_id: 'launcher_launch' },
+          { type: 2, style: savedDisplay === 'view' ? 1 : 2, label: 'View Mode', custom_id: 'launcher_mode_view' },
+          { type: 2, style: savedDisplay === 'hide' ? 1 : 2, label: 'Hide Mode', custom_id: 'launcher_mode_hide' },
+          { type: 2, style: 2, label: '← Main', custom_id: 'gui_back' },
+          { type: 2, style: 4, label: '\u2715', custom_id: 'gui_close' },
+        ],
+      }],
+    }
+  }
+
+  switch (action) {
+    case 'launch': {
+      const result = controlLauncher('launch')
+      return { text: result.message }
+    }
+    case 'mode-view': {
+      const result = controlLauncher('display-view')
+      return { text: result.message }
+    }
+    case 'mode-hide': {
+      const result = controlLauncher('display-hide')
+      return { text: result.message }
+    }
+    case 'restart': {
+      if (!launcherReady) return { text: `Launcher is not ready yet (phase: ${launcherPhase}).` }
+      const result = controlLauncher('restart')
+      return { text: result.message }
+    }
+    case 'status':
+    case 'list': {
+      const launcherInfo = launcher ?? {}
+      const lines = [
+        `**Mode** ${launcherInfo.runtimeMode ?? 'launcher'}`,
+        `**Phase** ${launcherInfo.phase ?? '-'}`,
+        `**Active Display** ${activeDisplay}`,
+        `**Saved Display** ${savedDisplay}`,
+        `**Workspace** ${launcherInfo.workspacePath ?? '-'}`,
+        `**Backend** ${launcherInfo.terminalApp ?? '-'}`,
+        `**Window** ${launcherInfo.terminalWindowId ?? '-'}`,
+        `**Connected** ${launcherConnected ? 'Yes' : 'No'}`,
+        `**Apply Policy** restart required for mode changes`,
+      ]
+      if (launcherInfo.weztermPaneId != null) lines.push(`**Pane** ${launcherInfo.weztermPaneId}`)
+      if (launcherInfo.sessionId) lines.push(`**Session** ${launcherInfo.sessionId}`)
+      if (launcherInfo.claudePid) lines.push(`**PID** ${launcherInfo.claudePid}`)
+      if (launcherInfo.updatedAt) {
+        lines.push(`**Updated** ${new Date(launcherInfo.updatedAt).toISOString()}`)
+      }
+      return {
+        embeds: [{
+          title: '\uD83D\uDE80 Launcher',
+          description: lines.join('\n'),
+          color: 0x5865F2,
+        }],
+        components: [
+          {
+            type: 1,
+            components: [
+              { type: 2, style: 1, label: 'Launch', custom_id: 'launcher_launch' },
+              { type: 2, style: savedDisplay === 'view' ? 1 : 2, label: 'View Mode', custom_id: 'launcher_mode_view' },
+              { type: 2, style: savedDisplay === 'hide' ? 1 : 2, label: 'Hide Mode', custom_id: 'launcher_mode_hide' },
+              { type: 2, style: 1, label: 'Restart', custom_id: 'launcher_restart', disabled: !launcherReady },
+            ],
+          },
+          {
+            type: 1,
+            components: [
+              { type: 2, style: 2, label: '← Main', custom_id: 'gui_back' },
+              { type: 2, style: 4, label: '\u2715', custom_id: 'gui_close' },
+            ],
+          },
+        ],
+      }
+    }
+    default:
+      return { text: t('unknown_action', ctx.lang, { action }) }
   }
 }
 
@@ -324,7 +328,7 @@ function handleActivity(parsed: ParsedCommand, ctx: CommandContext): CommandResu
 }
 
 function activityList(ctx: CommandContext): CommandResult {
-  const config = loadPluginConfig()
+  const config = loadConfig()
   const channels = config.channelsConfig?.channels ?? {}
   const main = config.channelsConfig?.main ?? ''
   const entries = Object.entries(channels)
@@ -387,7 +391,7 @@ function activityAdd(parsed: ParsedCommand, ctx: CommandContext): CommandResult 
 
   const mode = (parsed.params.mode ?? 'interactive') as 'interactive' | 'monitor'
 
-  const config = loadPluginConfig()
+  const config = loadConfig()
   if (!config.channelsConfig) {
     config.channelsConfig = { main: name, channels: {} }
   }
@@ -407,7 +411,7 @@ function activityRemove(parsed: ParsedCommand, ctx: CommandContext): CommandResu
   const name = parsed.args[2] ?? parsed.params.name
   if (!name) return { text: t('activity.missing_name', ctx.lang) }
 
-  const config = loadPluginConfig()
+  const config = loadConfig()
   if (!config.channelsConfig?.channels[name]) {
     return { text: t('activity.not_found', ctx.lang, { name }) }
   }
@@ -621,7 +625,7 @@ async function handleSchedule(
 }
 
 function scheduleList(ctx: CommandContext): CommandResult {
-  const config = loadPluginConfig()
+  const config = loadConfig()
   const all: Array<TimedSchedule & { type: string }> = [
     ...(config.nonInteractive ?? []).map(s => ({ ...s, type: 'non-interactive' })),
     ...(config.interactive ?? []).map(s => ({ ...s, type: 'interactive' })),
@@ -682,7 +686,7 @@ function scheduleDetail(parsed: ParsedCommand, ctx: CommandContext): CommandResu
   const name = parsed.args[2] ?? parsed.params.name
   if (!name) return { text: t('schedule.missing_name', ctx.lang) }
 
-  const config = loadPluginConfig()
+  const config = loadConfig()
   let entry: TimedSchedule | undefined
   let schedType = ''
 
@@ -737,7 +741,7 @@ function scheduleAdd(parsed: ParsedCommand, ctx: CommandContext): CommandResult 
   const days = (parsed.params.period ?? parsed.params.days ?? 'daily') as 'daily' | 'weekday'
   const prompt = parsed.params.prompt
 
-  const config = loadPluginConfig()
+  const config = loadConfig()
   const targetKey = mode === 'non-interactive' ? 'nonInteractive' : 'interactive'
 
   // Reject duplicate names across both schedule groups.
@@ -768,7 +772,7 @@ function scheduleEdit(parsed: ParsedCommand, ctx: CommandContext): CommandResult
   const name = parsed.args[2] ?? parsed.params.name
   if (!name) return { text: t('schedule.missing_name', ctx.lang) }
 
-  const config = loadPluginConfig()
+  const config = loadConfig()
 
   // Find the schedule in either array.
   let entry: TimedSchedule | undefined
@@ -806,7 +810,7 @@ function scheduleRemove(parsed: ParsedCommand, ctx: CommandContext): CommandResu
   const name = parsed.args[2] ?? parsed.params.name
   if (!name) return { text: t('schedule.missing_name', ctx.lang) }
 
-  const config = loadPluginConfig()
+  const config = loadConfig()
   let found = false
 
   for (const key of ['interactive', 'nonInteractive'] as const) {
@@ -895,6 +899,13 @@ export async function routeCustomCommand(
   const parsed = parseCommand(text)
   if (!parsed) return null
 
+  return dispatchParsedCommand(parsed, ctx)
+}
+
+async function dispatchParsedCommand(
+  parsed: ParsedCommand,
+  ctx: CommandContext,
+): Promise<CommandResult | null> {
   switch (parsed.cmd) {
     case 'bot':
       return handleBotCommand(parsed, ctx)
@@ -903,4 +914,20 @@ export async function routeCustomCommand(
     default:
       return null
   }
+}
+
+export function runProfileCommand(
+  args: string[],
+  params: Record<string, string>,
+  ctx: CommandContext,
+): CommandResult {
+  return handleProfileCommand(makeParsedCommand('profile', args, params), ctx)
+}
+
+export async function runBotCommand(
+  args: string[],
+  params: Record<string, string>,
+  ctx: CommandContext,
+): Promise<CommandResult> {
+  return handleBotCommand(makeParsedCommand('bot', args, params), ctx)
 }

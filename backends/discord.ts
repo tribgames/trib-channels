@@ -38,6 +38,7 @@ import type {
   AttachmentInfo,
   ChannelAccessPolicy,
 } from './types.js'
+import { chunk } from '../lib/format.js'
 
 // ── Access control types ───────────────────────────────────────────────
 
@@ -81,25 +82,6 @@ function defaultAccess(): Access {
     channels: {},
     pending: {},
   }
-}
-
-function chunk(text: string, limit: number, mode: 'length' | 'newline'): string[] {
-  if (text.length <= limit) return [text]
-  const out: string[] = []
-  let rest = text
-  while (rest.length > limit) {
-    let cut = limit
-    if (mode === 'newline') {
-      const para = rest.lastIndexOf('\n\n', limit)
-      const line = rest.lastIndexOf('\n', limit)
-      const space = rest.lastIndexOf(' ', limit)
-      cut = para > limit / 2 ? para : line > limit / 2 ? line : space > 0 ? space : limit
-    }
-    out.push(rest.slice(0, cut))
-    rest = rest.slice(cut).replace(/^\n+/, '')
-  }
-  if (rest) out.push(rest)
-  return out
 }
 
 function safeAttName(att: Attachment): string {
@@ -325,9 +307,8 @@ export class DiscordBackend implements ChannelBackend {
 
     const access = this.loadAccess()
     const limit = Math.max(1, Math.min(access.textChunkLimit ?? MAX_CHUNK_LIMIT, MAX_CHUNK_LIMIT))
-    const mode = access.chunkMode ?? 'length'
     const replyMode = access.replyToMode ?? 'first'
-    const chunks = chunk(text, limit, mode)
+    const chunks = chunk(text, limit)
     const sentIds: string[] = []
 
     try {
@@ -711,6 +692,9 @@ export class DiscordBackend implements ChannelBackend {
       )
     }
     const res = await fetch(att.url)
+    if (!res.ok) {
+      throw new Error(`attachment download failed: HTTP ${res.status}`)
+    }
     const buf = Buffer.from(await res.arrayBuffer())
     const name = att.name ?? `${att.id}`
     const rawExt = name.includes('.') ? name.slice(name.lastIndexOf('.') + 1) : 'bin'

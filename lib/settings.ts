@@ -15,7 +15,7 @@ import { PLUGIN_ROOT, DATA_DIR } from './config.js'
 const DEFAULT_FILE = join(PLUGIN_ROOT, 'settings.default.md')
 const LOCAL_FILE = join(DATA_DIR, 'settings.local.md')
 
-function tryRead(path: string): string | null {
+export function tryRead(path: string): string | null {
   try {
     return readFileSync(path, 'utf8').trim()
   } catch {

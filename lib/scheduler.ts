@@ -13,16 +13,17 @@ import { tmpdir } from 'os'
 import type { TimedSchedule, ProactiveConfig, ProactiveItem, ChannelsConfig, BotConfig } from '../backends/types.js'
 import { DATA_DIR } from './config.js'
 import { isHoliday } from './holidays.js'
+import { tryRead } from './settings.js'
 
 const SCRIPTS_DIR = join(DATA_DIR, 'scripts')
 
 const TICK_INTERVAL = 60_000 // 1 minute
 
 /** Callback to inject a prompt into the current session */
-export type InjectFn = (channelId: string, name: string, promptContent: string) => void
+type InjectFn = (channelId: string, name: string, promptContent: string) => void
 
 /** Callback to send a message via the main session's backend */
-export type SendFn = (channelId: string, text: string) => Promise<void>
+type SendFn = (channelId: string, text: string) => Promise<void>
 
 // ── Frequency → daily count / idle guard mapping ─────────────────────
 
@@ -631,7 +632,7 @@ export class Scheduler {
     // Merge topic prompt + feedback file
     if (this.proactive?.feedback) {
       const feedbackPath = join(DATA_DIR, 'proactive-feedback.md')
-      const feedback = this.tryRead(feedbackPath)
+      const feedback = tryRead(feedbackPath)
       if (feedback) {
         prompt = `${topicPrompt}\n\n---\n## Proactive Feedback History\n${feedback}`
       }
@@ -655,13 +656,7 @@ export class Scheduler {
 
   private loadPrompt(nameOrPath: string): string | null {
     const full = isAbsolute(nameOrPath) ? nameOrPath : join(this.promptsDir, nameOrPath)
-    return this.tryRead(full)
-  }
-
-  private tryRead(path: string): string | null {
-    try {
-      return existsSync(path) ? readFileSync(path, 'utf8') : null
-    } catch { return null }
+    return tryRead(full)
   }
 
 }

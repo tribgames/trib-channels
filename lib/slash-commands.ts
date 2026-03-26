@@ -7,100 +7,26 @@
 
 import { REST, Routes, SlashCommandBuilder } from 'discord.js'
 import type { ChatInputCommandInteraction, Client } from 'discord.js'
-import { readFileSync, existsSync } from 'fs'
+import { existsSync, readFileSync } from 'fs'
 import { join } from 'path'
 import type { PluginConfig } from '../backends/types.js'
 import type { Scheduler } from './scheduler.js'
 import { DATA_DIR } from './config.js'
-import { handleBotCommand } from './custom-commands.js'
-import type { CommandContext } from './custom-commands.js'
+import { runBotCommand, type CommandContext, type CommandResult } from './custom-commands.js'
 import { controlClaudeSession } from './session-control.js'
-import { detectRuntimeMode, runtimeModeHint, runtimeModeLabel, supportsSessionControl, type RuntimeMode } from './runtime-mode.js'
+import {
+  detectRuntimeMode,
+  runtimeModeHint,
+  runtimeModeLabel,
+  supportsInteractiveSessionCommands,
+  supportsSessionControl,
+  type RuntimeMode,
+} from './runtime-mode.js'
+import { t, getLang } from './i18n.js'
 
 // ── Constants ────────────────────────────────────────────────────────
 
 const EMBED_COLOR = 0x5865F2 // Discord blurple
-
-// ── i18n ─────────────────────────────────────────────────────────────
-
-type Lang = 'en' | 'ko' | 'ja' | 'zh'
-
-/** Cached config language override (read from config.json on first call) */
-let configLangCache: Lang | null | undefined = undefined
-
-function getConfigLang(): Lang | null {
-  if (configLangCache !== undefined) return configLangCache
-  try {
-    const configPath = join(DATA_DIR, 'config.json')
-    const config = JSON.parse(readFileSync(configPath, 'utf8'))
-    const lang = config.language as string | undefined
-    if (lang === 'en' || lang === 'ko' || lang === 'ja' || lang === 'zh') {
-      configLangCache = lang
-      return lang
-    }
-  } catch { /* ignore */ }
-  configLangCache = null
-  return null
-}
-
-function getLang(locale: string): Lang {
-  const override = getConfigLang()
-  if (override) return override
-  if (locale === 'ko') return 'ko'
-  if (locale === 'ja') return 'ja'
-  if (locale.startsWith('zh')) return 'zh'
-  return 'en'
-}
-
-const i18n: Record<string, Record<Lang, string>> = {
-  'session.command_forwarded': {
-    en: 'Forwarded `{command}` to the Claude session. The result will appear in the channel.',
-    ko: 'Claude 세션에 `{command}` 요청을 전달했습니다. 결과는 채널에 표시됩니다.',
-    ja: 'Claude セッションに`{command}`を転送しました。結果はチャンネルに表示されます。',
-    zh: '已将`{command}`转发到 Claude 会话。结果会显示在频道中。',
-  },
-  'model.switched': {
-    en: 'Model switch request: **{model}** (forwarded to session)',
-    ko: 'Model switch requested: **{model}** (forwarded to session)',
-    ja: 'モデル切替リクエスト: **{model}** (セッションに転送済み)',
-    zh: '模型切换请求: **{model}** (已转发到会话)',
-  },
-  'compact.forwarded': {
-    en: 'Compact request forwarded to session.',
-    ko: 'Context compact request forwarded to session.',
-    ja: '圧縮リクエストをセッションに転送しました。',
-    zh: '压缩请求已转发到会话。',
-  },
-  'clear.forwarded': {
-    en: 'Clear request forwarded to session.',
-    ko: 'Clear request forwarded to session.',
-    ja: 'クリアリクエストをセッションに転送しました。',
-    zh: '清除请求已转发到会话。',
-  },
-  'new.forwarded': {
-    en: 'New session request forwarded to session.',
-    ko: 'New session request forwarded to session.',
-    ja: '新しいセッションリクエストをセッションに転送しました。',
-    zh: '新建会话请求已转发到会话。',
-  },
-  'unknown_command': {
-    en: 'Unknown command: {cmd}',
-    ko: 'Unknown command: {cmd}',
-    ja: '不明なコマンド: {cmd}',
-    zh: '未知命令: {cmd}',
-  },
-}
-
-function t(key: string, locale: string, vars?: Record<string, string | number>): string {
-  const lang = getLang(locale)
-  let text = i18n[key]?.[lang] ?? i18n[key]?.en ?? key
-  if (vars) {
-    for (const [k, v] of Object.entries(vars)) {
-      text = text.replace(new RegExp(`\\{${k}\\}`, 'g'), String(v))
-    }
-  }
-  return text
-}
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -123,7 +49,7 @@ export interface SlashCommandContext {
 
 // ── Command definitions ──────────────────────────────────────────────
 
-function buildClaudeCommand(): SlashCommandBuilder {
+function buildClaudeCommand(runtimeMode: RuntimeMode): SlashCommandBuilder {
   const claude = new SlashCommandBuilder()
     .setName('claude')
     .setDescription('Claude Code session control')
@@ -188,98 +114,100 @@ function buildClaudeCommand(): SlashCommandBuilder {
       }),
   )
 
-  // /claude compact
-  claude.addSubcommand(sub =>
-    sub.setName('compact').setDescription('Compact conversation')
-      .setDescriptionLocalizations({
-        ko: 'Compact conversation',
-        ja: '会話を圧縮',
-        'zh-CN': '压缩对话',
-        'zh-TW': '壓縮對話',
-        'pt-BR': 'Compactar conversa',
-        'es-ES': 'Compactar conversacion',
-      }),
-  )
+  if (supportsInteractiveSessionCommands(runtimeMode)) {
+    // /claude compact
+    claude.addSubcommand(sub =>
+      sub.setName('compact').setDescription('Compact conversation')
+        .setDescriptionLocalizations({
+          ko: 'Compact conversation',
+          ja: '会話を圧縮',
+          'zh-CN': '压缩对话',
+          'zh-TW': '壓縮對話',
+          'pt-BR': 'Compactar conversa',
+          'es-ES': 'Compactar conversacion',
+        }),
+    )
 
-  // /claude clear
-  claude.addSubcommand(sub =>
-    sub.setName('clear').setDescription('Clear conversation')
-      .setDescriptionLocalizations({
-        ko: 'Clear conversation',
-        ja: '会話をクリア',
-        'zh-CN': '清除对话',
-        'zh-TW': '清除對話',
-        'pt-BR': 'Limpar conversa',
-        'es-ES': 'Limpiar conversacion',
-      }),
-  )
+    // /claude clear
+    claude.addSubcommand(sub =>
+      sub.setName('clear').setDescription('Clear conversation')
+        .setDescriptionLocalizations({
+          ko: 'Clear conversation',
+          ja: '会話をクリア',
+          'zh-CN': '清除对话',
+          'zh-TW': '清除對話',
+          'pt-BR': 'Limpar conversa',
+          'es-ES': 'Limpiar conversacion',
+        }),
+    )
 
-  // /claude new
-  claude.addSubcommand(sub =>
-    sub.setName('new').setDescription('Start new session')
-      .setDescriptionLocalizations({
-        ko: '새 세션 시작',
-        ja: '新しいセッションを開始',
-        'zh-CN': '新建会话',
-        'zh-TW': '新建工作階段',
-        'pt-BR': 'Iniciar nova sessao',
-        'es-ES': 'Iniciar nueva sesion',
-      }),
-  )
+    // /claude new
+    claude.addSubcommand(sub =>
+      sub.setName('new').setDescription('Start new session')
+        .setDescriptionLocalizations({
+          ko: '새 세션 시작',
+          ja: '新しいセッションを開始',
+          'zh-CN': '新建会话',
+          'zh-TW': '新建工作階段',
+          'pt-BR': 'Iniciar nova sessao',
+          'es-ES': 'Iniciar nueva sesion',
+        }),
+    )
 
-  // /claude model [name]
-  claude.addSubcommand(sub =>
-    sub
-      .setName('model')
-      .setDescription('Switch model')
-      .setDescriptionLocalizations({
-        ko: '모델 전환',
-        ja: 'モデル切替',
-        'zh-CN': '切换模型',
-        'zh-TW': '切換模型',
-        'pt-BR': 'Trocar modelo',
-        'es-ES': 'Cambiar modelo',
-      })
-      .addStringOption(opt =>
-        opt
-          .setName('name')
-          .setDescription('Model to switch to')
-          .setDescriptionLocalizations({
-            ko: '전환할 모델',
-            ja: '切り替えるモデル',
-            'zh-CN': '要切换的模型',
-            'zh-TW': '要切換的模型',
-            'pt-BR': 'Modelo para trocar',
-            'es-ES': 'Modelo a cambiar',
-          })
-          .setRequired(true)
-          .addChoices(
-            { name: 'sonnet', value: 'sonnet' },
-            { name: 'opus', value: 'opus' },
-            { name: 'haiku', value: 'haiku' },
-          ),
-      )
-      .addStringOption(opt =>
-        opt
-          .setName('effort')
-          .setDescription('Reasoning effort level')
-          .setDescriptionLocalizations({
-            ko: '추론 노력 수준',
-            ja: '推論レベル',
-            'zh-CN': '推理级别',
-            'zh-TW': '推理等級',
-            'pt-BR': 'Nivel de esforco',
-            'es-ES': 'Nivel de esfuerzo',
-          })
-          .setRequired(false)
-          .addChoices(
-            { name: 'low', value: 'low' },
-            { name: 'medium', value: 'medium' },
-            { name: 'high', value: 'high' },
-            { name: 'max', value: 'max' },
-          ),
-      ),
-  )
+    // /claude model [name]
+    claude.addSubcommand(sub =>
+      sub
+        .setName('model')
+        .setDescription('Switch model')
+        .setDescriptionLocalizations({
+          ko: '모델 전환',
+          ja: 'モデル切替',
+          'zh-CN': '切换模型',
+          'zh-TW': '切換模型',
+          'pt-BR': 'Trocar modelo',
+          'es-ES': 'Cambiar modelo',
+        })
+        .addStringOption(opt =>
+          opt
+            .setName('name')
+            .setDescription('Model to switch to')
+            .setDescriptionLocalizations({
+              ko: '전환할 모델',
+              ja: '切り替えるモデル',
+              'zh-CN': '要切换的模型',
+              'zh-TW': '要切換的模型',
+              'pt-BR': 'Modelo para trocar',
+              'es-ES': 'Modelo a cambiar',
+            })
+            .setRequired(true)
+            .addChoices(
+              { name: 'sonnet', value: 'sonnet' },
+              { name: 'opus', value: 'opus' },
+              { name: 'haiku', value: 'haiku' },
+            ),
+        )
+        .addStringOption(opt =>
+          opt
+            .setName('effort')
+            .setDescription('Reasoning effort level')
+            .setDescriptionLocalizations({
+              ko: '추론 노력 수준',
+              ja: '推論レベル',
+              'zh-CN': '推理级别',
+              'zh-TW': '推理等級',
+              'pt-BR': 'Nivel de esforco',
+              'es-ES': 'Nivel de esfuerzo',
+            })
+            .setRequired(false)
+            .addChoices(
+              { name: 'low', value: 'low' },
+              { name: 'medium', value: 'medium' },
+              { name: 'high', value: 'high' },
+              { name: 'max', value: 'max' },
+            ),
+        ),
+    )
+  }
 
   return claude
 }
@@ -333,6 +261,18 @@ function buildClaude2BotCommand(): SlashCommandBuilder {
       }),
   )
 
+  claude2bot.addSubcommand(sub =>
+    sub.setName('launcher').setDescription('Open launcher controls')
+      .setDescriptionLocalizations({
+        ko: 'launcher 제어 열기',
+        ja: 'launcher 制御を開く',
+        'zh-CN': '打开 launcher 控制',
+        'zh-TW': '開啟 launcher 控制',
+        'pt-BR': 'Abrir controles do launcher',
+        'es-ES': 'Abrir controles del launcher',
+      }),
+  )
+
   return claude2bot
 }
 
@@ -344,7 +284,7 @@ export async function registerSlashCommands(client: Client, token: string): Prom
   const runtimeMode = detectRuntimeMode()
   const commands = [buildClaude2BotCommand().toJSON()]
   if (supportsSessionControl(runtimeMode)) {
-    commands.unshift(buildClaudeCommand().toJSON())
+    commands.unshift(buildClaudeCommand(runtimeMode).toJSON())
   }
 
   // Fetch guilds if the local cache is empty.
@@ -544,8 +484,10 @@ async function handleDoctor(
 
   const mode = runtimeModeLabel(ctx.runtimeMode)
   const sessionControl = supportsSessionControl(ctx.runtimeMode)
+  const interactiveCommands = supportsInteractiveSessionCommands(ctx.runtimeMode)
   lines.push(`**Runtime** ${mode}`)
   lines.push(`**Session Control** ${sessionControl ? '\u{2705}' : '\u{26a0}\u{fe0f}'} ${runtimeModeHint(ctx.runtimeMode)}`)
+  lines.push(`**Interactive Commands** ${interactiveCommands ? '\u{2705} Enabled' : '\u{26a0}\u{fe0f} Hidden'}`)
   lines.push(`**Voice** ${ctx.config.voice?.enabled ? '\u{2705} Enabled' : 'Disabled'}`)
   lines.push(`**Process** PID ${process.pid}, uptime ${Math.floor(process.uptime() / 60)}m`)
 
@@ -562,7 +504,7 @@ function getCmdLang(locale: string): 'ko' | 'en' {
 /** Reply to interaction with CommandResult (text, embeds, components) */
 async function replyWithResult(
   interaction: ChatInputCommandInteraction,
-  result: { text?: string; embeds?: Record<string, unknown>[]; components?: Record<string, unknown>[] },
+  result: CommandResult,
 ): Promise<void> {
   const payload: Record<string, unknown> = { flags: 64 }
   if (result.text) payload.content = result.text
@@ -585,10 +527,7 @@ async function handleBotCommandArgs(
     reloadRuntimeConfig: ctx.reloadRuntimeConfig,
   }
   try {
-    const result = await handleBotCommand(
-      { cmd: 'bot', args, params: {} },
-      cmdCtx,
-    )
+    const result = await runBotCommand(args, {}, cmdCtx)
     await replyWithResult(interaction, result)
   } catch (err) {
     await interaction.reply({ content: `Error: ${err instanceof Error ? err.message : String(err)}`, flags: 64 })
@@ -608,6 +547,8 @@ async function handleClaude2BotCommand(
       return handleBotCommandArgs(interaction, ctx, ['schedule', 'list'])
     case 'doctor':
       return handleDoctor(interaction, ctx)
+    case 'launcher':
+      return handleBotCommandArgs(interaction, ctx, ['launcher', 'list'])
     default:
       await interaction.reply({ content: `Unknown command: ${sub}`, flags: 64 })
   }

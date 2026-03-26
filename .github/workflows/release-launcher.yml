@@ -1,0 +1,92 @@
+name: release-launcher
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            artifact_name: claude2bot-launcher-macos
+            binary_name: claude2bot-launcher
+            archive_ext: zip
+          - os: windows-latest
+            artifact_name: claude2bot-launcher-win-x64
+            binary_name: claude2bot-launcher.exe
+            archive_ext: zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build launcher
+        run: npm run build:launcher
+
+      - name: Build macOS launcher app
+        if: runner.os == 'macOS'
+        run: npm run build:launcher:app:macos
+
+      - name: Archive launcher (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          cd dist
+          zip -j "${{ matrix.artifact_name }}.zip" "${{ matrix.binary_name }}"
+
+      - name: Archive macOS launcher app
+        if: runner.os == 'macOS'
+        run: |
+          cd dist
+          zip -r "claude2bot-launcher-app-macos.zip" "Claude2BotLauncher.app"
+
+      - name: Archive launcher (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "dist/${{ matrix.binary_name }}" -DestinationPath "dist/${{ matrix.artifact_name }}.zip" -Force
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/${{ matrix.artifact_name }}.zip
+
+      - name: Upload macOS launcher app artifact
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: claude2bot-launcher-app-macos
+          path: dist/claude2bot-launcher-app-macos.zip
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/claude2bot-launcher-macos/claude2bot-launcher-macos.zip
+            artifacts/claude2bot-launcher-win-x64/claude2bot-launcher-win-x64.zip
+            artifacts/claude2bot-launcher-app-macos/claude2bot-launcher-app-macos.zip
