@@ -1378,28 +1378,32 @@ if (process.env.CLAUDE2BOT_NO_CONNECT) {
   scheduler.start()
   process.stderr.write(`claude2bot: running with ${backend.name} backend\n`)
 
-  // Greeting on session start — let Claude initiate based on context
-  // Wait for transcript to exist, then bind forwarder and inject greeting
-  const greetInterval = setInterval(() => {
-    const t = discoverSessionBoundTranscript()
-    if (!t?.exists) return
-    clearInterval(greetInterval)
-
+  // Greeting — wait for transcript, bind forwarder, then inject immediately
+  void (async () => {
     const mainLabel = config.channelsConfig?.main || 'general'
     const greetChannel = config.channelsConfig?.channels?.[mainLabel]?.id || ''
-    if (!forwarder.hasBinding() && greetChannel) {
-      applyTranscriptBinding(greetChannel, t.transcriptPath, { persistStatus: false })
+    if (!greetChannel) return
+
+    // Wait for transcript file to exist
+    for (let i = 0; i < 30; i++) {
+      const t = discoverSessionBoundTranscript()
+      if (t?.exists) {
+        if (!forwarder.hasBinding()) {
+          applyTranscriptBinding(greetChannel, t.transcriptPath, { persistStatus: false })
+        }
+        break
+      }
+      await new Promise(r => setTimeout(r, 1000))
     }
-    if (greetChannel) {
-      void mcp.notification({
-        method: 'notifications/claude/channel',
-        params: {
-          content: 'New session started. Say hi naturally.',
-          meta: { chat_id: greetChannel, user: 'system:greeting', user_id: 'system', ts: new Date().toISOString() },
-        },
-      }).catch(() => {})
-    }
-  }, 3000)
+
+    void mcp.notification({
+      method: 'notifications/claude/channel',
+      params: {
+        content: 'New session started. Say hi naturally.',
+        meta: { chat_id: greetChannel, user: 'system:greeting', user_id: 'system', ts: new Date().toISOString() },
+      },
+    }).catch(() => {})
+  })()
 }
 
 let shuttingDown = false
