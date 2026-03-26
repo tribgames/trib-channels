@@ -7,14 +7,21 @@ APP_DIR="$ROOT/dist/${APP_NAME}.app"
 CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
-rm -rf "$ROOT/dist/Claude2BotLauncherTray.app"
+
+SIGN_IDENTITY="${CODESIGN_IDENTITY:-Developer ID Application: DEVELOPER (TEAM_ID)}"
+TEAM_ID="${TEAM_ID:-TEAM_ID_VALUE}"
+BUNDLE_ID="com.tribgames.claude2bot.launcher"
+
+rm -rf "$APP_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 
+# Compile Swift tray app
 /usr/bin/swiftc \
   "$ROOT/tray/macos/Claude2BotLauncherTray.swift" \
   -framework Cocoa \
   -o "$MACOS_DIR/$APP_NAME"
 
+# Copy resources
 cp "$ROOT/launcher.mjs" "$RESOURCES_DIR/launcher.mjs"
 cp "$ROOT/launcher-wezterm.lua" "$RESOURCES_DIR/launcher-wezterm.lua"
 cat > "$RESOURCES_DIR/claude2bot-launcher" <<'SCRIPT'
@@ -30,19 +37,25 @@ exit 1
 SCRIPT
 chmod +x "$RESOURCES_DIR/claude2bot-launcher"
 
-cat > "$CONTENTS_DIR/Info.plist" <<'PLIST'
+# Info.plist with version
+VERSION="${VERSION:-1.0.0}"
+cat > "$CONTENTS_DIR/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
   <key>CFBundleExecutable</key>
-  <string>Claude2BotLauncher</string>
+  <string>${APP_NAME}</string>
   <key>CFBundleIdentifier</key>
-  <string>com.tribgames.claude2bot.launcher</string>
+  <string>${BUNDLE_ID}</string>
   <key>CFBundleName</key>
-  <string>Claude2BotLauncher</string>
+  <string>${APP_NAME}</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>${VERSION}</string>
+  <key>CFBundleVersion</key>
+  <string>${VERSION}</string>
   <key>LSUIElement</key>
   <true/>
 </dict>
@@ -50,4 +63,23 @@ cat > "$CONTENTS_DIR/Info.plist" <<'PLIST'
 PLIST
 
 chmod +x "$MACOS_DIR/$APP_NAME"
+
+# Code sign
+if [[ "${SKIP_SIGN:-}" != "1" ]]; then
+  codesign --force --deep --sign "$SIGN_IDENTITY" \
+    --entitlements /dev/stdin \
+    --options runtime \
+    "$APP_DIR" <<'ENTITLEMENTS'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+</dict>
+</plist>
+ENTITLEMENTS
+  echo "Signed: $SIGN_IDENTITY"
+fi
+
 echo "$APP_DIR"
