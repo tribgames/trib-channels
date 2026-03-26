@@ -23,13 +23,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem.button?.title = "c2b"
         rebuildMenu()
-        timer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
+        timer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             self?.ensureLauncherRunningIfNeeded()
             self?.rebuildMenu()
         }
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            // Clean up any stale sessions from previous runs, then launch fresh
+            // Clean up stale sessions, ensure deps installed, launch fresh
             self?.runLauncherSync(["stop"])
+            self?.runLauncherSync(["install"])
             self?.runLauncher(["launch"])
         }
     }
@@ -107,45 +108,58 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func actionDisplayView() { runLauncher(["display", "view"]) }
     @objc private func actionQuit() { NSApp.terminate(nil) }
 
+    @objc private func actionChangeWorkspace() {
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.message = "Select workspace folder for Claude Code"
+        panel.prompt = "Select"
+        if let current = launcherConfig()?.workspacePath {
+            panel.directoryURL = URL(fileURLWithPath: current)
+        }
+        let response = panel.runModal()
+        NSApp.setActivationPolicy(.accessory)
+        guard response == .OK, let url = panel.url else { return }
+        runLauncherSync(["workspace", url.path])
+        // Restart with new workspace
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            self?.runLauncherSync(["stop"])
+            self?.runLauncher(["launch"])
+        }
+    }
+
     private func rebuildMenu() {
         menu.removeAllItems()
 
         let state = launcherState()
         let config = launcherConfig()
         let connected = state?.connected ?? false
-        let workspace = state?.workspacePath ?? "(not configured)"
-        let phase = state?.phase ?? "-"
+        let workspace = state?.workspacePath ?? config?.workspacePath ?? "(not set)"
         let displayMode = state?.displayMode ?? config?.displayMode ?? "view"
-        let ready = phase == "ready"
 
-        let header = NSMenuItem(title: connected ? "Launcher connected" : "Launcher not connected", action: nil, keyEquivalent: "")
+        // Status
+        let header = NSMenuItem(title: connected ? "🟢 Connected" : "🔴 Disconnected", action: nil, keyEquivalent: "")
         header.isEnabled = false
         menu.addItem(header)
-
-        let workspaceItem = NSMenuItem(title: "Workspace: \(workspace)", action: nil, keyEquivalent: "")
-        workspaceItem.isEnabled = false
-        menu.addItem(workspaceItem)
-
-        let phaseItem = NSMenuItem(title: "Phase: \(phase)", action: nil, keyEquivalent: "")
-        phaseItem.isEnabled = false
-        menu.addItem(phaseItem)
-
-        let displayItem = NSMenuItem(title: "Display: \(displayMode)", action: nil, keyEquivalent: "")
-        displayItem.isEnabled = false
-        menu.addItem(displayItem)
         menu.addItem(.separator())
 
-        let launch = NSMenuItem(title: "Launch Claude", action: #selector(actionLaunch), keyEquivalent: "")
+        // Actions
+        let launch = NSMenuItem(title: "Launch", action: #selector(actionLaunch), keyEquivalent: "l")
         launch.target = self
+        launch.isEnabled = !connected
         menu.addItem(launch)
 
-        let restart = NSMenuItem(title: "Restart Claude", action: #selector(actionRestart), keyEquivalent: "")
+        let restart = NSMenuItem(title: "Restart", action: #selector(actionRestart), keyEquivalent: "r")
         restart.target = self
-        restart.isEnabled = connected && ready
+        restart.isEnabled = connected
         menu.addItem(restart)
 
         menu.addItem(.separator())
 
+        // Display toggle
         let viewMode = NSMenuItem(title: "View Mode", action: #selector(actionDisplayView), keyEquivalent: "")
         viewMode.target = self
         viewMode.state = displayMode == "view" ? .on : .off
@@ -158,7 +172,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(.separator())
 
-        let quit = NSMenuItem(title: "Quit Tray", action: #selector(actionQuit), keyEquivalent: "q")
+        // Settings
+        let workspaceShort = (workspace as NSString).lastPathComponent
+        let workspaceItem = NSMenuItem(title: "Workspace: \(workspaceShort)", action: #selector(actionChangeWorkspace), keyEquivalent: "")
+        workspaceItem.target = self
+        menu.addItem(workspaceItem)
+
+        menu.addItem(.separator())
+
+        let quit = NSMenuItem(title: "Quit", action: #selector(actionQuit), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)
 

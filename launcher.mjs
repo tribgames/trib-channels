@@ -348,33 +348,31 @@ function ensureMarketplace() {
 function ensureClaudeInstalled() {
   if (hasCommand('claude')) return
 
-  if (hasCommand('npm')) {
-    run('npm', ['install', '-g', '@anthropic-ai/claude-code'], true)
-    return
-  }
-
+  // Prefer user-level install scripts (no sudo)
   if (process.platform === 'win32') {
     runShell('irm https://claude.ai/install.ps1 | iex', true)
     return
   }
 
+  // curl installer installs to ~/.claude/bin (user-level, no sudo)
   runShell('curl -fsSL https://claude.ai/install.sh | bash', true)
 }
 
 function ensureNodeTooling() {
   if (hasCommand('npm') && hasCommand('npx')) return
 
+  // brew install node doesn't require sudo on Apple Silicon
   if (process.platform === 'darwin' && hasCommand('brew')) {
     run('brew', ['install', 'node'], true)
-    return
+    if (hasCommand('npm')) return
   }
 
   if (process.platform === 'win32' && hasCommand('winget')) {
-    run('winget', ['install', '--id', 'OpenJS.NodeJS.LTS', '-e'], true)
-    return
+    run('winget', ['install', '--id', 'OpenJS.NodeJS.LTS', '-e', '--accept-package-agreements', '--accept-source-agreements'], true)
+    if (hasCommand('npm')) return
   }
 
-  throw new Error('Node.js tooling (npm/npx) is required but could not be installed automatically.')
+  throw new Error('Node.js is required. Install from https://nodejs.org')
 }
 
 function ensurePlugin(scope) {
@@ -413,7 +411,7 @@ function ensureWezTermInstalled() {
   }
 
   if (process.platform === 'win32' && hasCommand('winget')) {
-    run('winget', ['install', 'wez.wezterm', '-e'], true)
+    run('winget', ['install', 'wez.wezterm', '-e', '--accept-package-agreements', '--accept-source-agreements'], true)
     if (resolveWezTermCommand()) return
   }
 
