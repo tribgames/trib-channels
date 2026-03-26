@@ -37,19 +37,7 @@ Summarize today's work in ~5 lines:
 Merge today's key history into the existing lifetime. Remove duplicates, compress older entries. Keep it as a rolling summary of everything important that has happened. If empty, create from today's daily.
 
 ### 3. Update: {{HISTORY_DIR}}/identity.md
-Extract from today's conversation and merge into existing identity with "recent > past" priority. Structure as:
-
-**User** (who they are):
-- Current traits (recent behavior/preferences)
-- Core traits (stable long-term)
-
-**What They Seem to Want From Me** (observed patterns, written as "seems to..."):
-- What kind of work they seem to enjoy me doing
-- How they seem to prefer I communicate
-- Workflow patterns they seem to like (e.g., "seems to prefer I just execute rather than ask")
-- Things that seemed to frustrate them
-
-If empty, create both sections from today's observations.
+Build and evolve a natural understanding of the user through daily conversations. No fixed structure — let the profile form organically. Include anything you observe: personality, preferences, work style, communication patterns, what they value, what frustrates them, what role they expect from you, how they like to collaborate. Recent observations take priority over older ones. If something changed, update naturally. If empty, start fresh from today's conversation.
 
 ### 4. Update: {{HISTORY_DIR}}/ongoing.md
 From existing ongoing + today's conversation:
