@@ -1,5 +1,7 @@
 import Cocoa
 
+// MARK: - Data Models
+
 struct LauncherState: Decodable {
     let launcherExecPath: String?
     let launcherEntryPath: String?
@@ -14,11 +16,328 @@ struct LauncherConfig: Decodable {
     let displayMode: String?
 }
 
+struct BotConfig: Decodable {
+    var autotalk: AutotalkConfig?
+    var quiet: QuietConfig?
+}
+
+struct AutotalkConfig: Decodable {
+    var enabled: Bool?
+    var freq: Int?
+}
+
+struct QuietConfig: Decodable {
+    var schedule: String?
+    var autotalk: String?
+    var holidays: String?
+    var timezone: String?
+}
+
+
+// MARK: - Settings Window
+
+final class SettingsWindowController: NSObject {
+    private var window: NSWindow?
+    private let delegate: AppDelegate
+
+    init(delegate: AppDelegate) {
+        self.delegate = delegate
+    }
+
+    func show() {
+        if let w = window, w.isVisible { w.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); return }
+
+        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 360, height: 286),
+                         styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        w.title = "Claude2Bot Settings"
+        w.center()
+        w.isReleasedWhenClosed = false
+
+        let content = NSView(frame: w.contentView!.bounds)
+        content.autoresizingMask = [.width, .height]
+        w.contentView = content
+
+        let p: CGFloat = 16 // same padding left and right
+        let ww: CGFloat = 360
+        let rEdge: CGFloat = ww - p // right edge = all controls end here
+        let cw: CGFloat = 80 // standard control/button width
+        let row: CGFloat = 28 // row height
+        var y: CGFloat = 248
+
+        // ── Workspace ──
+        addLabel(to: content, text: "Workspace", x: p, y: y, bold: true)
+        addSmallButton(to: content, title: "Change...", x: rEdge - cw, y: y, width: cw, target: self, action: #selector(changeWorkspace))
+        y -= 20
+        let wsPath = delegate.launcherConfig()?.workspacePath ?? delegate.launcherState()?.workspacePath ?? "(not set)"
+        let wsLabel = addLabel(to: content, text: wsPath, x: p, y: y)
+        wsLabel.textColor = .secondaryLabelColor
+        wsLabel.font = .systemFont(ofSize: 11)
+        wsLabel.lineBreakMode = .byTruncatingMiddle
+        wsLabel.frame.size.width = rEdge - p
+        y -= row
+
+        // ── Autotalk ──
+        let botConfig = readBotConfig()
+        let autotalkOn = botConfig?.autotalk?.enabled ?? false
+        let autotalkFreq = max(1, min(5, botConfig?.autotalk?.freq ?? 3))
+
+        addLabel(to: content, text: "Autotalk", x: p, y: y)
+        let freqLabels = ["OFF", "Very Low", "Low", "Medium", "High", "Very High"]
+        let freqPopup = NSPopUpButton(frame: NSRect(x: rEdge - cw, y: y - 2, width: cw, height: 24), pullsDown: false)
+        freqPopup.font = .systemFont(ofSize: 12)
+        for label in freqLabels { freqPopup.addItem(withTitle: label) }
+        freqPopup.selectItem(at: autotalkOn ? autotalkFreq : 0)
+        freqPopup.target = self
+        freqPopup.action = #selector(autotalkChanged(_:))
+        content.addSubview(freqPopup)
+        y -= row
+
+        // ── Quiet Hours ──
+        let quietSchedule = botConfig?.quiet?.schedule ?? ""
+        let quietOn = !quietSchedule.isEmpty
+        let quietParts = quietSchedule.split(separator: "-").map(String.init)
+        let quietFrom = quietParts.count >= 1 ? quietParts[0] : "22:00"
+        let quietTo = quietParts.count >= 2 ? quietParts[1] : "08:00"
+
+        addLabel(to: content, text: "Quiet Hours", x: p, y: y)
+        let qToggle = NSPopUpButton(frame: NSRect(x: rEdge - cw, y: y - 2, width: cw, height: 24), pullsDown: false)
+        qToggle.font = .systemFont(ofSize: 12)
+        qToggle.addItem(withTitle: "OFF")
+        qToggle.addItem(withTitle: "ON")
+        qToggle.selectItem(at: quietOn ? 1 : 0)
+        qToggle.tag = 200
+        qToggle.target = self
+        qToggle.action = #selector(quietToggleChanged(_:))
+        content.addSubview(qToggle)
+        y -= row
+
+        // Time fields — each field same width as button, right-aligned
+        addLabel(to: content, text: "Quiet From", x: p, y: y)
+        let fromField = NSTextField(string: quietFrom)
+        fromField.frame = NSRect(x: rEdge - cw, y: y - 1, width: cw, height: 22)
+        fromField.alignment = .center
+        fromField.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+        fromField.tag = 201
+        fromField.isEnabled = quietOn
+        fromField.target = self
+        fromField.action = #selector(quietTimeChanged)
+        content.addSubview(fromField)
+        y -= row
+
+        addLabel(to: content, text: "Quiet To", x: p, y: y)
+        let toField = NSTextField(string: quietTo)
+        toField.frame = NSRect(x: rEdge - cw, y: y - 1, width: cw, height: 22)
+        toField.alignment = .center
+        toField.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+        toField.tag = 202
+        toField.isEnabled = quietOn
+        toField.target = self
+        toField.action = #selector(quietTimeChanged)
+        content.addSubview(toField)
+        y -= row
+
+        // ── Auto-start on Login ──
+        let autostart = isLoginItemEnabled()
+        addLabel(to: content, text: "Auto-start on Login", x: p, y: y)
+        let asCheck = NSButton(checkboxWithTitle: "", target: self, action: #selector(autostartToggled(_:)))
+        asCheck.frame = NSRect(x: rEdge - 18, y: y, width: 20, height: 20)
+        asCheck.state = autostart ? .on : .off
+        content.addSubview(asCheck)
+        y -= row
+
+        // ── Voice (only show if not installed) ──
+        if !hasWhisper() {
+            addLabel(to: content, text: "Voice Support", x: p, y: y)
+            addSmallButton(to: content, title: "Install", x: rEdge - cw, y: y, width: cw, target: self, action: #selector(installVoice))
+            y -= row
+        }
+
+        // ── Plugin Update ──
+        addLabel(to: content, text: "Plugin", x: p, y: y)
+        addSmallButton(to: content, title: "Update", x: rEdge - cw, y: y, width: cw, target: self, action: #selector(updatePlugin))
+
+        self.window = w
+        NSApp.setActivationPolicy(.regular)
+        w.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    // MARK: - Helpers
+
+    @discardableResult
+    private func addLabel(to view: NSView, text: String, x: CGFloat, y: CGFloat, bold: Bool = false) -> NSTextField {
+        let label = NSTextField(labelWithString: text)
+        label.frame = NSRect(x: x, y: y, width: 300, height: 20)
+        label.font = bold ? .boldSystemFont(ofSize: 13) : .systemFont(ofSize: 13)
+        view.addSubview(label)
+        return label
+    }
+
+    private func addSeparator(to view: NSView, y: CGFloat) {
+        let sep = NSBox()
+        sep.boxType = .separator
+        sep.frame = NSRect(x: 16, y: y, width: 368, height: 1)
+        view.addSubview(sep)
+    }
+
+    @discardableResult
+    private func addSmallButton(to view: NSView, title: String, x: CGFloat, y: CGFloat, width: CGFloat, target: AnyObject, action: Selector) -> NSButton {
+        let btn = NSButton(title: title, target: target, action: action)
+        btn.frame = NSRect(x: x, y: y - 2, width: width, height: 24)
+        btn.bezelStyle = .rounded
+        btn.font = .systemFont(ofSize: 12)
+        view.addSubview(btn)
+        return btn
+    }
+
+    private let pluginDataDir = NSString(string: "~/.claude/plugins/data/claude2bot-claude2bot").expandingTildeInPath
+
+    private func readBotConfig() -> BotConfig? {
+        let path = (pluginDataDir as NSString).appendingPathComponent("bot.json")
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)) else { return nil }
+        return try? JSONDecoder().decode(BotConfig.self, from: data)
+    }
+
+
+    private func hasWhisper() -> Bool {
+        let paths = ["/opt/homebrew/bin/whisper-cpp", "/usr/local/bin/whisper-cpp",
+                     "/opt/homebrew/bin/whisper", "/usr/local/bin/whisper"]
+        return paths.contains { FileManager.default.fileExists(atPath: $0) }
+    }
+
+    private func isLoginItemEnabled() -> Bool {
+        let plistPath = NSString(string: "~/Library/LaunchAgents/com.tribgames.claude2bot.launcher.plist").expandingTildeInPath
+        return FileManager.default.fileExists(atPath: plistPath)
+    }
+
+    // MARK: - Actions
+
+    @objc private func changeWorkspace() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.message = "Select workspace folder for Claude Code"
+        panel.prompt = "Select"
+        if let current = delegate.launcherConfig()?.workspacePath {
+            panel.directoryURL = URL(fileURLWithPath: current)
+        }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        delegate.runLauncherSync(["workspace", url.path])
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            self?.delegate.runLauncherSync(["stop"])
+            self?.delegate.runLauncher(["launch"])
+        }
+        closeSettings()
+    }
+
+    @objc private func autotalkChanged(_ sender: NSPopUpButton) {
+        // Index 0 = OFF, 1-5 = freq levels
+        let idx = sender.indexOfSelectedItem
+        var bot = readBotConfigRaw()
+        var at = bot["autotalk"] as? [String: Any] ?? [:]
+        if idx == 0 {
+            at["enabled"] = false
+        } else {
+            at["enabled"] = true
+            at["freq"] = idx
+        }
+        bot["autotalk"] = at
+        writeBotConfig(bot)
+    }
+
+    @objc private func quietToggleChanged(_ sender: NSPopUpButton) {
+        let on = sender.indexOfSelectedItem == 1
+        if let contentView = sender.window?.contentView {
+            if let f = contentView.viewWithTag(201) as? NSTextField { f.isEnabled = on }
+            if let t = contentView.viewWithTag(202) as? NSTextField { t.isEnabled = on }
+        }
+        var bot = readBotConfigRaw()
+        var q = bot["quiet"] as? [String: Any] ?? [:]
+        if on {
+            let from = (sender.window?.contentView?.viewWithTag(201) as? NSTextField)?.stringValue ?? "22:00"
+            let to = (sender.window?.contentView?.viewWithTag(202) as? NSTextField)?.stringValue ?? "08:00"
+            q["schedule"] = "\(from)-\(to)"
+        } else {
+            q["schedule"] = ""
+            q["autotalk"] = ""
+        }
+        bot["quiet"] = q
+        writeBotConfig(bot)
+    }
+
+    @objc private func quietTimeChanged() {
+        guard let contentView = window?.contentView,
+              let qCheck = contentView.viewWithTag(200) as? NSButton, qCheck.state == .on,
+              let fromField = contentView.viewWithTag(201) as? NSTextField,
+              let toField = contentView.viewWithTag(202) as? NSTextField else { return }
+        let schedule = "\(fromField.stringValue)-\(toField.stringValue)"
+        var bot = readBotConfigRaw()
+        var q = bot["quiet"] as? [String: Any] ?? [:]
+        q["schedule"] = schedule
+        bot["quiet"] = q
+        writeBotConfig(bot)
+    }
+
+    @objc private func autostartToggled(_ sender: NSButton) {
+        let enable = sender.state == .on
+        let plistPath = NSString(string: "~/Library/LaunchAgents/com.tribgames.claude2bot.launcher.plist").expandingTildeInPath
+
+        if enable {
+            let appPath = Bundle.main.bundlePath
+            let plist: [String: Any] = [
+                "Label": "com.tribgames.claude2bot.launcher",
+                "ProgramArguments": ["open", "-a", appPath],
+                "RunAtLoad": true,
+                "KeepAlive": false,
+            ]
+            let dir = (plistPath as NSString).deletingLastPathComponent
+            try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            (plist as NSDictionary).write(toFile: plistPath, atomically: true)
+        } else {
+            try? FileManager.default.removeItem(atPath: plistPath)
+        }
+    }
+
+    @objc private func installVoice() {
+        delegate.runLauncher(["install-voice"])
+        closeSettings()
+    }
+
+    @objc private func updatePlugin() {
+        delegate.runLauncher(["update"])
+        closeSettings()
+    }
+
+    @objc private func closeSettings() {
+        window?.close()
+        NSApp.setActivationPolicy(.accessory)
+    }
+
+    private func writeBotConfig(_ bot: [String: Any]) {
+        let path = (pluginDataDir as NSString).appendingPathComponent("bot.json")
+        if let data = try? JSONSerialization.data(withJSONObject: bot, options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: URL(fileURLWithPath: path))
+        }
+    }
+
+    private func readBotConfigRaw() -> [String: Any] {
+        let path = (pluginDataDir as NSString).appendingPathComponent("bot.json")
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [:] }
+        return json
+    }
+
+}
+
+// MARK: - App Delegate
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let menu = NSMenu()
     private var timer: Timer?
     private var lastLaunchAttempt = Date.distantPast
+    private lazy var settingsController = SettingsWindowController(delegate: self)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem.button?.title = "c2b"
@@ -28,7 +347,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.rebuildMenu()
         }
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            // Clean up stale sessions, ensure deps installed, launch fresh
             self?.runLauncherSync(["stop"])
             self?.runLauncherSync(["install"])
             self?.runLauncher(["launch"])
@@ -37,17 +355,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         timer?.invalidate()
-        // Stop all launcher processes when tray quits
         runLauncherSync(["stop"])
     }
 
-    private func launcherState() -> LauncherState? {
+    func launcherState() -> LauncherState? {
         let url = URL(fileURLWithPath: NSString(string: "~/.claude2bot-launcher-state.json").expandingTildeInPath)
         guard let data = try? Data(contentsOf: url) else { return nil }
         return try? JSONDecoder().decode(LauncherState.self, from: data)
     }
 
-    private func launcherConfig() -> LauncherConfig? {
+    func launcherConfig() -> LauncherConfig? {
         let url = URL(fileURLWithPath: NSString(string: "~/.claude2bot-launcher.json").expandingTildeInPath)
         guard let data = try? Data(contentsOf: url) else { return nil }
         return try? JSONDecoder().decode(LauncherConfig.self, from: data)
@@ -60,7 +377,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ?? ""
     }
 
-    private func runLauncher(_ args: [String]) {
+    func runLauncher(_ args: [String]) {
         let execPath = launcherExecPath()
         guard !execPath.isEmpty else { return }
         let process = Process()
@@ -70,7 +387,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         try? process.run()
     }
 
-    private func runLauncherSync(_ args: [String]) {
+    func runLauncherSync(_ args: [String]) {
         let execPath = launcherExecPath()
         guard !execPath.isEmpty else { return }
         let process = Process()
@@ -88,11 +405,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if connected || phase == "launching" || phase == "warning_confirm" || phase == "connecting" {
             return
         }
-
-        if Date().timeIntervalSince(lastLaunchAttempt) < 10 {
-            return
-        }
-
+        if Date().timeIntervalSince(lastLaunchAttempt) < 10 { return }
         lastLaunchAttempt = Date()
         runLauncher(["launch"])
     }
@@ -106,30 +419,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     @objc private func actionDisplayHide() { runLauncher(["display", "hide"]) }
     @objc private func actionDisplayView() { runLauncher(["display", "view"]) }
+    @objc private func actionSettings() { settingsController.show() }
     @objc private func actionQuit() { NSApp.terminate(nil) }
-
-    @objc private func actionChangeWorkspace() {
-        NSApp.setActivationPolicy(.regular)
-        NSApp.activate(ignoringOtherApps: true)
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.message = "Select workspace folder for Claude Code"
-        panel.prompt = "Select"
-        if let current = launcherConfig()?.workspacePath {
-            panel.directoryURL = URL(fileURLWithPath: current)
-        }
-        let response = panel.runModal()
-        NSApp.setActivationPolicy(.accessory)
-        guard response == .OK, let url = panel.url else { return }
-        runLauncherSync(["workspace", url.path])
-        // Restart with new workspace
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            self?.runLauncherSync(["stop"])
-            self?.runLauncher(["launch"])
-        }
-    }
 
     private func rebuildMenu() {
         menu.removeAllItems()
@@ -137,7 +428,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let state = launcherState()
         let config = launcherConfig()
         let connected = state?.connected ?? false
-        let workspace = state?.workspacePath ?? config?.workspacePath ?? "(not set)"
         let displayMode = state?.displayMode ?? config?.displayMode ?? "view"
 
         // Status
@@ -173,10 +463,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
 
         // Settings
-        let workspaceShort = (workspace as NSString).lastPathComponent
-        let workspaceItem = NSMenuItem(title: "Workspace: \(workspaceShort)", action: #selector(actionChangeWorkspace), keyEquivalent: "")
-        workspaceItem.target = self
-        menu.addItem(workspaceItem)
+        let settings = NSMenuItem(title: "Settings...", action: #selector(actionSettings), keyEquivalent: ",")
+        settings.target = self
+        menu.addItem(settings)
 
         menu.addItem(.separator())
 
@@ -187,6 +476,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.menu = menu
     }
 }
+
+// MARK: - Main
 
 let app = NSApplication.shared
 let delegate = AppDelegate()
