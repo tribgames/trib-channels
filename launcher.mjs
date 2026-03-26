@@ -1093,7 +1093,8 @@ function runSleepPrompt(template, { date, pingpong, ws }) {
     .replace('{{INTERESTS}}', existing.interests)
     .replace('{{HISTORY_DIR}}', HISTORY_DIR)
   try {
-    execFileSync('claude', ['-p', prompt, '--cwd', ws], {
+    execFileSync('claude', ['-p', prompt], {
+      cwd: ws,
       stdio: 'inherit', timeout: 180000,
       env: { ...process.env, CLAUDE_MODEL: 'sonnet' },
     })
