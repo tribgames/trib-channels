@@ -76,6 +76,7 @@ function printHelp() {
     '  workspace [path]       Show or set the default workspace path',
     '  display [hide|view]    Show or set the launcher display mode',
     '  sleep-cycle            Run sleeping mode: summarize, restart session',
+    '  config <key> [value]   Get/set config (autotalk, quiet, sleeping, sleeping-time)',
     '',
     'Options:',
     `  --scope <scope>        Plugin install scope (default: ${DEFAULT_SCOPE})`,
@@ -1189,6 +1190,92 @@ function getWeekNumber(date) {
   return Math.ceil(((d - yearStart) / 86400000 + 1) / 7)
 }
 
+function handleConfig(key, value) {
+  const BOT_FILE = join(PLUGIN_DATA_DIR, 'bot.json')
+
+  function readBot() {
+    try { return JSON.parse(readFileSync(BOT_FILE, 'utf8')) } catch { return {} }
+  }
+  function writeBot(bot) {
+    writeFileSync(BOT_FILE, JSON.stringify(bot, null, 2) + '\n')
+  }
+
+  if (!key) {
+    // Show all config
+    const config = readLauncherConfig()
+    const bot = readBot()
+    const lines = [
+      `workspace: ${config.workspacePath ?? '(not set)'}`,
+      `display: ${config.displayMode ?? 'view'}`,
+      `autotalk: ${bot.autotalk?.enabled ? `on (freq ${bot.autotalk.freq ?? 3})` : 'off'}`,
+      `quiet: ${bot.quiet?.schedule || 'off'}`,
+      `sleeping: ${config.sleepEnabled !== false ? 'on' : 'off'}`,
+      `sleeping-time: ${config.sleepTime ?? '03:00'}`,
+    ]
+    process.stdout.write(lines.join('\n') + '\n')
+    return
+  }
+
+  switch (key) {
+    case 'autotalk': {
+      const bot = readBot()
+      if (!value) {
+        process.stdout.write(`${bot.autotalk?.enabled ? `on (freq ${bot.autotalk.freq ?? 3})` : 'off'}\n`)
+        return
+      }
+      if (!bot.autotalk) bot.autotalk = {}
+      if (value === 'off' || value === '0') {
+        bot.autotalk.enabled = false
+      } else {
+        bot.autotalk.enabled = true
+        const freqMap = { 'very-low': 1, low: 2, medium: 3, high: 4, 'very-high': 5 }
+        const freq = freqMap[value.toLowerCase()] ?? parseInt(value, 10)
+        if (freq >= 1 && freq <= 5) bot.autotalk.freq = freq
+      }
+      writeBot(bot)
+      process.stdout.write(`autotalk: ${bot.autotalk.enabled ? `on (freq ${bot.autotalk.freq})` : 'off'}\n`)
+      return
+    }
+    case 'quiet': {
+      const bot = readBot()
+      if (!value) {
+        process.stdout.write(`${bot.quiet?.schedule || 'off'}\n`)
+        return
+      }
+      if (!bot.quiet) bot.quiet = {}
+      bot.quiet.schedule = value === 'off' ? '' : value
+      writeBot(bot)
+      process.stdout.write(`quiet: ${bot.quiet.schedule || 'off'}\n`)
+      return
+    }
+    case 'sleeping': {
+      const config = readLauncherConfig()
+      if (!value) {
+        process.stdout.write(`${config.sleepEnabled !== false ? 'on' : 'off'}\n`)
+        return
+      }
+      config.sleepEnabled = value !== 'off' && value !== '0'
+      writeLauncherConfig(config)
+      process.stdout.write(`sleeping: ${config.sleepEnabled ? 'on' : 'off'}\n`)
+      return
+    }
+    case 'sleeping-time': {
+      const config = readLauncherConfig()
+      if (!value) {
+        process.stdout.write(`${config.sleepTime ?? '03:00'}\n`)
+        return
+      }
+      config.sleepTime = value
+      writeLauncherConfig(config)
+      process.stdout.write(`sleeping-time: ${value}\n`)
+      return
+    }
+    default:
+      process.stderr.write(`Unknown config key: ${key}\nAvailable: autotalk, quiet, sleeping, sleeping-time\n`)
+      process.exitCode = 1
+  }
+}
+
 function stopLauncher() {
   const state = readLauncherState()
 
@@ -1455,6 +1542,9 @@ async function main() {
       break
     case 'sleep-cycle':
       sleepCycle(cliWorkspace)
+      break
+    case 'config':
+      handleConfig(USER_ARGS[1], USER_ARGS[2])
       break
     case 'doctor': {
       const workspacePath = cliWorkspace ? resolve(cliWorkspace) : getConfiguredWorkspace()
