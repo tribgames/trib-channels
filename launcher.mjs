@@ -475,6 +475,20 @@ function ensureWezTermMuxRunning(wezterm) {
   throw new Error('Failed to start WezTerm mux server.')
 }
 
+function cleanupDefaultMuxPanes() {
+  // Kill all default panes created by mux-server startup
+  // so that 'wezterm connect' only shows our Claude pane
+  try {
+    const panes = listWezTermPaneItems()
+    for (const p of panes) {
+      const id = p?.pane_id ?? p?.paneId
+      if (id != null) {
+        try { weztermCli(['kill-pane', '--pane-id', String(id)]) } catch { /* may already be gone */ }
+      }
+    }
+  } catch { /* no panes or cli not available */ }
+}
+
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
@@ -681,14 +695,15 @@ if let app = NSWorkspace.shared.runningApplications.first(where: {
 
 function hideWezTermApp() {
   if (process.platform === 'darwin') {
+    // Terminate WezTerm GUI process — mux keeps Claude session alive
     execFileSync(resolveCommand('swift') || 'swift', ['-e', `
 import AppKit
-if let app = NSWorkspace.shared.runningApplications.first(where: {
+for app in NSWorkspace.shared.runningApplications where ({
   let name = ($0.localizedName ?? "").lowercased()
   let path = ($0.executableURL?.path ?? "").lowercased()
   return name.contains("wezterm") || path.hasSuffix("/${WEZTERM_PROCESS_NAME}")
-}) {
-  _ = app.hide()
+}(app)) {
+  app.terminate()
 }
 `], { stdio: 'ignore' })
     return
@@ -816,8 +831,10 @@ function launchClaude(workspacePath, displayMode) {
       windowTitle,
     })
 
-    // Ensure WezTerm mux server is running (required for mux spawn)
+    // Ensure WezTerm mux server is running, then clean default panes
+    // so 'wezterm connect' only shows our Claude pane
     ensureWezTermMuxRunning(wezterm)
+    cleanupDefaultMuxPanes()
 
     // Always use mux spawn — enables instant show/hide toggle without restart
     const spawnOut = weztermCli([
