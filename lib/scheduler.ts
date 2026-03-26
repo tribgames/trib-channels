@@ -363,7 +363,7 @@ export class Scheduler {
     if (!this.proactive || this.proactive.items.length === 0) return
 
     // DND check
-    if (this.isDnd(now)) return
+    if (this.isQuietHours(now)) return
 
     // Generate daily random slots if new day
     if (this.proactiveSlotsDate !== dateStr) {
@@ -387,17 +387,6 @@ export class Scheduler {
     const item = items[Math.floor(Math.random() * items.length)]
     if (this.shouldSkip(`proactive:${item.topic}`)) return
     this.fireProactive(item)
-  }
-
-  /** Check if current time is within DND (do-not-disturb) window */
-  private isDnd(now: Date): boolean {
-    const dndStart = this.proactive?.dndStart
-    const dndEnd = this.proactive?.dndEnd
-    if (!dndStart || !dndEnd) return false
-    const hhmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
-    // Handle overnight DND (e.g. 23:00 - 07:00)
-    if (dndStart > dndEnd) return hhmm >= dndStart || hhmm < dndEnd
-    return hhmm >= dndStart && hhmm < dndEnd
   }
 
   /** Day abbreviation → JS day number (0=Sun...6=Sat) */
