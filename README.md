@@ -35,15 +35,11 @@ Support:
 On native Windows PowerShell, the plugin can still handle CLI-style and config-driven features such as:
 
 - `/claude status`
+- `/claude usage`
 - `/claude config`
-- `/claude access`
-- `/claude doctor`
-- `/claude help`
-- `/claude bot ...`
-- `/claude schedule list`
-- `/claude schedule add`
-- `/claude schedule remove`
-- `/claude schedule restart`
+- `/claude2bot setup`
+- `/claude2bot schedule`
+- `/claude2bot doctor`
 
 Commands that inject input into the live Claude session are best used in `tmux` or `WSL tmux`:
 
@@ -51,7 +47,6 @@ Commands that inject input into the live Claude session are best used in `tmux` 
 - `/claude compact`
 - `/claude clear`
 - `/claude new`
-- `/claude resume`
 
 `/claude stop` is usually the only native PowerShell session-control command that behaves acceptably, but `WSL tmux` is still the recommended Windows setup.
 
@@ -94,16 +89,15 @@ This is currently the expected launch command for preview channel mode.
 Inside Claude Code, run:
 
 ```text
-/claude2bot:setup
+/claude2bot setup
 ```
 
 The setup flow will guide you through:
 
-- Discord bot token configuration
-- Main channel selection
-- Additional channel registration
-- Access policy
-- Optional voice setup
+- post-install bot configuration
+- channel and access settings
+- profile, quiet hours, and voice settings
+- schedule and diagnostics entry points
 
 ## Daily Start Command
 
@@ -134,35 +128,18 @@ claude --dangerously-load-development-channels plugin:claude2bot@claude2bot
 
 - `/claude stop`
 - `/claude status`
+- `/claude usage`
 - `/claude config`
 - `/claude model`
 - `/claude compact`
 - `/claude clear`
 - `/claude new`
-- `/claude resume`
-- `/claude language`
 
-### Scheduler
+### Bot operations
 
-- `/claude schedule list`
-- `/claude schedule add`
-- `/claude schedule remove`
-- `/claude schedule restart`
-
-### Diagnostics and access
-
-- `/claude access`
-- `/claude doctor`
-- `/claude help`
-
-### Bot settings panels
-
-- `/claude bot status`
-- `/claude bot schedule`
-- `/claude bot autotalk`
-- `/claude bot quiet`
-- `/claude bot activity`
-- `/claude bot profile`
+- `/claude2bot setup`
+- `/claude2bot schedule`
+- `/claude2bot doctor`
 
 ## Runtime Files
 

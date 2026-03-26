@@ -1,5 +1,5 @@
 ---
-description: Interactive first-time setup for claude2bot — configure Discord token, channels, and profile.
+description: Post-install claude2bot setup and reconfiguration. Use this after the bot is already connected.
 allowed-tools:
   - AskUserQuestion
   - Read
@@ -10,128 +10,75 @@ allowed-tools:
 
 # claude2bot Setup
 
-Walk the user through initial claude2bot configuration.
+Walk the user through post-install claude2bot configuration.
+
+If the bot is not connected yet, prefer the install flow first.
 
 **Plugin root**: `${CLAUDE_PLUGIN_ROOT}`
 **Data directory**: `${CLAUDE_PLUGIN_DATA}`
 
-## Steps
+## Language Rule
+- Write this guide in English.
+- During the actual conversation, always respond in the user's language.
+- Keep messages short and action-focused.
 
-### 1. Bot Token
-Ask for the bot token:
-- **Discord**: Bot token from Developer Portal → Bot → Reset Token
+## Scope
+Use this flow for:
+- adding or changing channels
+- reviewing access policy
+- editing profile values
+- enabling voice features
+- quiet/autotalk settings
+- advanced maintenance tasks
 
-```
-Paste your bot token:
-```
+## Entry
+Start by checking whether the basic install is already complete:
+- config exists
+- bot token exists
+- main channel exists
 
-### 2. Verify & Discover
+If not, tell the user to run the install flow first.
 
-Run the discovery helper:
+If yes, offer a short menu:
+- Channels & Access
+- Profile
+- Voice
+- Quiet / Autotalk
+- Restart Helper
+- launchd
 
-```bash
-node ${CLAUDE_PLUGIN_ROOT}/lib/discover-channels.cjs discord "THE_TOKEN"
-```
+## Channels & Access
+Treat channels and access as one configuration area.
 
-If the connection fails, show the error and ask the user to check their token.
+Cover:
+- main channel
+- extra channels
+- interactive / monitor mode
+- requireMention
+- allowFrom
+- DM policy
 
-#### Discord path
-The helper returns a JSON array of text channels. Display numbered:
+## Profile
+Update profile fields such as:
+- name
+- role
+- lang
+- tone
 
-```
-Connected! Available channels:
-  1. #general       (1484077247...)
-  2. #news          (1484095703...)
-  3. #issues        (1485569037...)
-```
+## Voice
+Handle voice enablement and voice-related config.
+If system dependencies are missing, guide the user to the voice setup flow.
 
-Then proceed to **Step 4 (Channel Selection)**.
+## Quiet / Autotalk
+Update bot.json settings for:
+- schedule quiet hours
+- autotalk quiet hours
+- holiday country
+- autotalk frequency / enabled state
 
-### 3. Channel Selection
-Ask the user to pick the **main** channel by number:
-```
-Select main channel (number):
-```
+## Restart Helper / launchd
+Treat these as advanced optional features.
+Only guide the user into them when explicitly requested.
 
-### 4. Additional Channels
-Ask if the user wants to register more channels. For each:
-1. Pick by number
-2. Choose a label (or use the channel name as default)
-3. Set mode: `interactive` (listen + respond) or `monitor` (listen only, report to main)
-
-```
-Add another channel? (number/ID or 'done'):
-Channel label? (default: channel-name):
-Channel mode? (interactive / monitor):
-```
-
-### 5. Access Policy
-Ask about DM policy:
-- `pairing` (default) — new users send a pairing code for approval
-- `allowlist` — only pre-approved user IDs can interact
-- `disabled` — no DMs accepted
-
-### 6. Voice
-Ask if voice message transcription should be enabled:
-```
-Enable voice transcription? (yes/no)
-```
-Requires whisper.cpp and ffmpeg installed on the system.
-
-### 7. Write Config
-Create the data directory if needed:
-```bash
-mkdir -p ${CLAUDE_PLUGIN_DATA}
-```
-
-Save config to `${CLAUDE_PLUGIN_DATA}/config.json`.
-
-**Discord example:**
-```json
-{
-  "backend": "discord",
-  "discord": {
-    "token": "the-token"
-  },
-  "channelsConfig": {
-    "main": "general",
-    "channels": {
-      "general": { "id": "123...", "mode": "interactive" },
-      "news": { "id": "456...", "mode": "interactive" }
-    }
-  },
-  "voice": {
-    "enabled": true,
-    "language": "auto"
-  }
-}
-```
-
-Save access.json to `${CLAUDE_PLUGIN_DATA}/<backend>/access.json`:
-
-**Discord:**
-```json
-{
-  "dmPolicy": "pairing",
-  "allowFrom": [],
-  "channels": {
-    "123...": { "requireMention": false, "allowFrom": [] }
-  },
-  "pending": {}
-}
-```
-
-### 8. Done
-Show a summary of what was configured and the next step:
-
-```
-Setup complete!
-
-  Backend:  discord
-  Channels: N registered (main: #label)
-  Voice:    enabled|disabled
-  DM:       pairing mode
-
-Restart your session to activate:
-  claude --dangerously-load-development-channels plugin:claude2bot@claude2bot
-```
+## Completion
+Show a short summary of what changed and the relevant file paths.

@@ -116,14 +116,14 @@ Edit $CLAUDE_PLUGIN_DATA/prompts/mail-briefing.md
 ```bash
 # 1. config.json의 interactive 또는 nonInteractive 배열에 항목 추가
 # 2. prompts/ 디렉토리에 {name}.md 프롬프트 작성
-# 3. /claude schedule restart 또는 trigger_schedule 도구로 확인
+# 3. /claude2bot schedule 또는 trigger_schedule 도구로 확인
 ```
 
 **편집**: config.json의 해당 항목 수정 + 프롬프트 파일 수정.
 
 **삭제**: config.json에서 항목 제거. 프롬프트 파일은 남겨도 무방.
 
-**슬래시 커맨드로 추가**: `/claude schedule add name:<이름> time:<HH:MM> channel:<채널> prompt:<텍스트> mode:<interactive|non-interactive>`
+**슬래시 진입점**: `/claude2bot schedule`
 
 ---
 
@@ -236,26 +236,31 @@ minutes?: number          — defer 시 지속시간 (기본 30분)
 
 ---
 
-## 5. 슬래시 커맨드 (13개)
+## 5. 슬래시 커맨드
+
+### `/claude` 커맨드 (7개)
 
 Discord에서 `/claude <subcommand>` 형태로 사용.
 
 | 커맨드 | 설명 | 주요 파라미터 |
 |--------|------|---------------|
 | `stop` | 현재 작업 즉시 중단 (SIGINT) | - |
-| `status` | 모델, 토큰, 세션 상태 확인 | - |
+| `status` | 세션 상태 확인 | - |
+| `usage` | 세션 사용량 보기 | - |
 | `config` | 현재 설정 확인 | - |
-| `model` | AI 모델 전환 | `name`: sonnet, opus |
-| `language` | 표시 언어 설정 | `lang`: en, ko, ja, zh |
+| `model` | AI 모델 전환 | `name`: sonnet, opus, haiku / `effort`: low, medium, high, max |
 | `compact` | 대화 기록 압축 | - |
 | `clear` | 대화 초기화 (세션 유지) | - |
 | `new` | 새 세션 시작 | - |
-| `resume` | 이전 세션 이어하기 | - |
-| `schedule list` | 등록된 스케줄 목록 | - |
-| `schedule add` | 새 스케줄 추가 | `name`, `time`, `channel`, `prompt`, `mode` |
-| `schedule remove` | 스케줄 삭제 | `name` |
-| `help` | 도움말 표시 | - |
-| `access` | 접근 제어 상태 확인 | - |
+
+### `/claude2bot` 커맨드 (3개)
+
+Discord에서 `/claude2bot <subcommand>` 형태로 사용.
+
+| 커맨드 | 설명 | 주요 파라미터 |
+|--------|------|---------------|
+| `setup` | 설정 대시보드 열기 | - |
+| `schedule` | 스케줄 관리 열기 | - |
 | `doctor` | 시스템 진단 | - |
 
 ---
@@ -304,7 +309,7 @@ Stop (stop.cjs)
 ## 7. 에러 대처
 
 ### 봇 무응답
-1. `/claude doctor` — 연결, 설정, 훅 상태 진단
+1. `/claude2bot doctor` — 연결, 설정, 훅 상태 진단
 2. `/claude status` — 세션 상태 확인
 3. `access.json`의 `allowFrom`에 유저 ID 포함 여부 확인
 4. 채널이 `channelsConfig.channels`에 등록되어 있는지 확인
@@ -315,7 +320,7 @@ Stop (stop.cjs)
 3. `days` 설정 확인 (weekday면 주말 미실행)
 4. 프롬프트 파일 존재 확인: `prompts/{name}.md`
 5. 스케줄러 락 충돌: `/tmp/claude2bot-scheduler.lock` 확인
-6. `/claude schedule restart` — 스케줄러 재시작
+6. `/claude2bot schedule` — 스케줄 상태와 설정 경로 확인
 
 ### 음성 인식 실패
 1. config.json의 `voice.enabled: true` 확인
@@ -342,7 +347,7 @@ Stop (stop.cjs)
 - `schedule_control` (defer/skip)
 
 ### 재시작 필요
-- config.json의 스케줄 추가/삭제 → `/claude schedule restart`
+- config.json의 스케줄 추가/삭제 → `/claude2bot schedule`
 - config.json의 채널/토큰 변경 → 세션 재시작
 - settings.default.md / settings.local.md 변경 → 세션 재시작
 - 훅 파일 변경 → 세션 재시작

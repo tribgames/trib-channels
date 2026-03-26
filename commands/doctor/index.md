@@ -17,7 +17,7 @@ Run diagnostic checks and report issues with actionable fixes.
 - Does `${CLAUDE_PLUGIN_DATA}/config.json` exist?
 - Is it valid JSON?
 - Does it have a `backend` field?
-- Fix: "Run /claude2bot:setup to create the config"
+- Fix: "Run /claude2bot setup to create the config"
 
 ### 2. Bot Token
 - Is the token present in config?
@@ -32,7 +32,7 @@ Run diagnostic checks and report issues with actionable fixes.
 ### 4. Access Control
 - Does access.json exist?
 - Are there any allowed users or group channels?
-- Fix: "Run /claude2bot:access to configure access"
+- Fix: "Open /claude2bot setup and review Channels & Access"
 
 ### 5. Schedules
 - Are any schedules configured? (nonInteractive, interactive, proactive)
@@ -50,7 +50,7 @@ Run diagnostic checks and report issues with actionable fixes.
 - Is `channelsConfig` present in config.json?
 - Is a `main` channel defined?
 - Do all channel IDs look valid?
-- Fix: "Run /claude2bot:setup to configure channels"
+- Fix: "Run /claude2bot setup to configure channels"
 
 ### 8. Voice (if enabled)
 - Is `voice.enabled` true in config.json?
@@ -68,7 +68,7 @@ Run diagnostic checks and report issues with actionable fixes.
 [PASS] Config file found
 [PASS] Bot token present
 [FAIL] Access control: no users or channels configured
-       Fix: Run /claude2bot:access to add allowed users
+       Fix: Open /claude2bot setup and update Channels & Access
 [WARN] Schedule "weather": prompt file not found
        Fix: Create /path/to/schedules/weather.md
 ```

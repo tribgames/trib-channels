@@ -5,7 +5,7 @@ const path = require('path');
 const RUNTIME_ROOT = path.join(os.tmpdir(), 'claude2bot');
 const ACTIVE_INSTANCE_FILE = path.join(RUNTIME_ROOT, 'active-instance.json');
 
-// Read the hook event from stdin and ignore sidechain/team stop events.
+// Read the hook event from stdin and ignore sidechain stop events only.
 let input = '';
 try {
   input = fs.readFileSync(0, 'utf8');
@@ -14,8 +14,9 @@ try {
 if (input) {
   try {
     const event = JSON.parse(input);
-    // Do not touch the main typing state for sidechain or team turns.
-    if (event.isSidechain || event.teamName) process.exit(0);
+    // teamName may also be present on the main session in team mode,
+    // so only sidechains should be filtered out here.
+    if (event.isSidechain) process.exit(0);
   } catch {}
 }
 

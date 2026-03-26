@@ -1,4 +1,5 @@
 import { mkdirSync, readFileSync, writeFileSync, readdirSync, statSync, unlinkSync } from 'fs'
+import { execFileSync } from 'child_process'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -101,6 +102,49 @@ export function refreshActiveInstance(
   }
   writeActiveInstance(next)
   return next
+}
+
+const SERVER_PID_FILE = join(
+  RUNTIME_ROOT,
+  `server-${sanitize(process.env.CLAUDE_PLUGIN_DATA ?? 'default')}.pid`,
+)
+
+function looksLikeClaude2BotServer(pid: number): boolean {
+  if (process.platform === 'win32') return true
+  try {
+    const cmd = execFileSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8' }).trim()
+    const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT ?? ''
+    return Boolean(cmd) && (
+      cmd.includes('claude2bot') ||
+      (pluginRoot && cmd.includes(pluginRoot)) ||
+      cmd.includes('tsx server.ts')
+    )
+  } catch {
+    return false
+  }
+}
+
+export function killPreviousServer(): void {
+  try {
+    const oldPid = parseInt(readFileSync(SERVER_PID_FILE, 'utf8').trim(), 10)
+    if (oldPid && oldPid !== process.pid) {
+      try { process.kill(oldPid, 0) } catch { return }
+      if (!looksLikeClaude2BotServer(oldPid)) return
+      try { process.kill(oldPid, 'SIGTERM') } catch { /* ignore */ }
+    }
+  } catch { /* no pid file = first run */ }
+}
+
+export function writeServerPid(): void {
+  ensureRuntimeDirs()
+  writeFileSync(SERVER_PID_FILE, String(process.pid))
+}
+
+export function clearServerPid(): void {
+  try {
+    const current = readFileSync(SERVER_PID_FILE, 'utf8').trim()
+    if (current === String(process.pid)) unlinkSync(SERVER_PID_FILE)
+  } catch { /* ignore */ }
 }
 
 export function cleanupStaleRuntimeFiles(now = Date.now()): void {

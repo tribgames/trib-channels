@@ -26,11 +26,15 @@ import { OutputForwarder, discoverTranscriptPath } from './lib/output-forwarder.
 import { controlClaudeSession } from './lib/session-control.js'
 import {
   ensureRuntimeDirs,
+  clearServerPid,
+  killPreviousServer,
+  writeServerPid,
   makeInstanceId,
   getTurnEndPath,
   getStatusPath,
   getPermissionResultPath,
   getChannelOwnerPath,
+  readActiveInstance,
   refreshActiveInstance,
   cleanupStaleRuntimeFiles,
   cleanupInstanceRuntimeFiles,
@@ -56,6 +60,9 @@ const backend = createBackend(config)
 const settings = loadSettings(config.contextFiles)
 const INSTANCE_ID = makeInstanceId()
 ensureRuntimeDirs()
+killPreviousServer()
+writeServerPid()
+process.on('exit', clearServerPid)
 cleanupStaleRuntimeFiles()
 
 // ── Instructions ───────────────────────────────────────────────────────
@@ -815,12 +822,47 @@ backend.onInteraction = (interaction: any) => {
 
 // ── Slash command handling ────────────────────────────────────────────
 
+async function refreshSlashSessionContext(
+  channelId: string,
+  mode: 'same' | 'new' = 'same',
+): Promise<void> {
+  const previousPath = readActiveInstance()?.transcriptPath ?? ''
+
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const transcriptPath = discoverTranscriptPath()
+    const acceptable =
+      transcriptPath &&
+      (mode === 'same' || !previousPath || transcriptPath !== previousPath)
+
+    if (acceptable) {
+      forwarder.setContext(channelId, transcriptPath)
+      forwarder.startWatch()
+      refreshActiveInstance(INSTANCE_ID, { channelId, transcriptPath })
+      const state: Record<string, any> = {}
+      try { Object.assign(state, JSON.parse(fs.readFileSync(STATUS_FILE, 'utf8'))) } catch {}
+      state.channelId = channelId
+      state.transcriptPath = transcriptPath
+      try { fs.writeFileSync(STATUS_FILE, JSON.stringify(state)) } catch {}
+      return
+    }
+
+    await new Promise(resolve => setTimeout(resolve, 150))
+  }
+
+  if (previousPath) {
+    forwarder.setContext(channelId, previousPath)
+    forwarder.startWatch()
+    refreshActiveInstance(INSTANCE_ID, { channelId, transcriptPath: previousPath })
+  }
+}
+
 const slashCtx: SlashCommandContext = {
   config,
   scheduler,
   instanceId: INSTANCE_ID,
   turnEndFile: TURN_END_FILE,
   reloadRuntimeConfig,
+  refreshSessionContext: refreshSlashSessionContext,
   notify: (channelId: string, user: string, text: string) => {
     void mcp.notification({
       method: 'notifications/claude/channel',
@@ -1434,6 +1476,7 @@ function shutdown(): void {
   try { controlWorker?.kill() } catch {}
   releaseOwnedChannelLocks(INSTANCE_ID)
   clearActiveInstance(INSTANCE_ID)
+  clearServerPid()
   cleanupInstanceRuntimeFiles(INSTANCE_ID)
   void backend.disconnect().finally(() => process.exit(0))
 }

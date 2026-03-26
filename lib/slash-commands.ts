@@ -7,9 +7,8 @@
 
 import { REST, Routes, SlashCommandBuilder } from 'discord.js'
 import type { ChatInputCommandInteraction, Client } from 'discord.js'
-import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'fs'
+import { readFileSync, existsSync } from 'fs'
 import { join } from 'path'
-import { readActiveInstance } from './runtime-paths.js'
 import type { PluginConfig } from '../backends/types.js'
 import type { Scheduler } from './scheduler.js'
 import { DATA_DIR } from './config.js'
@@ -20,8 +19,6 @@ import { controlClaudeSession } from './session-control.js'
 // ── Constants ────────────────────────────────────────────────────────
 
 const EMBED_COLOR = 0x5865F2 // Discord blurple
-
-interface EmbedField { name: string; value: string; inline: boolean }
 
 // ── i18n ─────────────────────────────────────────────────────────────
 
@@ -45,10 +42,6 @@ function getConfigLang(): Lang | null {
   return null
 }
 
-function invalidateConfigLangCache(): void {
-  configLangCache = undefined
-}
-
 function getLang(locale: string): Lang {
   const override = getConfigLang()
   if (override) return override
@@ -59,247 +52,36 @@ function getLang(locale: string): Lang {
 }
 
 const i18n: Record<string, Record<Lang, string>> = {
-  // stop
-  'stop.not_found': {
-    en: 'Parent process not found.',
-    ko: 'Parent process not found.',
-    ja: '親プロセスが見つかりません。',
-    zh: '找不到父进程。',
+  'session.command_forwarded': {
+    en: 'Forwarded `{command}` to the Claude session. The result will appear in the channel.',
+    ko: 'Claude 세션에 `{command}` 요청을 전달했습니다. 결과는 채널에 표시됩니다.',
+    ja: 'Claude セッションに`{command}`を転送しました。結果はチャンネルに表示されます。',
+    zh: '已将`{command}`转发到 Claude 会话。结果会显示在频道中。',
   },
-  'stop.sent': {
-    en: 'SIGINT sent (PID: {pid})',
-    ko: 'SIGINT sent (PID: {pid})',
-    ja: 'SIGINT送信完了 (PID: {pid})',
-    zh: '已发送SIGINT (PID: {pid})',
-  },
-  'stop.failed': {
-    en: 'Failed to send SIGINT: {error}',
-    ko: 'SIGINT failed: {error}',
-    ja: 'SIGINT送信失敗: {error}',
-    zh: '发送SIGINT失败: {error}',
-  },
-  // status
-  'status.checking': {
-    en: 'Checking status...',
-    ko: 'Checking status...',
-    ja: 'ステータス確認中...',
-    zh: '正在检查状态...',
-  },
-  'status.started': {
-    en: 'Started',
-    ko: 'Start Time',
-    ja: '開始時間',
-    zh: '启动时间',
-  },
-  // config
-  'config.loading': {
-    en: 'Loading config...',
-    ko: 'Loading config...',
-    ja: '設定を読み込み中...',
-    zh: '正在加载配置...',
-  },
-  // model
   'model.switched': {
     en: 'Model switch request: **{model}** (forwarded to session)',
     ko: 'Model switch requested: **{model}** (forwarded to session)',
     ja: 'モデル切替リクエスト: **{model}** (セッションに転送済み)',
     zh: '模型切换请求: **{model}** (已转发到会话)',
   },
-  // compact
   'compact.forwarded': {
     en: 'Compact request forwarded to session.',
     ko: 'Context compact request forwarded to session.',
     ja: '圧縮リクエストをセッションに転送しました。',
     zh: '压缩请求已转发到会话。',
   },
-  // clear
   'clear.forwarded': {
     en: 'Clear request forwarded to session.',
     ko: 'Clear request forwarded to session.',
     ja: 'クリアリクエストをセッションに転送しました。',
     zh: '清除请求已转发到会话。',
   },
-  // new
   'new.forwarded': {
     en: 'New session request forwarded to session.',
     ko: 'New session request forwarded to session.',
     ja: '新しいセッションリクエストをセッションに転送しました。',
     zh: '新建会话请求已转发到会话。',
   },
-  // resume
-  'resume.forwarded': {
-    en: 'Resume request forwarded to session.',
-    ko: 'Resume request forwarded to session.',
-    ja: 'セッション再開リクエストを転送しました。',
-    zh: '恢复会话请求已转发到会话。',
-  },
-  // schedule
-  'schedule.no_schedules': {
-    en: 'No schedules registered.',
-    ko: 'No schedules registered.',
-    ja: '登録済みスケジュールはありません。',
-    zh: '没有已注册的计划。',
-  },
-  'schedule.name_required_remove': {
-    en: 'Please specify a schedule name. (`/claude schedule remove [name]`)',
-    ko: 'Please specify schedule name. (`/claude schedule remove [name]`)',
-    ja: 'スケジュール名を指定してください。(`/claude schedule remove [name]`)',
-    zh: '请指定计划名称。(`/claude schedule remove [name]`)',
-  },
-  'schedule.name_required_add': {
-    en: 'Please specify a schedule name. (`/claude schedule add [name]`)',
-    ko: 'Please specify schedule name. (`/claude schedule add [name]`)',
-    ja: 'スケジュール名を指定してください。(`/claude schedule add [name]`)',
-    zh: '请指定计划名称。(`/claude schedule add [name]`)',
-  },
-  'schedule.not_found': {
-    en: 'Schedule "{name}" not found.',
-    ko: 'Schedule "{name}" not found.',
-    ja: 'スケジュール「{name}」が見つかりません。',
-    zh: '找不到计划「{name}」。',
-  },
-  'schedule.removed': {
-    en: 'Schedule "{name}" removed (effective from next tick).',
-    ko: 'Schedule "{name}" deleted (effective next tick).',
-    ja: 'スケジュール「{name}」を削除しました (次のティックから適用)。',
-    zh: '计划「{name}」已删除 (下次执行时生效)。',
-  },
-  'schedule.remove_failed': {
-    en: 'Remove failed: {error}',
-    ko: 'Delete failed: {error}',
-    ja: '削除失敗: {error}',
-    zh: '删除失败: {error}',
-  },
-  'schedule.add_missing_options': {
-    en: 'Missing required options. Usage: `/claude schedule add name:<name> time:<HH:MM> channel:<label> prompt:<text>`',
-    ko: 'Required options missing. Usage: `/claude schedule add name:<name> time:<HH:MM> channel:<channel> prompt:<text>`',
-    ja: '必須オプションが不足しています。使い方: `/claude schedule add name:<名前> time:<HH:MM> channel:<チャンネル> prompt:<テキスト>`',
-    zh: '缺少必填选项。用法: `/claude schedule add name:<名称> time:<HH:MM> channel:<频道> prompt:<文本>`',
-  },
-  'schedule.already_exists': {
-    en: 'Schedule "{name}" already exists.',
-    ko: 'Schedule "{name}" already exists.',
-    ja: 'スケジュール「{name}」は既に存在します。',
-    zh: '计划「{name}」已存在。',
-  },
-  'schedule.added': {
-    en: 'Schedule "{name}" added (time: {time}, channel: {channel}). Prompt saved to {name}.md.',
-    ko: 'Schedule "{name}" added (time: {time}, channel: {channel}). Prompt saved to {name}.md.',
-    ja: 'スケジュール「{name}」を追加しました (時間: {time}, チャンネル: {channel})。プロンプトを{name}.mdに保存しました。',
-    zh: '计划「{name}」已添加 (时间: {time}, 频道: {channel})。提示已保存到{name}.md。',
-  },
-  'schedule.add_failed': {
-    en: 'Add failed: {error}',
-    ko: 'Add failed: {error}',
-    ja: '追加失敗: {error}',
-    zh: '添加失败: {error}',
-  },
-  'schedule.restarted': {
-    en: 'Scheduler restarted.',
-    ko: 'Scheduler restarted.',
-    ja: 'スケジューラーを再起動しました。',
-    zh: '调度器已重启。',
-  },
-  // doctor
-  'doctor.config_exists': {
-    en: '[PASS] Config file exists',
-    ko: '[PASS] Config file exists',
-    ja: '[PASS] 設定ファイルあり',
-    zh: '[PASS] 配置文件存在',
-  },
-  'doctor.config_missing': {
-    en: '[FAIL] Config file missing',
-    ko: '[FAIL] Config file missing',
-    ja: '[FAIL] 設定ファイルなし',
-    zh: '[FAIL] 配置文件缺失',
-  },
-  'doctor.token_ok': {
-    en: '[PASS] Bot token configured',
-    ko: '[PASS] Bot token configured',
-    ja: '[PASS] ボットトークン設定済み',
-    zh: '[PASS] 机器人令牌已配置',
-  },
-  'doctor.token_missing': {
-    en: '[FAIL] Bot token missing',
-    ko: '[FAIL] Bot token missing',
-    ja: '[FAIL] ボットトークンなし',
-    zh: '[FAIL] 机器人令牌缺失',
-  },
-  'doctor.access_parse_failed': {
-    en: '[WARN] access.json parse failed',
-    ko: '[WARN] access.json parse failed',
-    ja: '[WARN] access.json解析失敗',
-    zh: '[WARN] access.json解析失败',
-  },
-  'doctor.access_missing': {
-    en: '[WARN] access.json missing -- configure with /claude2bot:access',
-    ko: '[WARN] access.json missing -- configure via /claude2bot:access',
-    ja: '[WARN] access.jsonなし -- /claude2bot:accessで設定',
-    zh: '[WARN] access.json缺失 -- 使用/claude2bot:access配置',
-  },
-  'doctor.channels_not_set': {
-    en: '[WARN] channelsConfig not set',
-    ko: '[WARN] channelsConfig not set',
-    ja: '[WARN] channelsConfig未設定',
-    zh: '[WARN] channelsConfig未设置',
-  },
-  'doctor.voice_enabled': {
-    en: '[INFO] Voice enabled',
-    ko: '[INFO] Voice enabled',
-    ja: '[INFO] 音声有効',
-    zh: '[INFO] 语音已启用',
-  },
-  // language
-  'language.set': {
-    en: 'Language set to English.',
-    ko: 'Language set to Korean.',
-    ja: '言語が日本語に設定されました。',
-    zh: '语言已设置为中文。',
-  },
-  // access
-  'access.title': {
-    en: '**Access Control Status**',
-    ko: '**Access Control Status**',
-    ja: '**アクセス制御状態**',
-    zh: '**访问控制状态**',
-  },
-  'access.dm_policy': {
-    en: 'DM Policy: `{policy}`',
-    ko: 'DM policy: `{policy}`',
-    ja: 'DMポリシー: `{policy}`',
-    zh: 'DM策略: `{policy}`',
-  },
-  'access.allow_from': {
-    en: 'Allowed Users: {count}',
-    ko: 'Allowed users: {count}',
-    ja: '許可ユーザー: {count}人',
-    zh: '允许的用户: {count}人',
-  },
-  'access.channels': {
-    en: 'Registered Channels: {count}',
-    ko: 'Registered channels: {count}',
-    ja: '登録チャンネル: {count}個',
-    zh: '已注册频道: {count}个',
-  },
-  'access.pending': {
-    en: 'Pending Pairings: {count}',
-    ko: 'Pending pairings: {count}',
-    ja: '保留中のペアリング: {count}件',
-    zh: '待处理配对: {count}个',
-  },
-  'access.not_found': {
-    en: 'access.json not found. Configure with `/claude2bot:access`.',
-    ko: 'access.json not found. Configure via `/claude2bot:access`.',
-    ja: 'access.jsonが見つかりません。`/claude2bot:access`で設定してください。',
-    zh: '找不到access.json。请使用`/claude2bot:access`配置。',
-  },
-  'access.parse_failed': {
-    en: 'Failed to parse access.json: {error}',
-    ko: 'access.json parse failed: {error}',
-    ja: 'access.json解析失敗: {error}',
-    zh: 'access.json解析失败: {error}',
-  },
-  // common
   'unknown_command': {
     en: 'Unknown command: {cmd}',
     ko: 'Unknown command: {cmd}',
@@ -329,6 +111,8 @@ export interface SlashCommandContext {
   instanceId: string
   turnEndFile: string
   reloadRuntimeConfig: () => void
+  /** Re-discover and rebind the current transcript/session context for a channel */
+  refreshSessionContext: (channelId: string, mode?: 'same' | 'new') => Promise<void>
   /** Inject a command into the MCP session as a notification */
   notify: NotifyFn
   /** The MCP server's process (for stop command) */
@@ -337,7 +121,7 @@ export interface SlashCommandContext {
 
 // ── Command definitions ──────────────────────────────────────────────
 
-function buildCommands(): SlashCommandBuilder {
+function buildClaudeCommand(): SlashCommandBuilder {
   const claude = new SlashCommandBuilder()
     .setName('claude')
     .setDescription('Claude Code session control')
@@ -373,6 +157,19 @@ function buildCommands(): SlashCommandBuilder {
         'zh-TW': '查看工作階段狀態',
         'pt-BR': 'Ver status da sessao',
         'es-ES': 'Ver estado de la sesion',
+      }),
+  )
+
+  // /claude usage
+  claude.addSubcommand(sub =>
+    sub.setName('usage').setDescription('Show session usage')
+      .setDescriptionLocalizations({
+        ko: '세션 사용량 보기',
+        ja: 'セッション使用量を表示',
+        'zh-CN': '查看会话使用量',
+        'zh-TW': '查看工作階段使用量',
+        'pt-BR': 'Ver uso da sessao',
+        'es-ES': 'Ver uso de la sesion',
       }),
   )
 
@@ -482,259 +279,59 @@ function buildCommands(): SlashCommandBuilder {
       ),
   )
 
-  // /claude language [lang]
-  claude.addSubcommand(sub =>
-    sub
-      .setName('language')
-      .setDescription('Set display language')
-      .setDescriptionLocalizations({
-        ko: '표시 언어 설정',
-        ja: '表示言語を設定',
-        'zh-CN': '设置显示语言',
-        'zh-TW': '設定顯示語言',
-        'pt-BR': 'Definir idioma',
-        'es-ES': 'Establecer idioma',
-      })
-      .addStringOption(opt => opt
-        .setName('lang')
-        .setDescription('Language')
-        .setRequired(true)
-        .addChoices(
-          { name: 'English', value: 'en' },
-          { name: 'Korean', value: 'ko' },
-          { name: '日本語', value: 'ja' },
-          { name: '中文', value: 'zh' },
-        )
-      ),
-  )
-
-  // /claude resume
-  claude.addSubcommand(sub =>
-    sub.setName('resume').setDescription('Resume previous session')
-      .setDescriptionLocalizations({
-        ko: '이전 세션 이어하기',
-        ja: '前のセッションを再開',
-        'zh-CN': '恢复上一个会话',
-        'zh-TW': '恢復上一個工作階段',
-        'pt-BR': 'Retomar sessao anterior',
-        'es-ES': 'Reanudar sesion anterior',
-      }),
-  )
-
-  // /claude schedule [action]
-  claude.addSubcommand(sub =>
-    sub
-      .setName('schedule')
-      .setDescription('Manage schedules')
-      .setDescriptionLocalizations({
-        ko: '스케줄 관리',
-        ja: 'スケジュール管理',
-        'zh-CN': '管理计划任务',
-        'zh-TW': '管理排程任務',
-        'pt-BR': 'Gerenciar agendamentos',
-        'es-ES': 'Gestionar programaciones',
-      })
-      .addStringOption(opt =>
-        opt
-          .setName('action')
-          .setDescription('Action to perform')
-          .setDescriptionLocalizations({
-            ko: '수행할 작업',
-            ja: '実行するアクション',
-            'zh-CN': '要执行的操作',
-            'zh-TW': '要執行的操作',
-            'pt-BR': 'Acao a realizar',
-            'es-ES': 'Accion a realizar',
-          })
-          .setRequired(true)
-          .addChoices(
-            { name: 'list', value: 'list' },
-            { name: 'add', value: 'add' },
-            { name: 'remove', value: 'remove' },
-            { name: 'restart', value: 'restart' },
-          ),
-      )
-      .addStringOption(opt =>
-        opt
-          .setName('name')
-          .setDescription('Schedule name (required for add/remove)')
-          .setDescriptionLocalizations({
-            ko: '스케줄 이름 (add/remove 시 필수)',
-            ja: 'スケジュール名 (add/remove時必須)',
-            'zh-CN': '计划名称 (add/remove时必填)',
-            'zh-TW': '排程名稱 (add/remove時必填)',
-            'pt-BR': 'Nome do agendamento (obrigatorio para add/remove)',
-            'es-ES': 'Nombre de programacion (requerido para add/remove)',
-          })
-          .setRequired(false),
-      )
-      .addStringOption(opt =>
-        opt
-          .setName('time')
-          .setDescription('Time in HH:MM format (required for add)')
-          .setDescriptionLocalizations({
-            ko: 'HH:MM 형식 시간 (add 시 필수)',
-            ja: 'HH:MM形式の時間 (add時必須)',
-            'zh-CN': 'HH:MM格式时间 (add时必填)',
-            'zh-TW': 'HH:MM格式時間 (add時必填)',
-            'pt-BR': 'Horario no formato HH:MM (obrigatorio para add)',
-            'es-ES': 'Hora en formato HH:MM (requerido para add)',
-          })
-          .setRequired(false),
-      )
-      .addStringOption(opt =>
-        opt
-          .setName('channel')
-          .setDescription('Target channel label (required for add)')
-          .setDescriptionLocalizations({
-            ko: '대상 채널 라벨 (add 시 필수)',
-            ja: '対象チャンネルラベル (add時必須)',
-            'zh-CN': '目标频道标签 (add时必填)',
-            'zh-TW': '目標頻道標籤 (add時必填)',
-            'pt-BR': 'Rotulo do canal alvo (obrigatorio para add)',
-            'es-ES': 'Etiqueta del canal destino (requerido para add)',
-          })
-          .setRequired(false),
-      )
-      .addStringOption(opt =>
-        opt
-          .setName('prompt')
-          .setDescription('Prompt text for the schedule (required for add)')
-          .setDescriptionLocalizations({
-            ko: '스케줄 프롬프트 텍스트 (add 시 필수)',
-            ja: 'スケジュールのプロンプト (add時必須)',
-            'zh-CN': '计划任务的提示文本 (add时必填)',
-            'zh-TW': '排程任務的提示文本 (add時必填)',
-            'pt-BR': 'Texto do prompt do agendamento (obrigatorio para add)',
-            'es-ES': 'Texto del prompt de programacion (requerido para add)',
-          })
-          .setRequired(false),
-      )
-      .addStringOption(opt =>
-        opt
-          .setName('mode')
-          .setDescription('Schedule mode (default: interactive)')
-          .setDescriptionLocalizations({
-            ko: '스케줄 모드 (기본: interactive)',
-            ja: 'スケジュールモード (デフォルト: interactive)',
-            'zh-CN': '计划模式 (默认: interactive)',
-            'zh-TW': '排程模式 (預設: interactive)',
-            'pt-BR': 'Modo do agendamento (padrao: interactive)',
-            'es-ES': 'Modo de programacion (predeterminado: interactive)',
-          })
-          .setRequired(false)
-          .addChoices(
-            { name: 'interactive', value: 'interactive' },
-            { name: 'non-interactive', value: 'non-interactive' },
-          ),
-      ),
-  )
-
-  // /claude access
-  claude.addSubcommand(sub =>
-    sub.setName('access').setDescription('Show access control status')
-      .setDescriptionLocalizations({
-        ko: '접근 제어 상태 확인',
-        ja: 'アクセス制御状態を表示',
-        'zh-CN': '查看访问控制状态',
-        'zh-TW': '查看存取控制狀態',
-        'pt-BR': 'Mostrar controle de acesso',
-        'es-ES': 'Mostrar control de acceso',
-      }),
-  )
-
-  // /claude doctor
-  claude.addSubcommand(sub =>
-    sub.setName('doctor').setDescription('System diagnostics')
-      .setDescriptionLocalizations({
-        ko: '시스템 진단',
-        ja: 'システム診断',
-        'zh-CN': '系统诊断',
-        'zh-TW': '系統診斷',
-        'pt-BR': 'Diagnostico do sistema',
-        'es-ES': 'Diagnostico del sistema',
-      }),
-  )
-
-  // /claude help
-  claude.addSubcommand(sub =>
-    sub.setName('help').setDescription('Show available commands')
-      .setDescriptionLocalizations({
-        ko: '도움말',
-        ja: 'ヘルプ',
-        'zh-CN': '帮助',
-        'zh-TW': '說明',
-        'pt-BR': 'Mostrar comandos disponiveis',
-        'es-ES': 'Mostrar comandos disponibles',
-      }),
-  )
-
-  // /claude bot (subcommand group)
-  claude.addSubcommandGroup(group =>
-    group.setName('bot').setDescription('Bot settings')
-      .setDescriptionLocalizations({
-        ko: '봇 설정',
-        ja: 'ボット設定',
-        'zh-CN': '机器人设置',
-        'zh-TW': '機器人設定',
-      })
-      .addSubcommand(sub =>
-        sub.setName('status').setDescription('Bot status overview')
-          .setDescriptionLocalizations({
-            ko: '봇 상태 개요',
-            ja: 'ボットステータス',
-            'zh-CN': '机器人状态概览',
-            'zh-TW': '機器人狀態概覽',
-          }),
-      )
-      .addSubcommand(sub =>
-        sub.setName('schedule').setDescription('Schedule management')
-          .setDescriptionLocalizations({
-            ko: '스케줄 관리',
-            ja: 'スケジュール管理',
-            'zh-CN': '计划管理',
-            'zh-TW': '排程管理',
-          }),
-      )
-      .addSubcommand(sub =>
-        sub.setName('autotalk').setDescription('Autonomous chat settings')
-          .setDescriptionLocalizations({
-            ko: '자율 대화 설정',
-            ja: '自律チャット設定',
-            'zh-CN': '自主聊天设置',
-            'zh-TW': '自主聊天設定',
-          }),
-      )
-      .addSubcommand(sub =>
-        sub.setName('quiet').setDescription('Do not disturb settings')
-          .setDescriptionLocalizations({
-            ko: '방해금지 설정',
-            ja: 'おやすみモード設定',
-            'zh-CN': '免打扰设置',
-            'zh-TW': '勿擾設定',
-          }),
-      )
-      .addSubcommand(sub =>
-        sub.setName('activity').setDescription('Activity channels')
-          .setDescriptionLocalizations({
-            ko: '활동 채널 목록',
-            ja: 'アクティビティチャンネル',
-            'zh-CN': '活动频道',
-            'zh-TW': '活動頻道',
-          }),
-      )
-      .addSubcommand(sub =>
-        sub.setName('profile').setDescription('User profile')
-          .setDescriptionLocalizations({
-            ko: '사용자 프로필',
-            ja: 'ユーザープロフィール',
-            'zh-CN': '用户资料',
-            'zh-TW': '使用者個人資料',
-          }),
-      ),
-  )
-
   return claude
+}
+
+function buildClaude2BotCommand(): SlashCommandBuilder {
+  const claude2bot = new SlashCommandBuilder()
+    .setName('claude2bot')
+    .setDescription('claude2bot setup and operations')
+    .setDescriptionLocalizations({
+      ko: 'claude2bot 설정 및 운영',
+      ja: 'claude2bot の設定と運用',
+      'zh-CN': 'claude2bot 设置与运维',
+      'zh-TW': 'claude2bot 設定與操作',
+      'pt-BR': 'Configuracao e operacao do claude2bot',
+      'es-ES': 'Configuracion y operacion de claude2bot',
+    })
+
+  claude2bot.addSubcommand(sub =>
+    sub.setName('setup').setDescription('Open the claude2bot setup dashboard')
+      .setDescriptionLocalizations({
+        ko: 'claude2bot 설정 대시보드 열기',
+        ja: 'claude2bot 設定ダッシュボードを開く',
+        'zh-CN': '打开 claude2bot 设置面板',
+        'zh-TW': '開啟 claude2bot 設定面板',
+        'pt-BR': 'Abrir painel de configuracao do claude2bot',
+        'es-ES': 'Abrir panel de configuracion de claude2bot',
+      }),
+  )
+
+  claude2bot.addSubcommand(sub =>
+    sub.setName('schedule').setDescription('Open claude2bot schedule management')
+      .setDescriptionLocalizations({
+        ko: 'claude2bot 스케줄 관리 열기',
+        ja: 'claude2bot スケジュール管理を開く',
+        'zh-CN': '打开 claude2bot 计划管理',
+        'zh-TW': '開啟 claude2bot 排程管理',
+        'pt-BR': 'Abrir gerenciamento de agendamentos do claude2bot',
+        'es-ES': 'Abrir gestion de programaciones de claude2bot',
+      }),
+  )
+
+  claude2bot.addSubcommand(sub =>
+    sub.setName('doctor').setDescription('Run claude2bot diagnostics')
+      .setDescriptionLocalizations({
+        ko: 'claude2bot 진단 실행',
+        ja: 'claude2bot 診断を実行',
+        'zh-CN': '运行 claude2bot 诊断',
+        'zh-TW': '執行 claude2bot 診斷',
+        'pt-BR': 'Executar diagnostico do claude2bot',
+        'es-ES': 'Ejecutar diagnostico de claude2bot',
+      }),
+  )
+
+  return claude2bot
 }
 
 // ── Registration ─────────────────────────────────────────────────────
@@ -742,7 +339,7 @@ function buildCommands(): SlashCommandBuilder {
 export async function registerSlashCommands(client: Client, token: string): Promise<void> {
   if (!client.user) return
   const rest = new REST({ version: '10' }).setToken(token)
-  const commands = [buildCommands().toJSON()]
+  const commands = [buildClaudeCommand().toJSON(), buildClaude2BotCommand().toJSON()]
 
   // Fetch guilds if the local cache is empty.
   let guilds = client.guilds.cache
@@ -781,10 +378,8 @@ export async function handleSlashCommand(
   interaction: ChatInputCommandInteraction,
   ctx: SlashCommandContext,
 ): Promise<void> {
-  // Check for subcommand group first (e.g. /claude bot status)
-  const group = interaction.options.getSubcommandGroup(false)
-  if (group === 'bot') {
-    return handleBotSub(interaction, ctx)
+  if (interaction.commandName === 'claude2bot') {
+    return handleClaude2BotCommand(interaction, ctx)
   }
 
   const sub = interaction.options.getSubcommand()
@@ -792,59 +387,12 @@ export async function handleSlashCommand(
   switch (sub) {
     case 'stop':
       return handleStop(interaction, ctx)
-    case 'status': {
-      let desc = ''
-      try {
-        const inst = readActiveInstance()
-        if (inst) {
-          const lines: string[] = []
-          lines.push(`**Instance** ${inst.instanceId}`)
-          lines.push(`**PID** ${inst.pid}`)
-          if (inst.channelId) lines.push(`**Channel** <#${inst.channelId}>`)
-          const uptime = Date.now() - inst.startedAt
-          const mins = Math.floor(uptime / 60000)
-          lines.push(`**Uptime** ${mins < 60 ? `${mins}m` : `${Math.floor(mins / 60)}h ${mins % 60}m`}`)
-          // try to extract model from transcript last lines
-          if (inst.transcriptPath && existsSync(inst.transcriptPath)) {
-            try {
-              const raw = readFileSync(inst.transcriptPath, 'utf-8')
-              const jsonLines = raw.trim().split('\n')
-              for (let i = jsonLines.length - 1; i >= Math.max(0, jsonLines.length - 20); i--) {
-                try {
-                  const entry = JSON.parse(jsonLines[i])
-                  const model = entry.model ?? entry.message?.model
-                  if (model) {
-                    lines.push(`**Model** ${model}`)
-                    break
-                  }
-                } catch { /* skip non-json lines */ }
-              }
-            } catch { /* transcript read error */ }
-          }
-          desc = lines.join('\n')
-        }
-      } catch { /* graceful fallback */ }
-      if (!desc) desc = 'session data unavailable'
-      await interaction.reply({ embeds: [{ description: desc, color: EMBED_COLOR }], flags: 64 })
-      return
-    }
-    case 'config': {
-      const chCount = Object.keys(ctx.config.channelsConfig?.channels ?? {}).length
-      const mainCh = ctx.config.channelsConfig?.main || 'general'
-      const niCount = (ctx.config.nonInteractive ?? []).length
-      const iCount = (ctx.config.interactive ?? []).length
-      const proactive = ctx.config.proactive
-      const voice = ctx.config.voice
-      const lines: string[] = [
-        `**Backend** ${ctx.config.backend}`,
-        `**Schedules** ${niCount} non-interactive, ${iCount} interactive`,
-        `**Proactive** ${proactive ? `freq=${proactive.frequency}, ${proactive.items?.length ?? 0} topic(s)` : 'Disabled'}`,
-        `**Voice** ${voice?.enabled ? `lang=${voice.language || 'ko'}` : 'Disabled'}`,
-        `**Channels** main="${mainCh}", ${chCount} total`,
-      ]
-      await interaction.reply({ embeds: [{ description: lines.join('\n'), color: EMBED_COLOR }], flags: 64 })
-      return
-    }
+    case 'status':
+      return handleSessionPassthrough(interaction, ctx, '/status', 'Status')
+    case 'usage':
+      return handleSessionPassthrough(interaction, ctx, '/usage', 'Usage')
+    case 'config':
+      return handleSessionPassthrough(interaction, ctx, '/config', 'Config')
     case 'model':
       return handleModel(interaction, ctx)
     case 'compact':
@@ -853,18 +401,6 @@ export async function handleSlashCommand(
       return handleClear(interaction, ctx)
     case 'new':
       return handleNew(interaction, ctx)
-    case 'language':
-      return handleLanguage(interaction, ctx)
-    case 'resume':
-      return handleResume(interaction, ctx)
-    case 'schedule':
-      return handleSchedule(interaction, ctx)
-    case 'access':
-      return handleAccess(interaction, ctx)
-    case 'doctor':
-      return handleDoctor(interaction, ctx)
-    case 'help':
-      return handleHelp(interaction)
     default:
       await interaction.reply({ content: t('unknown_command', interaction.locale, { cmd: sub }), flags: 64 })
   }
@@ -893,6 +429,23 @@ async function handleStop(
 // ── session control helper ──────────────────────────────────────────
 async function sendSessionCommand(ctx: SlashCommandContext, command: string) {
   return controlClaudeSession(ctx.instanceId, { type: 'send', text: command })
+}
+
+async function handleSessionPassthrough(
+  interaction: ChatInputCommandInteraction,
+  ctx: SlashCommandContext,
+  command: string,
+  title: string,
+): Promise<void> {
+  const result = await sendSessionCommand(ctx, command)
+  await interaction.reply({
+    embeds: [{
+      title,
+      description: result.ok ? t('session.command_forwarded', interaction.locale, { command }) : result.message,
+      color: result.ok ? EMBED_COLOR : 0xFEE75C,
+    }],
+    flags: 64,
+  })
 }
 
 async function handleModel(
@@ -930,6 +483,9 @@ async function handleClear(
   ctx: SlashCommandContext,
 ): Promise<void> {
   const result = await sendSessionCommand(ctx, '/clear')
+  if (result.ok) {
+    await ctx.refreshSessionContext(interaction.channelId, 'same')
+  }
   await interaction.reply({ embeds: [{ title: 'Clear', description: result.ok ? t('clear.forwarded', interaction.locale) : result.message, color: result.ok ? EMBED_COLOR : 0xFEE75C }], flags: 64 })
 }
 
@@ -938,185 +494,10 @@ async function handleNew(
   ctx: SlashCommandContext,
 ): Promise<void> {
   const result = await sendSessionCommand(ctx, '/new')
+  if (result.ok) {
+    await ctx.refreshSessionContext(interaction.channelId, 'new')
+  }
   await interaction.reply({ embeds: [{ title: 'New Session', description: result.ok ? t('new.forwarded', interaction.locale) : result.message, color: result.ok ? EMBED_COLOR : 0xFEE75C }], flags: 64 })
-}
-
-async function handleResume(
-  interaction: ChatInputCommandInteraction,
-  ctx: SlashCommandContext,
-): Promise<void> {
-  const result = await sendSessionCommand(ctx, '/resume')
-  await interaction.reply({ embeds: [{ title: 'Resume', description: result.ok ? t('resume.forwarded', interaction.locale) : result.message, color: result.ok ? EMBED_COLOR : 0xFEE75C }], flags: 64 })
-}
-
-async function handleLanguage(
-  interaction: ChatInputCommandInteraction,
-  ctx: SlashCommandContext,
-): Promise<void> {
-  const lang = interaction.options.getString('lang', true) as Lang
-  try {
-    const configPath = join(DATA_DIR, 'config.json')
-    const config = JSON.parse(readFileSync(configPath, 'utf8'))
-    config.language = lang
-    writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n')
-    invalidateConfigLangCache()
-    ctx.reloadRuntimeConfig()
-    await interaction.reply({ embeds: [{ title: 'Language', description: t('language.set', lang), color: EMBED_COLOR }], flags: 64 })
-  } catch (err) {
-    await interaction.reply({
-      embeds: [{ title: 'Language', description: `Failed: ${err instanceof Error ? err.message : String(err)}`, color: 0xED4245 }],
-      flags: 64,
-    })
-  }
-}
-
-async function handleAccess(
-  interaction: ChatInputCommandInteraction,
-  ctx: SlashCommandContext,
-): Promise<void> {
-  const locale = interaction.locale
-  const stateDir = ctx.config.discord?.stateDir ?? join(DATA_DIR, 'discord')
-  const accessPath = join(stateDir, 'access.json')
-
-  if (!existsSync(accessPath)) {
-    await interaction.reply({ embeds: [{ title: 'Access', description: t('access.not_found', locale), color: 0xFEE75C }], flags: 64 })
-    return
-  }
-
-  try {
-    const access = JSON.parse(readFileSync(accessPath, 'utf8'))
-    const dmPolicy = access.dmPolicy ?? 'deny'
-    const userCount = (access.allowFrom ?? []).length
-    const chCount = Object.keys(access.channels ?? {}).length
-    const pendingCount = Object.keys(access.pending ?? {}).length
-
-    const desc = [
-      `**DM Policy** ${dmPolicy}`,
-      `**Allowed Users** ${userCount}`,
-      `**Channels** ${chCount}`,
-      `**Pending** ${pendingCount}`,
-    ].join('\n')
-    await interaction.reply({ embeds: [{ description: desc, color: EMBED_COLOR }], flags: 64 })
-  } catch (err) {
-    await interaction.reply({
-      embeds: [{ title: 'Access', description: t('access.parse_failed', locale, { error: err instanceof Error ? err.message : String(err) }), color: 0xED4245 }],
-      flags: 64,
-    })
-  }
-}
-
-async function handleSchedule(
-  interaction: ChatInputCommandInteraction,
-  ctx: SlashCommandContext,
-): Promise<void> {
-  const action = interaction.options.getString('action', true)
-  const name = interaction.options.getString('name')
-
-  switch (action) {
-    case 'list': {
-      const statuses = ctx.scheduler.getStatus()
-      if (statuses.length === 0) {
-        await interaction.reply({ embeds: [{ title: 'Schedule', description: t('schedule.no_schedules', interaction.locale), color: 0xFEE75C }], flags: 64 })
-        return
-      }
-      const fields: EmbedField[] = statuses.map(s => {
-        const state = s.running ? ' [RUNNING]' : ''
-        const last = s.lastFired ? `\nLast: ${s.lastFired}` : ''
-        return { name: `${s.name}${state}`, value: `${s.time} ${s.days} (${s.type})${last}`, inline: false }
-      })
-      await interaction.reply({ embeds: [{ title: 'Schedule', fields, color: EMBED_COLOR }], flags: 64 })
-      return
-    }
-
-    case 'remove': {
-      if (!name) {
-        await interaction.reply({ embeds: [{ title: 'Schedule', description: t('schedule.name_required_remove', interaction.locale), color: 0xFEE75C }], flags: 64 })
-        return
-      }
-      try {
-        const configPath = join(DATA_DIR, 'config.json')
-        const config = JSON.parse(readFileSync(configPath, 'utf8')) as PluginConfig
-        let found = false
-        for (const key of ['nonInteractive', 'interactive'] as const) {
-          const arr = config[key]
-          if (!arr) continue
-          const idx = arr.findIndex(s => s.name === name)
-          if (idx >= 0) {
-            arr.splice(idx, 1)
-            found = true
-            break
-          }
-        }
-        if (!found) {
-          await interaction.reply({ embeds: [{ title: 'Schedule', description: t('schedule.not_found', interaction.locale, { name }), color: 0xFEE75C }], flags: 64 })
-          return
-        }
-        writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n')
-        ctx.reloadRuntimeConfig()
-        await interaction.reply({ embeds: [{ title: 'Schedule', description: t('schedule.removed', interaction.locale, { name }), color: 0x57F287 }], flags: 64 })
-      } catch (err) {
-        await interaction.reply({
-          embeds: [{ title: 'Schedule', description: t('schedule.remove_failed', interaction.locale, { error: err instanceof Error ? err.message : String(err) }), color: 0xED4245 }],
-          flags: 64,
-        })
-      }
-      return
-    }
-
-    case 'add': {
-      if (!name) {
-        await interaction.reply({ embeds: [{ title: 'Schedule', description: t('schedule.name_required_add', interaction.locale), color: 0xFEE75C }], flags: 64 })
-        return
-      }
-      const time = interaction.options.getString('time')
-      const channel = interaction.options.getString('channel')
-      const prompt = interaction.options.getString('prompt')
-      if (!time || !channel || !prompt) {
-        await interaction.reply({
-          embeds: [{ title: 'Schedule', description: t('schedule.add_missing_options', interaction.locale), color: 0xFEE75C }],
-          flags: 64,
-        })
-        return
-      }
-      const mode = interaction.options.getString('mode') || 'interactive'
-      try {
-        const configPath = join(DATA_DIR, 'config.json')
-        const config = JSON.parse(readFileSync(configPath, 'utf8')) as PluginConfig
-        const targetKey = mode === 'non-interactive' ? 'nonInteractive' : 'interactive'
-        if (!config[targetKey]) (config as any)[targetKey] = []
-        const targetArr = (config as any)[targetKey] as Array<any>
-        const existsI = (config.interactive ?? []).find(s => s.name === name)
-        const existsN = (config.nonInteractive ?? []).find(s => s.name === name)
-        if (existsI || existsN) {
-          await interaction.reply({ embeds: [{ title: 'Schedule', description: t('schedule.already_exists', interaction.locale, { name }), color: 0xFEE75C }], flags: 64 })
-          return
-        }
-        targetArr.push({ name, time, channel, enabled: true })
-        writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n')
-        const promptsDir = ctx.config.promptsDir ?? join(DATA_DIR, 'prompts')
-        mkdirSync(promptsDir, { recursive: true })
-        const promptPath = join(promptsDir, `${name}.md`)
-        writeFileSync(promptPath, prompt + '\n', 'utf8')
-        ctx.reloadRuntimeConfig()
-        await interaction.reply({
-          embeds: [{ title: 'Schedule', description: t('schedule.added', interaction.locale, { name, time, channel }), color: 0x57F287 }],
-          flags: 64,
-        })
-      } catch (err) {
-        await interaction.reply({
-          embeds: [{ title: 'Schedule', description: t('schedule.add_failed', interaction.locale, { error: err instanceof Error ? err.message : String(err) }), color: 0xED4245 }],
-          flags: 64,
-        })
-      }
-      return
-    }
-
-    case 'restart': {
-      ctx.reloadRuntimeConfig()
-      await interaction.reply({ embeds: [{ title: 'Schedule', description: t('schedule.restarted', interaction.locale), color: 0x57F287 }], flags: 64 })
-      return
-    }
-  }
 }
 
 async function handleDoctor(
@@ -1161,135 +542,7 @@ async function handleDoctor(
   await interaction.reply({ embeds: [{ description: lines.join('\n'), color: allPass ? 0x57F287 : 0xFEE75C }], flags: 64 })
 }
 
-// ── Help (locale-aware, embed) ───────────────────────────────────────
-
-interface HelpData { features: string; commands: string }
-
-const HELP_EN: HelpData = {
-  features: [
-    '**Chat** -- Send a message and Claude will respond. Progress shown in real time.',
-    '**Voice** -- Send a voice message for automatic transcription.',
-    '**Permissions** -- [Approve] [Session Approve] [Deny] buttons on tool use.',
-    '**Schedules** -- Auto-tasks: interactive (current session), non-interactive (separate), proactive (Claude-initiated).',
-  ].join('\n'),
-  commands: [
-    '`/claude stop` -- Stop current task',
-    '`/claude status` -- Session status',
-    '`/claude config` -- View config',
-    '`/claude model` -- Switch model',
-    '`/claude language` -- Set language',
-    '`/claude compact` -- Compact conversation',
-    '`/claude clear` -- Clear conversation',
-    '`/claude new` -- New session',
-    '`/claude resume` -- Resume session',
-    '`/claude schedule` -- Manage schedules',
-    '`/claude access` -- Access control',
-    '`/claude doctor` -- System diagnostics',
-    '`/claude bot` -- Bot settings',
-    '`/claude profile` -- User profile',
-  ].join('\n'),
-}
-
-const HELP_KO: HelpData = {
-  features: [
-    '**\uB300\uD654** -- \uCC44\uB110\uC5D0 \uBA54\uC2DC\uC9C0\uB97C \uBCF4\uB0B4\uBA74 Claude\uAC00 \uC751\uB2F5\uD569\uB2C8\uB2E4.',
-    '**\uC74C\uC131** -- \uC74C\uC131 \uBA54\uC2DC\uC9C0\uB97C \uBCF4\uB0B4\uBA74 \uC790\uB3D9 \uBCC0\uD658\uB429\uB2C8\uB2E4.',
-    '**\uAD8C\uD55C** -- \uB3C4\uAD6C \uC2E4\uD589 \uC2DC [\uC2B9\uC778] [\uC138\uC158\uC2B9\uC778] [\uAC70\uBD80] \uBC84\uD2BC\uC774 \uB098\uD0C0\uB0A9\uB2C8\uB2E4.',
-    '**\uC2A4\uCF00\uC904** -- \uC815\uD574\uC9C4 \uC2DC\uAC04\uC5D0 \uC790\uB3D9 \uC2E4\uD589\uB429\uB2C8\uB2E4.',
-  ].join('\n'),
-  commands: [
-    '`/claude stop` -- \uC791\uC5C5 \uC911\uB2E8',
-    '`/claude status` -- \uC138\uC158 \uC0C1\uD0DC',
-    '`/claude config` -- \uC124\uC815 \uD655\uC778',
-    '`/claude model` -- \uBAA8\uB378 \uC804\uD658',
-    '`/claude language` -- \uC5B8\uC5B4 \uC124\uC815',
-    '`/claude compact` -- \uB300\uD654 \uC555\uCD95',
-    '`/claude clear` -- \uB300\uD654 \uCD08\uAE30\uD654',
-    '`/claude new` -- \uC0C8 \uC138\uC158',
-    '`/claude resume` -- \uC138\uC158 \uC774\uC5B4\uD558\uAE30',
-    '`/claude schedule` -- \uC2A4\uCF00\uC904 \uAD00\uB9AC',
-    '`/claude access` -- \uC811\uADFC \uC81C\uC5B4',
-    '`/claude doctor` -- \uC2DC\uC2A4\uD15C \uC9C4\uB2E8',
-    '`/claude bot` -- \uBD07 \uC124\uC815',
-    '`/claude profile` -- \uC0AC\uC6A9\uC790 \uD504\uB85C\uD544',
-  ].join('\n'),
-}
-
-const HELP_JA: HelpData = {
-  features: [
-    '**\u30C1\u30E3\u30C3\u30C8** -- \u30E1\u30C3\u30BB\u30FC\u30B8\u3092\u9001\u308B\u3068Claude\u304C\u5FDC\u7B54\u3057\u307E\u3059\u3002',
-    '**\u97F3\u58F0** -- \u97F3\u58F0\u30E1\u30C3\u30BB\u30FC\u30B8\u3092\u9001\u308B\u3068\u81EA\u52D5\u5909\u63DB\u3055\u308C\u307E\u3059\u3002',
-    '**\u6A29\u9650** -- \u30C4\u30FC\u30EB\u5B9F\u884C\u6642\u306B[\u627F\u8A8D] [\u30BB\u30C3\u30B7\u30E7\u30F3\u627F\u8A8D] [\u62D2\u5426]\u30DC\u30BF\u30F3\u304C\u8868\u793A\u3055\u308C\u307E\u3059\u3002',
-    '**\u30B9\u30B1\u30B8\u30E5\u30FC\u30EB** -- \u8A2D\u5B9A\u3057\u305F\u6642\u9593\u306B\u81EA\u52D5\u5B9F\u884C\u3057\u307E\u3059\u3002',
-  ].join('\n'),
-  commands: [
-    '`/claude stop` -- \u30BF\u30B9\u30AF\u505C\u6B62',
-    '`/claude status` -- \u30B9\u30C6\u30FC\u30BF\u30B9',
-    '`/claude config` -- \u8A2D\u5B9A\u78BA\u8A8D',
-    '`/claude model` -- \u30E2\u30C7\u30EB\u5207\u66FF',
-    '`/claude language` -- \u8A00\u8A9E\u8A2D\u5B9A',
-    '`/claude compact` -- \u4F1A\u8A71\u5727\u7E2E',
-    '`/claude clear` -- \u4F1A\u8A71\u30AF\u30EA\u30A2',
-    '`/claude new` -- \u65B0\u30BB\u30C3\u30B7\u30E7\u30F3',
-    '`/claude resume` -- \u30BB\u30C3\u30B7\u30E7\u30F3\u518D\u958B',
-    '`/claude schedule` -- \u30B9\u30B1\u30B8\u30E5\u30FC\u30EB\u7BA1\u7406',
-    '`/claude access` -- \u30A2\u30AF\u30BB\u30B9\u5236\u5FA1',
-    '`/claude doctor` -- \u30B7\u30B9\u30C6\u30E0\u8A3A\u65AD',
-    '`/claude bot` -- \u30DC\u30C3\u30C8\u8A2D\u5B9A',
-    '`/claude profile` -- \u30D7\u30ED\u30D5\u30A3\u30FC\u30EB',
-  ].join('\n'),
-}
-
-const HELP_ZH: HelpData = {
-  features: [
-    '**\u804A\u5929** -- \u53D1\u9001\u6D88\u606F\uFF0CClaude\u4F1A\u81EA\u52A8\u56DE\u590D\u3002',
-    '**\u8BED\u97F3** -- \u53D1\u9001\u8BED\u97F3\u6D88\u606F\u4F1A\u81EA\u52A8\u8F6C\u6362\u4E3A\u6587\u5B57\u3002',
-    '**\u6743\u9650** -- \u5DE5\u5177\u6267\u884C\u65F6\u663E\u793A[\u6279\u51C6] [\u4F1A\u8BDD\u6279\u51C6] [\u62D2\u7EDD]\u6309\u94AE\u3002',
-    '**\u8BA1\u5212\u4EFB\u52A1** -- \u5728\u8BBE\u5B9A\u65F6\u95F4\u81EA\u52A8\u6267\u884C\u3002',
-  ].join('\n'),
-  commands: [
-    '`/claude stop` -- \u505C\u6B62\u4EFB\u52A1',
-    '`/claude status` -- \u72B6\u6001',
-    '`/claude config` -- \u914D\u7F6E',
-    '`/claude model` -- \u5207\u6362\u6A21\u578B',
-    '`/claude language` -- \u8BBE\u7F6E\u8BED\u8A00',
-    '`/claude compact` -- \u538B\u7F29\u5BF9\u8BDD',
-    '`/claude clear` -- \u6E05\u9664\u5BF9\u8BDD',
-    '`/claude new` -- \u65B0\u4F1A\u8BDD',
-    '`/claude resume` -- \u6062\u590D\u4F1A\u8BDD',
-    '`/claude schedule` -- \u8BA1\u5212\u7BA1\u7406',
-    '`/claude access` -- \u8BBF\u95EE\u63A7\u5236',
-    '`/claude doctor` -- \u7CFB\u7EDF\u8BCA\u65AD',
-    '`/claude bot` -- \u673A\u5668\u4EBA\u8BBE\u7F6E',
-    '`/claude profile` -- \u7528\u6237\u8D44\u6599',
-  ].join('\n'),
-}
-
-function getHelpData(lang: Lang): HelpData {
-  if (lang === 'ko') return HELP_KO
-  if (lang === 'ja') return HELP_JA
-  if (lang === 'zh') return HELP_ZH
-  return HELP_EN
-}
-
-async function handleHelp(
-  interaction: ChatInputCommandInteraction,
-): Promise<void> {
-  const help = getHelpData(getLang(interaction.locale))
-  await interaction.reply({
-    embeds: [{
-      title: '\u{2753} Help',
-      fields: [
-        { name: 'Features', value: help.features, inline: false },
-        { name: 'Commands', value: help.commands, inline: false },
-      ],
-      color: EMBED_COLOR,
-    }],
-    flags: 64,
-  })
-}
-
-// ── /claude bot & /claude profile handlers ──────────────────────────
+// ── /claude2bot handlers ─────────────────────────────────────────────
 
 /** Convert Discord locale to CommandContext lang ('ko' | 'en') */
 function getCmdLang(locale: string): 'ko' | 'en' {
@@ -1309,11 +562,11 @@ async function replyWithResult(
   await interaction.reply(payload as any)
 }
 
-async function handleBotSub(
+async function handleBotCommandArgs(
   interaction: ChatInputCommandInteraction,
   ctx: SlashCommandContext,
+  args: string[],
 ): Promise<void> {
-  const sub = interaction.options.getSubcommand(false) ?? 'status'
   const cmdCtx: CommandContext = {
     scheduler: ctx.scheduler,
     channelId: interaction.channelId,
@@ -1323,11 +576,29 @@ async function handleBotSub(
   }
   try {
     const result = await handleBotCommand(
-      { cmd: 'bot', args: [sub], params: {} },
+      { cmd: 'bot', args, params: {} },
       cmdCtx,
     )
     await replyWithResult(interaction, result)
   } catch (err) {
     await interaction.reply({ content: `Error: ${err instanceof Error ? err.message : String(err)}`, flags: 64 })
+  }
+}
+
+async function handleClaude2BotCommand(
+  interaction: ChatInputCommandInteraction,
+  ctx: SlashCommandContext,
+): Promise<void> {
+  const sub = interaction.options.getSubcommand(false) ?? 'setup'
+
+  switch (sub) {
+    case 'setup':
+      return handleBotCommandArgs(interaction, ctx, ['status'])
+    case 'schedule':
+      return handleBotCommandArgs(interaction, ctx, ['schedule', 'list'])
+    case 'doctor':
+      return handleDoctor(interaction, ctx)
+    default:
+      await interaction.reply({ content: `Unknown command: ${sub}`, flags: 64 })
   }
 }
