@@ -7,7 +7,8 @@
  * - Quoted strings preserve spaces
  */
 
-import { writeFileSync, mkdirSync } from 'fs'
+import { readFileSync, writeFileSync, mkdirSync } from 'fs'
+import { homedir } from 'os'
 import { join } from 'path'
 import { DATA_DIR, loadConfig, loadBotConfig, saveBotConfig, loadProfileConfig, saveProfileConfig } from './config.js'
 import type { PluginConfig, TimedSchedule } from '../backends/types.js'
@@ -140,6 +141,10 @@ export async function handleBotCommand(
       return handleActivity(parsed, ctx)
     case 'profile':
       return handleBotProfile(parsed, ctx)
+    case 'sleeping':
+      return handleSleeping(parsed, ctx)
+    case 'display':
+      return handleDisplay(parsed, ctx)
     case 'status':
       return handleBotStatus(ctx)
     default:
@@ -596,6 +601,101 @@ function handleQuiet(parsed: ParsedCommand, ctx: CommandContext): CommandResult 
     default:
       return { text: t('unknown_action', ctx.lang, { action }) }
   }
+}
+
+// ── /bot(sleeping, ...) ──────────────────────────────────────────────
+
+function handleSleeping(parsed: ParsedCommand, ctx: CommandContext): CommandResult {
+  const action = parsed.args[1] ?? 'status'
+
+  switch (action) {
+    case 'status': {
+      const config = readLauncherConfigFile()
+      const enabled = config?.sleepEnabled !== false
+      const time = config?.sleepTime ?? '03:00'
+
+      return {
+        embeds: [{
+          title: '\uD83D\uDE34 Sleeping Mode',
+          description: `**Status**: ${enabled ? 'ON' : 'OFF'}\n**Sleep Time**: ${time}`,
+          color: 0x5865F2,
+        }],
+        components: [{
+          type: 1,
+          components: [
+            enabled
+              ? { type: 2, style: 4, label: 'OFF', custom_id: 'sleeping_off' }
+              : { type: 2, style: 3, label: 'ON', custom_id: 'sleeping_on' },
+            { type: 2, style: 1, label: 'Set Time', custom_id: 'sleeping_time' },
+            { type: 2, style: 2, label: '\u2190 Main', custom_id: 'gui_back' },
+          ],
+        }],
+      }
+    }
+    case 'on': {
+      writeLauncherConfigField('sleepEnabled', true)
+      return { text: 'Sleeping Mode enabled.' }
+    }
+    case 'off': {
+      writeLauncherConfigField('sleepEnabled', false)
+      return { text: 'Sleeping Mode disabled.' }
+    }
+    case 'time': {
+      const time = parsed.args[2] ?? parsed.params.time
+      if (!time) return { text: 'Usage: /bot sleeping time HH:MM' }
+      writeLauncherConfigField('sleepTime', time)
+      return { text: `Sleep time set to ${time}` }
+    }
+    default:
+      return { text: t('unknown_action', ctx.lang, { action }) }
+  }
+}
+
+// ── /bot(display, ...) ──────────────────────────────────────────────
+
+function handleDisplay(parsed: ParsedCommand, _ctx: CommandContext): CommandResult {
+  const mode = parsed.args[1]
+
+  if (!mode) {
+    const state = readLauncherState()
+    const displayMode = state?.displayMode ?? 'view'
+    return {
+      embeds: [{
+        title: '\uD83D\uDDA5 Display Mode',
+        description: `**Current**: ${displayMode}`,
+        color: 0x5865F2,
+      }],
+      components: [{
+        type: 1,
+        components: [
+          { type: 2, style: displayMode === 'view' ? 3 : 2, label: 'View', custom_id: 'display_view' },
+          { type: 2, style: displayMode === 'hide' ? 3 : 2, label: 'Hide', custom_id: 'display_hide' },
+          { type: 2, style: 2, label: '\u2190 Main', custom_id: 'gui_back' },
+        ],
+      }],
+    }
+  }
+
+  if (mode === 'view' || mode === 'hide') {
+    const result = controlLauncher(mode === 'view' ? 'display-view' : 'display-hide')
+    return { text: result.message }
+  }
+
+  return { text: 'Usage: /bot display [view|hide]' }
+}
+
+// ── Launcher config helpers ─────────────────────────────────────────
+
+function readLauncherConfigFile(): any {
+  const configPath = join(homedir(), '.claude2bot-launcher.json')
+  try { return JSON.parse(readFileSync(configPath, 'utf8')) } catch { return {} }
+}
+
+function writeLauncherConfigField(key: string, value: any): void {
+  const configPath = join(homedir(), '.claude2bot-launcher.json')
+  const config = readLauncherConfigFile()
+  config[key] = value
+  writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n')
 }
 
 // ── /bot(schedule, ...) ──────────────────────────────────────────────
