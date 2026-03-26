@@ -16,10 +16,13 @@ if (-not (Get-Module -ListAvailable -Name ps2exe)) {
 Write-Host "Building $Output..."
 New-Item -ItemType Directory -Path (Join-Path $Root "dist") -Force | Out-Null
 
+$IconFile = Join-Path $Root "tray\windows\icon.ico"
+
 Invoke-ps2exe `
     -InputFile $Source `
     -OutputFile $Output `
     -NoConsole `
+    -IconFile $IconFile `
     -Title "Claude2Bot Launcher" `
     -Company "TribGames" `
     -Product "Claude2Bot" `

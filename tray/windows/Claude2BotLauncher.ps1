@@ -49,9 +49,13 @@ function Get-BotConfig {
 }
 
 # ── Tray Icon ──
-$icon = [System.Drawing.SystemIcons]::Application
 $notifyIcon = New-Object System.Windows.Forms.NotifyIcon
-$notifyIcon.Icon = $icon
+$iconPath = Join-Path $ScriptDir "icon.ico"
+if (Test-Path $iconPath) {
+    $notifyIcon.Icon = New-Object System.Drawing.Icon($iconPath)
+} else {
+    $notifyIcon.Icon = [System.Drawing.SystemIcons]::Application
+}
 $notifyIcon.Text = "Claude2Bot Launcher"
 $notifyIcon.Visible = $true
 
