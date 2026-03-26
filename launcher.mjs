@@ -629,24 +629,19 @@ function setWezTermWindowTitle(windowId, title) {
   }
 }
 
-function ensureWezTermGuiRunning() {
-  // Check if WezTerm GUI is already running
-  if (process.platform === 'darwin') {
-    try {
-      const result = execFileSync(resolveCommand('swift') || 'swift', ['-e', `
-import AppKit
-let found = NSWorkspace.shared.runningApplications.contains(where: {
-  let name = ($0.localizedName ?? "").lowercased()
-  let path = ($0.executableURL?.path ?? "").lowercased()
-  return name.contains("wezterm") || path.hasSuffix("/${WEZTERM_PROCESS_NAME}")
-})
-print(found ? "1" : "0")
-`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
-      if (result === '1') return // GUI already running
-    } catch { /* fall through */ }
+function isWezTermGuiRunning() {
+  try {
+    const result = execFileSync('pgrep', ['-x', WEZTERM_PROCESS_NAME], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim()
+    return result.length > 0
+  } catch {
+    return false
   }
+}
 
-  // Start GUI by connecting to mux
+function startWezTermGui() {
   const wezterm = resolveWezTermCommand()
   if (!wezterm) return
   spawn(wezterm, [
@@ -658,9 +653,13 @@ print(found ? "1" : "0")
     env: weztermEnv(),
     stdio: 'ignore',
   }).unref()
-
   // Wait briefly for GUI to start
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2000)
+}
+
+function ensureWezTermGuiRunning() {
+  if (isWezTermGuiRunning()) return
+  startWezTermGui()
 }
 
 function showWezTermWindow(paneId) {
@@ -694,20 +693,11 @@ if let app = NSWorkspace.shared.runningApplications.first(where: {
 }
 
 function hideWezTermApp() {
-  if (process.platform === 'darwin') {
-    // Terminate WezTerm GUI process — mux keeps Claude session alive
-    execFileSync(resolveCommand('swift') || 'swift', ['-e', `
-import AppKit
-for app in NSWorkspace.shared.runningApplications where ({
-  let name = ($0.localizedName ?? "").lowercased()
-  let path = ($0.executableURL?.path ?? "").lowercased()
-  return name.contains("wezterm") || path.hasSuffix("/${WEZTERM_PROCESS_NAME}")
-}(app)) {
-  app.terminate()
-}
-`], { stdio: 'ignore' })
-    return
-  }
+  // Force kill WezTerm GUI — mux keeps Claude session alive
+  // SIGKILL avoids WezTerm's "Detach and Close?" confirmation dialog
+  try {
+    execFileSync('pkill', ['-9', '-x', WEZTERM_PROCESS_NAME], { stdio: 'ignore' })
+  } catch { /* no GUI running */ }
 }
 
 function syncWezTermState() {
