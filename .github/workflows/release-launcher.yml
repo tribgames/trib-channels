@@ -77,11 +77,17 @@ jobs:
         run: |
           Compress-Archive -Path "dist/${{ matrix.binary_name }}" -DestinationPath "dist/${{ matrix.artifact_name }}.zip" -Force
 
-      - name: Archive Windows tray app
+      - name: Prepare Windows tray app
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          Compress-Archive -Path "dist/Claude2BotLauncher.exe","dist/launcher.mjs","dist/launcher-wezterm.lua","dist/sleep-prompt.md","dist/icon.ico" -DestinationPath "dist/claude2bot-launcher-tray-win.zip" -Force
+          # exe has launcher.mjs bundled, but needs resources alongside
+          New-Item -ItemType Directory -Path "dist/Claude2BotLauncher" -Force | Out-Null
+          Copy-Item "dist/Claude2BotLauncher.exe" "dist/Claude2BotLauncher/" -Force
+          Copy-Item "launcher.mjs" "dist/Claude2BotLauncher/" -Force
+          Copy-Item "launcher-wezterm.lua" "dist/Claude2BotLauncher/" -Force
+          Copy-Item "defaults/sleep-prompt.md" "dist/Claude2BotLauncher/" -Force
+          Copy-Item "tray/windows/icon.ico" "dist/Claude2BotLauncher/" -Force
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
