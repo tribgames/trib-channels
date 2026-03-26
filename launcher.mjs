@@ -858,48 +858,71 @@ function launchClaude(workspacePath, displayMode) {
 
 // ── Sleep Cycle ─────────────────────────────────────────────────────
 
-function extractPingPong(transcriptPath) {
-  try {
-    const lines = readFileSync(transcriptPath, 'utf8').split('\n').filter(Boolean)
-    const results = []
-    for (const line of lines) {
-      try {
-        const d = JSON.parse(line)
-        const role = d.message?.role
-        if (!role || (role !== 'user' && role !== 'assistant')) continue
-        const content = d.message?.content
-        let text = ''
-        if (typeof content === 'string') {
-          text = content
-        } else if (Array.isArray(content)) {
-          text = content
-            .filter(c => c.type === 'text')
-            .map(c => c.text)
-            .join('\n')
-        }
-        if (!text.trim()) continue
-        // Skip system/hook messages
-        if (text.includes('<system-reminder>') || text.includes('<schedule-context>')) continue
-        results.push(`${role}: ${text.trim()}`)
-      } catch { /* skip malformed lines */ }
-    }
-    return results.join('\n\n')
-  } catch {
-    return ''
+function extractPingPong(transcriptPaths) {
+  const paths = Array.isArray(transcriptPaths) ? transcriptPaths : [transcriptPaths]
+  const results = []
+  for (const tp of paths) {
+    try {
+      const lines = readFileSync(tp, 'utf8').split('\n').filter(Boolean)
+      for (const line of lines) {
+        try {
+          const d = JSON.parse(line)
+          const role = d.message?.role
+          if (!role || (role !== 'user' && role !== 'assistant')) continue
+          const content = d.message?.content
+          let text = ''
+          if (typeof content === 'string') {
+            text = content
+          } else if (Array.isArray(content)) {
+            text = content
+              .filter(c => c.type === 'text')
+              .map(c => c.text)
+              .join('\n')
+          }
+          if (!text.trim()) continue
+          if (text.includes('<system-reminder>') || text.includes('<schedule-context>')) continue
+          if (text.includes('<teammate-message')) continue
+          results.push(`${role}: ${text.trim()}`)
+        } catch { /* skip malformed lines */ }
+      }
+    } catch { /* skip unreadable files */ }
   }
+  return results.join('\n\n')
 }
 
-function findLatestTranscript(workspacePath) {
+function findTranscriptsForDate(workspacePath, dateStr) {
+  // dateStr: "2026-03-27" → 해당 날짜에 수정된 모든 transcript
   const projectKey = workspacePath.replace(/\//g, '-')
   const projectDir = join(homedir(), '.claude', 'projects', projectKey)
   try {
-    const files = readdirSync(projectDir)
-      .filter(f => f.endsWith('.jsonl'))
-      .map(f => ({ name: f, mtime: statSync(join(projectDir, f)).mtimeMs }))
-      .sort((a, b) => b.mtime - a.mtime)
-    return files.length > 0 ? join(projectDir, files[0].name) : null
+    const targetDate = new Date(dateStr + 'T00:00:00+09:00') // KST
+    const nextDate = new Date(targetDate.getTime() + 24 * 60 * 60 * 1000)
+    return readdirSync(projectDir)
+      .filter(f => f.endsWith('.jsonl') && !f.startsWith('agent-'))
+      .map(f => ({ path: join(projectDir, f), mtime: statSync(join(projectDir, f)).mtimeMs }))
+      .filter(f => f.mtime >= targetDate.getTime() && f.mtime < nextDate.getTime())
+      .sort((a, b) => a.mtime - b.mtime)
+      .map(f => f.path)
   } catch {
-    return null
+    return []
+  }
+}
+
+function findTranscriptsForRange(workspacePath, fromDate, toDate) {
+  // fromDate/toDate: "2026-03-20", "2026-03-27"
+  const projectKey = workspacePath.replace(/\//g, '-')
+  const projectDir = join(homedir(), '.claude', 'projects', projectKey)
+  try {
+    const from = new Date(fromDate + 'T00:00:00+09:00').getTime()
+    const to = new Date(toDate + 'T23:59:59+09:00').getTime()
+    return readdirSync(projectDir)
+      .filter(f => f.endsWith('.jsonl') && !f.startsWith('agent-'))
+      .map(f => ({ path: join(projectDir, f), mtime: statSync(join(projectDir, f)).mtimeMs }))
+      .filter(f => f.mtime >= from && f.mtime <= to)
+      .sort((a, b) => a.mtime - b.mtime)
+      .map(f => f.path)
+  } catch {
+    return []
   }
 }
 
@@ -965,71 +988,75 @@ function buildContextFile() {
 
 function sleepCycle(workspacePath) {
   const ws = workspacePath || getConfiguredWorkspace()
-  process.stderr.write(`[sleep-cycle] Starting for workspace: ${ws}\n`)
+  const today = new Date().toISOString().slice(0, 10)
+  const [year, month] = today.split('-')
+  const weekNum = getWeekNumber(new Date())
+  const weekKey = `${year}-W${String(weekNum).padStart(2, '0')}`
 
-  // 1. Find transcript and extract ping-pong
-  const transcript = findLatestTranscript(ws)
-  if (!transcript) {
-    process.stderr.write('[sleep-cycle] No transcript found, skipping summary.\n')
-  }
+  process.stderr.write(`[sleep-cycle] Starting for ${today} workspace: ${ws}\n`)
 
-  // 2. Stop current session
+  mkdirSync(join(HISTORY_DIR, 'daily'), { recursive: true })
+  mkdirSync(join(HISTORY_DIR, 'weekly'), { recursive: true })
+  mkdirSync(join(HISTORY_DIR, 'monthly'), { recursive: true })
+  mkdirSync(join(HISTORY_DIR, 'yearly'), { recursive: true })
+
+  // 1. Stop current session
   stopLauncher()
 
-  // 3. Run claude -p to generate daily + update lifetime/identity/ongoing/interests
-  if (transcript) {
-    const pingpong = extractPingPong(transcript)
-    if (pingpong) {
-      const today = new Date().toISOString().slice(0, 10)
-      const promptPath = join(resourceDir(), 'sleep-prompt.md')
-      const sleepPrompt = existsSync(promptPath)
-        ? readFileSync(promptPath, 'utf8')
-        : 'Summarize the conversation.'
+  // 2. Generate missing summaries (bottom-up: daily → weekly → monthly → yearly)
+  const promptPath = join(resourceDir(), 'sleep-prompt.md')
+  const sleepPrompt = existsSync(promptPath) ? readFileSync(promptPath, 'utf8') : 'Summarize the conversation.'
 
-      // Read existing files for context
-      const existingLifetime = existsSync(join(HISTORY_DIR, 'lifetime.md'))
-        ? readFileSync(join(HISTORY_DIR, 'lifetime.md'), 'utf8') : ''
-      const existingIdentity = existsSync(join(HISTORY_DIR, 'identity.md'))
-        ? readFileSync(join(HISTORY_DIR, 'identity.md'), 'utf8') : ''
-      const existingOngoing = existsSync(join(HISTORY_DIR, 'ongoing.md'))
-        ? readFileSync(join(HISTORY_DIR, 'ongoing.md'), 'utf8') : ''
-      const existingInterests = existsSync(join(HISTORY_DIR, 'interests.json'))
-        ? readFileSync(join(HISTORY_DIR, 'interests.json'), 'utf8') : '{}'
-
-      const fullPrompt = sleepPrompt
-        .replace('{{DATE}}', today)
-        .replace('{{PINGPONG}}', pingpong.slice(-30000)) // limit to ~30K chars
-        .replace('{{LIFETIME}}', existingLifetime)
-        .replace('{{IDENTITY}}', existingIdentity)
-        .replace('{{ONGOING}}', existingOngoing)
-        .replace('{{INTERESTS}}', existingInterests)
-        .replace('{{HISTORY_DIR}}', HISTORY_DIR)
-
-      mkdirSync(join(HISTORY_DIR, 'daily'), { recursive: true })
-      mkdirSync(join(HISTORY_DIR, 'weekly'), { recursive: true })
-      mkdirSync(join(HISTORY_DIR, 'monthly'), { recursive: true })
-      mkdirSync(join(HISTORY_DIR, 'yearly'), { recursive: true })
-
-      try {
-        execFileSync('claude', ['-p', fullPrompt, '--cwd', ws], {
-          stdio: 'inherit',
-          timeout: 180000,
-          env: { ...process.env, CLAUDE_MODEL: 'sonnet' },
-        })
-        process.stderr.write('[sleep-cycle] Summary complete.\n')
-      } catch (e) {
-        process.stderr.write(`[sleep-cycle] claude -p failed: ${e.message}\n`)
+  // Daily: 오늘 파일 없으면 → 오늘 transcript로 생성
+  const dailyFile = join(HISTORY_DIR, 'daily', `${today}.md`)
+  if (!existsSync(dailyFile)) {
+    const transcripts = findTranscriptsForDate(ws, today)
+    if (transcripts.length > 0) {
+      const pingpong = extractPingPong(transcripts)
+      if (pingpong) {
+        runSleepPrompt(sleepPrompt, { date: today, pingpong, ws })
+        process.stderr.write(`[sleep-cycle] Daily ${today} generated.\n`)
       }
-
-      // Check if weekly/monthly/yearly need to be created
-      generateRollups(today)
+    } else {
+      process.stderr.write('[sleep-cycle] No transcripts for today.\n')
     }
   }
 
-  // 4. Build context.md
+  // Weekly: 이번 주 파일 없으면 → 이번 주 daily들로 생성
+  const weeklyFile = join(HISTORY_DIR, 'weekly', `${weekKey}.md`)
+  if (!existsSync(weeklyFile)) {
+    const weekDailies = collectDailiesForWeek(weekNum, year)
+    if (weekDailies) {
+      runRollup('weekly', weekKey, weekDailies)
+    }
+  }
+
+  // Monthly: 이번 달 파일 없으면 → 이번 달 weekly들로 생성
+  const monthKey = `${year}-${month}`
+  const monthlyFile = join(HISTORY_DIR, 'monthly', `${monthKey}.md`)
+  if (!existsSync(monthlyFile)) {
+    const monthWeeklies = collectFilesForMonth(HISTORY_DIR, 'weekly', year, month)
+    if (monthWeeklies) {
+      runRollup('monthly', monthKey, monthWeeklies)
+    }
+  }
+
+  // Yearly: 올해 파일 없으면 → 올해 monthly들로 생성
+  const yearlyFile = join(HISTORY_DIR, 'yearly', `${year}.md`)
+  if (!existsSync(yearlyFile)) {
+    const yearMonthlies = collectFilesForYear(HISTORY_DIR, 'monthly', year)
+    if (yearMonthlies) {
+      runRollup('yearly', year, yearMonthlies)
+    }
+  }
+
+  // Lifetime merge
+  generateLifetimeMerge()
+
+  // 3. Build context.md
   buildContextFile()
 
-  // 5. Update plugin
+  // 4. Update plugin
   try { updatePlugin() } catch { /* best effort */ }
 
   // 6. Launch new session
@@ -1038,69 +1065,107 @@ function sleepCycle(workspacePath) {
   process.stderr.write('[sleep-cycle] New session launched.\n')
 }
 
-function generateRollups(today) {
-  const [year, month, day] = today.split('-').map(Number)
-  const weekNum = getWeekNumber(new Date(year, month - 1, day))
-
-  // Weekly: if new week and last week's file doesn't exist
-  const lastWeek = `${year}-W${String(weekNum - 1 || 52).padStart(2, '0')}`
-  const lastWeekFile = join(HISTORY_DIR, 'weekly', `${lastWeek}.md`)
-  if (new Date().getDay() === 1 && !existsSync(lastWeekFile)) {
-    // Collect last 7 days of dailies
-    const dailyDir = join(HISTORY_DIR, 'daily')
-    if (existsSync(dailyDir)) {
-      const files = readdirSync(dailyDir).filter(f => f.endsWith('.md')).sort().reverse().slice(0, 7)
-      if (files.length > 0) {
-        const content = files.map(f => readFileSync(join(dailyDir, f), 'utf8').trim()).join('\n\n')
-        try {
-          const summary = execFileSync('claude', ['-p',
-            `Compress these daily summaries into a concise weekly summary. Write in English except proper nouns. Output only the summary, no explanations:\n\n${content}`
-          ], { encoding: 'utf8', timeout: 60000, env: { ...process.env, CLAUDE_MODEL: 'haiku' } }).trim()
-          mkdirSync(join(HISTORY_DIR, 'weekly'), { recursive: true })
-          writeFileSync(lastWeekFile, `# ${lastWeek}\n\n${summary}\n`)
-        } catch { /* skip */ }
-      }
-    }
+function runSleepPrompt(template, { date, pingpong, ws }) {
+  const existing = {
+    lifetime: existsSync(join(HISTORY_DIR, 'lifetime.md')) ? readFileSync(join(HISTORY_DIR, 'lifetime.md'), 'utf8') : '',
+    identity: existsSync(join(HISTORY_DIR, 'identity.md')) ? readFileSync(join(HISTORY_DIR, 'identity.md'), 'utf8') : '',
+    ongoing: existsSync(join(HISTORY_DIR, 'ongoing.md')) ? readFileSync(join(HISTORY_DIR, 'ongoing.md'), 'utf8') : '',
+    interests: existsSync(join(HISTORY_DIR, 'interests.json')) ? readFileSync(join(HISTORY_DIR, 'interests.json'), 'utf8') : '{}',
   }
-
-  // Monthly: if new month and last month's file doesn't exist
-  const lastMonth = month === 1 ? `${year - 1}-12` : `${year}-${String(month - 1).padStart(2, '0')}`
-  const lastMonthFile = join(HISTORY_DIR, 'monthly', `${lastMonth}.md`)
-  if (day <= 7 && !existsSync(lastMonthFile)) {
-    const weeklyDir = join(HISTORY_DIR, 'weekly')
-    if (existsSync(weeklyDir)) {
-      const files = readdirSync(weeklyDir).filter(f => f.startsWith(lastMonth.slice(0, 4))).sort().reverse().slice(0, 5)
-      if (files.length > 0) {
-        const content = files.map(f => readFileSync(join(weeklyDir, f), 'utf8').trim()).join('\n\n')
-        try {
-          const summary = execFileSync('claude', ['-p',
-            `Compress these weekly summaries into a concise monthly summary. Write in English except proper nouns. Output only the summary:\n\n${content}`
-          ], { encoding: 'utf8', timeout: 60000, env: { ...process.env, CLAUDE_MODEL: 'haiku' } }).trim()
-          mkdirSync(join(HISTORY_DIR, 'monthly'), { recursive: true })
-          writeFileSync(lastMonthFile, `# ${lastMonth}\n\n${summary}\n`)
-        } catch { /* skip */ }
-      }
-    }
+  const prompt = template
+    .replace('{{DATE}}', date)
+    .replace('{{PINGPONG}}', pingpong.slice(-50000))
+    .replace('{{LIFETIME}}', existing.lifetime)
+    .replace('{{IDENTITY}}', existing.identity)
+    .replace('{{ONGOING}}', existing.ongoing)
+    .replace('{{INTERESTS}}', existing.interests)
+    .replace('{{HISTORY_DIR}}', HISTORY_DIR)
+  try {
+    execFileSync('claude', ['-p', prompt, '--cwd', ws], {
+      stdio: 'inherit', timeout: 180000,
+      env: { ...process.env, CLAUDE_MODEL: 'sonnet' },
+    })
+  } catch (e) {
+    process.stderr.write(`[sleep-cycle] claude -p failed: ${e.message}\n`)
   }
+}
 
-  // Yearly: if new year and last year's file doesn't exist
-  const lastYear = `${year - 1}`
-  const lastYearFile = join(HISTORY_DIR, 'yearly', `${lastYear}.md`)
-  if (month === 1 && day <= 7 && !existsSync(lastYearFile)) {
-    const monthlyDir = join(HISTORY_DIR, 'monthly')
-    if (existsSync(monthlyDir)) {
-      const files = readdirSync(monthlyDir).filter(f => f.startsWith(lastYear)).sort()
-      if (files.length > 0) {
-        const content = files.map(f => readFileSync(join(monthlyDir, f), 'utf8').trim()).join('\n\n')
-        try {
-          const summary = execFileSync('claude', ['-p',
-            `Compress these monthly summaries into a concise yearly summary. Write in English except proper nouns. Output only the summary:\n\n${content}`
-          ], { encoding: 'utf8', timeout: 60000, env: { ...process.env, CLAUDE_MODEL: 'haiku' } }).trim()
-          mkdirSync(join(HISTORY_DIR, 'yearly'), { recursive: true })
-          writeFileSync(lastYearFile, `# ${lastYear}\n\n${summary}\n`)
-        } catch { /* skip */ }
-      }
-    }
+function runRollup(level, key, content) {
+  const outFile = join(HISTORY_DIR, level, `${key}.md`)
+  try {
+    const summary = execFileSync('claude', ['-p',
+      `Compress these summaries into a concise ${level} summary. Write in English except proper nouns. Output only the summary:\n\n${content}`
+    ], { encoding: 'utf8', timeout: 60000, env: { ...process.env, CLAUDE_MODEL: 'haiku' } }).trim()
+    writeFileSync(outFile, `# ${key}\n\n${summary}\n`)
+    process.stderr.write(`[sleep-cycle] ${level} ${key} generated.\n`)
+  } catch (e) {
+    process.stderr.write(`[sleep-cycle] ${level} rollup failed: ${e.message}\n`)
+  }
+}
+
+function collectDailiesForWeek(weekNum, year) {
+  const dailyDir = join(HISTORY_DIR, 'daily')
+  if (!existsSync(dailyDir)) return null
+  const files = readdirSync(dailyDir).filter(f => {
+    if (!f.endsWith('.md')) return false
+    const d = new Date(f.replace('.md', ''))
+    return d.getFullYear() === Number(year) && getWeekNumber(d) === weekNum
+  }).sort()
+  if (files.length === 0) return null
+  return files.map(f => readFileSync(join(dailyDir, f), 'utf8').trim()).join('\n\n')
+}
+
+function collectFilesForMonth(histDir, subdir, year, month) {
+  const dir = join(histDir, subdir)
+  if (!existsSync(dir)) return null
+  const prefix = `${year}-`
+  const files = readdirSync(dir).filter(f => f.startsWith(prefix) && f.endsWith('.md')).sort()
+  // Filter by month context (weekly files that fall in the month)
+  const relevant = subdir === 'weekly'
+    ? files.filter(f => isWeekInMonth(f.replace('.md', ''), year, month))
+    : files.filter(f => f.startsWith(`${year}-${month}`))
+  if (relevant.length === 0) return null
+  return relevant.map(f => readFileSync(join(dir, f), 'utf8').trim()).join('\n\n')
+}
+
+function collectFilesForYear(histDir, subdir, year) {
+  const dir = join(histDir, subdir)
+  if (!existsSync(dir)) return null
+  const files = readdirSync(dir).filter(f => f.startsWith(`${year}-`) && f.endsWith('.md')).sort()
+  if (files.length === 0) return null
+  return files.map(f => readFileSync(join(dir, f), 'utf8').trim()).join('\n\n')
+}
+
+function isWeekInMonth(weekKey, year, month) {
+  // Check if a week (e.g., "2026-W13") falls within the given month
+  const match = weekKey.match(/^(\d{4})-W(\d{2})$/)
+  if (!match) return false
+  const d = new Date(Number(match[1]), 0, 1 + (Number(match[2]) - 1) * 7)
+  return d.getFullYear() === Number(year) && String(d.getMonth() + 1).padStart(2, '0') === month
+}
+
+function generateLifetimeMerge() {
+  // Yearly 주기로 lifetime 갱신: yearly들 + 기존 lifetime → 압축
+  const yearlyDir = join(HISTORY_DIR, 'yearly')
+  const lifetimePath = join(HISTORY_DIR, 'lifetime.md')
+  const existingLifetime = existsSync(lifetimePath) ? readFileSync(lifetimePath, 'utf8') : ''
+
+  if (!existsSync(yearlyDir)) return
+  const yearlyFiles = readdirSync(yearlyDir).filter(f => f.endsWith('.md')).sort()
+  if (yearlyFiles.length === 0 && !existingLifetime) return
+
+  const yearlyContent = yearlyFiles.map(f => readFileSync(join(yearlyDir, f), 'utf8').trim()).join('\n\n')
+  const mergeInput = [existingLifetime, yearlyContent].filter(Boolean).join('\n\n---\n\n')
+
+  if (!mergeInput.trim()) return
+  try {
+    const merged = execFileSync('claude', ['-p',
+      `Merge and compress this into a single lifetime summary. Remove duplicates, keep only the most important history and patterns. Write in English except proper nouns. Output only the summary:\n\n${mergeInput}`
+    ], { encoding: 'utf8', timeout: 60000, env: { ...process.env, CLAUDE_MODEL: 'haiku' } }).trim()
+    writeFileSync(lifetimePath, merged + '\n')
+    process.stderr.write('[sleep-cycle] lifetime.md updated.\n')
+  } catch (e) {
+    process.stderr.write(`[sleep-cycle] lifetime merge failed: ${e.message}\n`)
   }
 }
 
