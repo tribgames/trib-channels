@@ -787,7 +787,6 @@ function launchClaude(workspacePath, displayMode) {
     // Always use mux spawn — enables instant show/hide toggle without restart
     const spawnOut = weztermCli([
       'spawn',
-      '--domain-name', 'unix',
       '--new-window',
       '--workspace', WEZTERM_WORKSPACE,
       '--cwd', launchCwd,
