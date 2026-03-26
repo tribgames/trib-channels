@@ -104,6 +104,7 @@ const BASE_INSTRUCTIONS = [
 const historyContext = tryRead(path.join(DATA_DIR, 'history', 'context.md'))
 
 const INSTRUCTIONS = [
+  'Always prioritize user safety. Never take actions that could harm the user, their data, or their systems without explicit approval.',
   BASE_INSTRUCTIONS,
   settings ?? '',
   historyContext ? `\n## c2b Memory Context\n${historyContext}` : '',
