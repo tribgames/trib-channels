@@ -1,222 +1,186 @@
-# claude2bot
+<p align="center">
+  <h1 align="center">claude2bot</h1>
+  <p align="center">
+    Discord plugin for Claude Code — live chat, session control, scheduling, and self-evolving memory.
+  </p>
+  <p align="center">
+    <a href="#quick-install">Install</a> ·
+    <a href="#features">Features</a> ·
+    <a href="#sleeping-mode">Sleeping Mode</a> ·
+    <a href="#commands">Commands</a> ·
+    <a href="https://github.com/claude2bot/claude2bot/releases">Releases</a>
+  </p>
+</p>
 
-Discord channel plugin for Claude Code with live chat forwarding, slash controls, scheduler flows, permission buttons, and optional voice transcription.
+> [!NOTE]
+> Claude Code channel mode is still experimental. claude2bot uses the `--dangerously-load-development-channels` flag.
 
-Preview note:
-- Claude Code channel mode is still experimental.
-- In the current preview environment, this plugin is expected to be both installed/enabled and launched with the development channel flag.
+---
 
-Support:
-- `dev@tribgames.com`
+## Quick Install
 
-## What It Does
+**macOS:**
+```bash
+curl -fsSL https://github.com/claude2bot/claude2bot/releases/latest/download/install.sh | bash
+```
 
-- Bridges Discord channel messages into Claude Code
-- Mirrors Claude responses back to Discord
-- Supports slash commands for session status, schedule management, diagnostics, and bot settings
-- Provides permission approval buttons for tool use
-- Supports scheduler-driven interactive, non-interactive, and proactive flows
-- Optionally transcribes voice messages
+**Windows:**
+```powershell
+irm https://github.com/claude2bot/claude2bot/releases/latest/download/install.ps1 | iex
+```
 
-## Recommended Runtime
+One command. Downloads the launcher, installs dependencies, and starts everything.
 
-- macOS:
-  Run Claude Code inside `tmux`.
-
-- Windows:
-  Run Claude Code inside `WSL + tmux`.
-
-- Windows native PowerShell:
-  Supported as a limited fallback only.
-  Status and configuration commands still work, but live session-control commands are not fully reliable unless the Claude window can be activated.
-
-## PowerShell Limitation
-
-On native Windows PowerShell, the plugin can still handle CLI-style and config-driven features such as:
-
-- `/claude status`
-- `/claude usage`
-- `/claude config`
-- `/claude2bot setup`
-- `/claude2bot schedule`
-- `/claude2bot doctor`
-
-Commands that inject input into the live Claude session are best used in `tmux` or `WSL tmux`:
-
-- `/claude model`
-- `/claude compact`
-- `/claude clear`
-- `/claude new`
-
-`/claude stop` is usually the only native PowerShell session-control command that behaves acceptably, but `WSL tmux` is still the recommended Windows setup.
-
-## Installation
-
-### 1. Add the marketplace source
-
+**Manual:**
 ```bash
 claude plugin marketplace add https://github.com/claude2bot/claude2bot
-```
-
-### 2. Install the plugin
-
-```bash
 claude plugin install claude2bot@claude2bot
-```
-
-### 3. Verify the plugin is enabled
-
-Make sure `~/.claude/settings.json` contains:
-
-```json
-{
-  "enabledPlugins": {
-    "claude2bot@claude2bot": true
-  }
-}
-```
-
-### 4. Launch Claude Code with the development channel flag
-
-```bash
 claude --dangerously-load-development-channels plugin:claude2bot@claude2bot
 ```
 
-This is currently the expected launch command for preview channel mode.
+---
 
-### 5. Run the setup flow
+## Features
 
-Inside Claude Code, run:
+### Discord Bridge
+Messages flow between Discord and Claude Code in real time. Claude's responses are auto-forwarded. Permission buttons let you approve tool use from Discord.
 
-```text
-/claude2bot setup
+### Tray App
+A native menu bar app (`c2b`) for macOS and Windows. Launch, restart, toggle visibility, configure settings — all from the tray.
+
+| | macOS | Windows |
+|---|---|---|
+| **Format** | `.app` (Swift) | `.exe` (PowerShell) |
+| **Install** | `curl \| bash` | `irm \| iex` |
+| **Terminal** | WezTerm (mux) | WezTerm (mux) |
+
+### View / Hide Toggle
+Switch between visible terminal and background mode instantly. No session restart needed — Claude keeps running in the mux server.
+
+### Settings GUI
+Configure from the tray menu:
+- **Workspace** — project folder
+- **Autotalk** — proactive conversation frequency (OFF ~ Very High)
+- **Quiet Hours** — no notifications during set hours
+- **Sleeping Mode** — daily summary + session restart
+- **Auto-start on Login**
+- **Voice Support** — install whisper.cpp
+- **Plugin Update**
+
+### Scheduler
+Three scheduling modes:
+- **Non-interactive** — `claude -p` one-shot tasks
+- **Interactive** — inject prompts into live session
+- **Proactive** — frequency-based autonomous conversations
+
+### Voice Transcription
+Optional. Transcribes Discord voice messages using whisper.cpp and feeds text into the session.
+
+---
+
+## Sleeping Mode
+
+At the scheduled time (default 03:00), claude2bot:
+
+1. **Stops** the current session
+2. **Extracts** user-assistant conversation from transcript (no code/tool noise)
+3. **Summarizes** via `claude -p`:
+   - `daily/` — what happened today
+   - `identity.md` — who you are (evolves naturally)
+   - `ongoing.md` — active tasks
+   - `interests.json` — topic frequency
+   - `lifetime.md` — compressed full history
+4. **Rolls up**: daily → weekly → monthly → yearly → lifetime
+5. **Restarts** with full context injected into the new session
+
+Next session, Claude knows what happened, what's ongoing, and who you are.
+
+```
+history/
+├─ daily/           Never deleted
+├─ weekly/          Rollup from dailies
+├─ monthly/         Rollup from weeklies
+├─ yearly/          Rollup from monthlies
+├─ lifetime.md      Everything compressed
+├─ identity.md      User profile (organic)
+├─ ongoing.md       Active tasks
+├─ interests.json   Keywords + frequency
+└─ context.md       Injected on session start
 ```
 
-The setup flow will guide you through:
+---
 
-- post-install bot configuration
-- channel and access settings
-- profile, quiet hours, and voice settings
-- schedule and diagnostics entry points
+## Commands
 
-## Daily Start Command
+### Discord Slash Commands
 
-After installation, the normal start command is:
+| Command | Description |
+|---------|-------------|
+| `/claude stop` | Stop current turn |
+| `/claude status` | Session status |
+| `/claude model [name]` | Switch model |
+| `/claude compact` | Compact conversation |
+| `/claude clear` | Clear context |
+| `/claude new` | New session |
+| `/claude config` | Show config |
+
+### Bot Text Commands
+
+| Command | Description |
+|---------|-------------|
+| `/bot autotalk` | Proactive chat settings |
+| `/bot quiet` | Quiet hours settings |
+| `/bot schedule` | Schedule management |
+| `/bot profile` | Bot profile |
+| `/bot launcher` | Launcher status |
+
+### Launcher CLI
 
 ```bash
-claude --dangerously-load-development-channels plugin:claude2bot@claude2bot
+launcher install        # Install all dependencies
+launcher launch         # Start session
+launcher restart        # Stop + launch
+launcher stop           # Stop everything
+launcher sleep-cycle    # Run sleeping mode now
+launcher display [mode] # View or hide
+launcher workspace [p]  # Set workspace
+launcher doctor         # Environment check
 ```
 
-## Launcher Mode
+---
 
-The repository includes a WezTerm-based launcher for users who want a managed startup flow with a single macOS app entrypoint.
+## Architecture
 
-Available commands:
-
-```bash
-node launcher.mjs install
-node launcher.mjs launch
-node launcher.mjs update
-node launcher.mjs doctor
-node launcher.mjs restart
-node launcher.mjs workspace /path/to/workspace
-node launcher.mjs display hide
-node launcher.mjs display view
+```
+Tray App (Swift / PowerShell)
+  └─ launcher.mjs
+       └─ WezTerm mux
+            └─ Claude Code
+                 └─ server.ts (MCP)
+                      ├─ Discord backend
+                      ├─ Scheduler
+                      ├─ Output forwarder
+                      └─ Memory System
 ```
 
-Build a local single-file launcher:
+---
 
-```bash
-npm run build:launcher
-npm run build:launcher:app:macos
-```
+## Requirements
 
-This produces platform-specific launcher artifacts under `dist/`.
-Tagged releases publish packaged launcher binaries to GitHub Releases via `.github/workflows/release-launcher.yml`.
+| | Required | Optional |
+|---|---|---|
+| **Runtime** | Node.js | |
+| **Package Manager** | brew (macOS) / winget (Windows) | |
+| **Discord** | Bot token | |
+| **Voice** | | whisper.cpp + ffmpeg |
 
-What launcher mode does:
+All dependencies are auto-installed by the launcher.
 
-- verifies the Claude CLI is available
-- verifies WezTerm is available
-- ensures the `claude2bot` marketplace source exists
-- installs or enables the plugin if needed
-- opens Claude Code in a managed WezTerm session with `CLAUDE2BOT_LAUNCHER=1`
-- optionally auto-confirms the startup warning flow with the default sequence `1,1`
-- applies the saved launch mode (`hide` or `view`) on the next launch/restart
-- uses `restart` to apply launch mode changes
+---
 
-You can disable the startup auto-confirm behavior:
+## Support
 
-```bash
-CLAUDE2BOT_LAUNCHER_CONFIRM_SEQUENCE=0 node launcher.mjs launch
-```
-
-Launcher mode is the recommended managed path.
-The standard CLI launch flow still works when you do not need launcher-backed control.
-
-Release artifacts target:
-
-- macOS launcher binary: `claude2bot-launcher-macos.zip`
-- macOS launcher app: `claude2bot-launcher-app-macos.zip`
-- Windows launcher exe: `claude2bot-launcher-win-x64.zip`
-
-## Slash Commands
-
-### Session control
-
-- `/claude stop`
-- `/claude status`
-- `/claude usage`
-- `/claude config`
-- `/claude model`
-- `/claude compact`
-- `/claude clear`
-- `/claude new`
-
-### Bot operations
-
-- `/claude2bot setup`
-- `/claude2bot schedule`
-- `/claude2bot doctor`
-
-## Runtime Files
-
-Main plugin data:
-
-- `config.json`
-- `bot.json`
-- `profile.json`
-- `discord/access.json`
-- `prompts/*.md`
-
-Session runtime files are created under the system temp directory for turn-end, permission, control, and status signaling.
-
-## External Dependencies
-
-Required:
-
-- Node.js
-- npm
-- Discord bot token
-
-Recommended for full session control:
-
-- macOS: WezTerm launcher mode
-- Windows: WezTerm launcher mode
-
-Optional:
-
-- `ffmpeg`
-- `whisper.cpp` or compatible `whisper-cli`
-
-## Current Packaging Note
-
-The preview package currently starts through `.mcp.json` with:
-
-- `npm install --silent`
-- `npx tsx server.ts`
-
-That means first-run startup can be slower than a prebuilt distribution.
+`dev@tribgames.com`
 
 ## License
 
