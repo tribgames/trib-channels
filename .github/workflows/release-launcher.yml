@@ -40,6 +40,25 @@ jobs:
         if: runner.os == 'macOS'
         run: npm run build:launcher:app:macos
 
+      - name: Build Windows tray app
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Install-Module ps2exe -Scope CurrentUser -Force
+          Invoke-ps2exe `
+            -InputFile "tray/windows/Claude2BotLauncher.ps1" `
+            -OutputFile "dist/Claude2BotLauncher.exe" `
+            -NoConsole `
+            -IconFile "tray/windows/icon.ico" `
+            -Title "Claude2Bot Launcher" `
+            -Company "TribGames" `
+            -Product "Claude2Bot" `
+            -Version "1.0.0"
+          Copy-Item "launcher.mjs" "dist/launcher.mjs" -Force
+          Copy-Item "launcher-wezterm.lua" "dist/launcher-wezterm.lua" -Force
+          Copy-Item "defaults/sleep-prompt.md" "dist/sleep-prompt.md" -Force
+          Copy-Item "tray/windows/icon.ico" "dist/icon.ico" -Force
+
       - name: Archive launcher (Unix)
         if: runner.os != 'Windows'
         run: |
@@ -58,6 +77,12 @@ jobs:
         run: |
           Compress-Archive -Path "dist/${{ matrix.binary_name }}" -DestinationPath "dist/${{ matrix.artifact_name }}.zip" -Force
 
+      - name: Archive Windows tray app
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "dist/Claude2BotLauncher.exe","dist/launcher.mjs","dist/launcher-wezterm.lua","dist/sleep-prompt.md","dist/icon.ico" -DestinationPath "dist/claude2bot-launcher-tray-win.zip" -Force
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -70,6 +95,13 @@ jobs:
         with:
           name: claude2bot-launcher-app-macos
           path: dist/claude2bot-launcher-app-macos.zip
+
+      - name: Upload Windows tray app artifact
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: claude2bot-launcher-tray-win
+          path: dist/claude2bot-launcher-tray-win.zip
 
   release:
     if: startsWith(github.ref, 'refs/tags/')
@@ -90,3 +122,4 @@ jobs:
             artifacts/claude2bot-launcher-macos/claude2bot-launcher-macos.zip
             artifacts/claude2bot-launcher-win-x64/claude2bot-launcher-win-x64.zip
             artifacts/claude2bot-launcher-app-macos/claude2bot-launcher-app-macos.zip
+            artifacts/claude2bot-launcher-tray-win/claude2bot-launcher-tray-win.zip
