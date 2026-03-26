@@ -1377,6 +1377,21 @@ if (process.env.CLAUDE2BOT_NO_CONNECT) {
   await backend.connect()
   scheduler.start()
   process.stderr.write(`claude2bot: running with ${backend.name} backend\n`)
+
+  // Greeting on session start — let Claude initiate based on context
+  setTimeout(() => {
+    const mainLabel = config.channelsConfig?.main || 'general'
+    const greetChannel = config.channelsConfig?.channels?.[mainLabel]?.id || ''
+    if (greetChannel) {
+      void mcp.notification({
+        method: 'notifications/claude/channel',
+        params: {
+          content: 'Session just started. Greet the user naturally based on your memory context (identity, ongoing tasks, recent activity). Mention what was last worked on if available. Keep it short and warm.',
+          meta: { chat_id: greetChannel, user: 'system:greeting', user_id: 'system', ts: new Date().toISOString() },
+        },
+      }).catch(() => {})
+    }
+  }, 8000)
 }
 
 let shuttingDown = false
