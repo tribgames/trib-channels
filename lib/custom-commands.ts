@@ -187,7 +187,9 @@ function handleBotStatus(_ctx: CommandContext): CommandResult {
     { type: 2, style: 1, label: 'Channels', custom_id: 'bot_activity' },
     { type: 2, style: 2, label: 'Profile', custom_id: 'bot_profile' },
   ]
+  mainButtons.push({ type: 2, style: 1, label: 'Sleeping', custom_id: 'bot_sleeping' })
   if (launcherConnected) {
+    mainButtons.push({ type: 2, style: 2, label: 'Display', custom_id: 'bot_display' })
     mainButtons.push({ type: 2, style: 2, label: 'Launcher', custom_id: 'bot_launcher' })
   }
 

@@ -655,6 +655,40 @@ backend.onInteraction = (interaction: BackendInteraction) => {
     return
   }
 
+  // ── Sleeping buttons → apply and return to sleeping panel ──
+  if (interaction.customId === 'sleeping_on' || interaction.customId === 'sleeping_off') {
+    void (async () => {
+      await applyBotCommand(interaction, ['sleeping', interaction.customId === 'sleeping_on' ? 'on' : 'off'])
+      await showBotPanel(interaction, ['sleeping', 'status'])
+    })()
+    return
+  }
+
+  if (interaction.customId === 'sleeping_time') {
+    // TODO: Modal for time input — for now, guide user to text command
+    void backend.sendMessage(interaction.channelId, 'Use `/bot sleeping time HH:MM` to set sleep time.')
+    return
+  }
+
+  // ── Display buttons → apply and return to display panel ──
+  if (interaction.customId === 'display_view' || interaction.customId === 'display_hide') {
+    void (async () => {
+      await applyBotCommand(interaction, ['display', interaction.customId === 'display_view' ? 'view' : 'hide'])
+      await showBotPanel(interaction, ['display'])
+    })()
+    return
+  }
+
+  // ── bot_sleeping / bot_display panel switch ──
+  if (interaction.customId === 'bot_sleeping') {
+    void (async () => { await showBotPanel(interaction, ['sleeping', 'status']) })()
+    return
+  }
+  if (interaction.customId === 'bot_display') {
+    void (async () => { await showBotPanel(interaction, ['display']) })()
+    return
+  }
+
   // ── Schedule remove button → delete and return to the schedule list ──
   if (interaction.customId?.startsWith('sched_remove:')) {
     const name = interaction.customId.split(':')[1]
