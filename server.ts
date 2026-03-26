@@ -1384,7 +1384,21 @@ if (process.env.CLAUDE2BOT_NO_CONNECT) {
     const greetChannel = config.channelsConfig?.channels?.[mainLabel]?.id || ''
     if (!greetChannel) return
 
-    // Inject greeting immediately — this creates the transcript
+    // Skip greeting during quiet hours
+    const bot = loadBotConfig()
+    const quietSchedule = bot.quiet?.schedule
+    if (quietSchedule) {
+      const parts = quietSchedule.split('-')
+      if (parts.length === 2) {
+        const now = new Date()
+        const hhmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
+        const [start, end] = parts
+        const inQuiet = start > end ? (hhmm >= start || hhmm < end) : (hhmm >= start && hhmm < end)
+        if (inQuiet) return
+      }
+    }
+
+    // Inject greeting — this creates the transcript
     await mcp.notification({
       method: 'notifications/claude/channel',
       params: {
