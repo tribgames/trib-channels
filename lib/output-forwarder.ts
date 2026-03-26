@@ -118,9 +118,9 @@ export class OutputForwarder {
   /** Set context for current turn (called on user message) */
   setContext(channelId: string, transcriptPath: string): void {
     this.channelId = channelId
-    // 항상 최신 transcript 경로로 갱신 (/clear 등으로 새 파일 생성 시 즉시 반영)
+    // Always track the latest transcript path so /clear and similar flows switch immediately.
     if (this.transcriptPath !== transcriptPath) {
-      // 경로 변경 시 watch 재설정 필요
+      // Recreate the watcher when the transcript path changes.
       if (this.watcher) {
         this.watcher.close()
         this.watcher = null
@@ -223,14 +223,14 @@ export class OutputForwarder {
 
           for (const c of entry.message.content) {
             if (c.type === 'text' && c.text?.trim()) {
-              // 텍스트 → Explorer 시퀀스 리셋
+              // Plain text resets the Explorer grouping sequence.
               this.inExplorerSequence = false
               parts.push(c.text.trim())
             } else if (c.type === 'tool_use') {
               this.lastToolName = c.name || ''
               if (OutputForwarder.isHidden(c.name)) continue
 
-              // Read/Grep/Glob → 첫 번째만 표시, 나머지 무시
+              // Show only the first Read/Grep/Glob item in a grouped sequence.
               if (SEARCH_TOOLS.has(c.name)) {
                 if (!this.inExplorerSequence) {
                   this.inExplorerSequence = true
@@ -241,11 +241,11 @@ export class OutputForwarder {
                   if (parts.length > 0) parts.push('\u3164')
                   parts.push('● **Explorer** (' + (target || c.name) + ')')
                 }
-                // 연속 검색은 무시
+                // Ignore subsequent search steps in the same sequence.
                 continue
               }
 
-              // 비검색 도구 → Explorer 시퀀스 리셋
+              // Non-search tools end the Explorer grouping sequence.
               this.inExplorerSequence = false
               const toolLine = OutputForwarder.buildToolLine(c.name, c.input)
               if (toolLine) {
@@ -261,12 +261,12 @@ export class OutputForwarder {
     return newText.trim()
   }
 
-  // ── 단일 전송 게이트 ──────────────────────────────────────────────
-  // 모든 Discord 전송은 반드시 sendOnce()를 통과. 동시 실행 불가.
+  // ── Single-send gate ──────────────────────────────────────────────
+  // All Discord sends pass through sendOnce() so duplicate concurrent sends are avoided.
 
   private static readonly SKIP_TEXTS = new Set([
     'No response requested.', 'No response requested',
-    '유저 응답 대기.', '유저 응답 대기',
+    '유저 응답 대기.', '유저 응답 대기', 'Waiting for user response.', 'Waiting for user response',
   ])
 
   private async sendOnce(text: string): Promise<void> {
@@ -276,8 +276,7 @@ export class OutputForwarder {
     const hash = createHash('md5').update(formatted).digest('hex')
     if (this.lastHash === hash) return
     this.lastHash = hash
-    const pad = this.sentCount > 0 ? '\u3164\n' : ''
-    const chunks = chunk(pad + formatted, 2000)
+    const chunks = chunk(formatted, 2000)
     this.sentCount += chunks.length
     this.persistState()
     for (const c of chunks) {
@@ -318,11 +317,10 @@ export class OutputForwarder {
       }
       // Combine pending text + tool log
       const newText = this.extractNewText()
-      const pad = this.sentCount > 0 ? '\u3164\n' : ''
       const msg = newText
-        ? pad + formatForDiscord(newText) + '\n\n' + toolLine
-        : pad + toolLine
-      // toolLog는 항상 새 내용이므로 hash 없이 직접 전송
+        ? formatForDiscord(newText) + '\n\n' + toolLine
+        : toolLine
+      // Tool logs are always treated as new output, so skip hash dedup here.
       this.sentCount++
       this.persistState()
       const chunks = chunk(msg, 2000)
@@ -367,13 +365,13 @@ export class OutputForwarder {
   /** Check if a tool should be hidden */
   static isHidden(name: string): boolean {
     if (OutputForwarder.HIDDEN_TOOLS.has(name)) return true
-    // claude2bot 자체 MCP 도구 숨김 (reply, react, edit_message, fetch_messages 등)
+    // Hide claude2bot's own MCP tools from mirrored output.
     if (name.includes('plugin_claude2bot') || name === 'reply' || name === 'react'
       || name === 'edit_message' || name === 'fetch_messages' || name === 'download_attachment') return true
     return false
   }
 
-  /** Build tool log line from tool name and input (시안 C 포맷) */
+  /** Build a tool log line from the tool name and input. */
   static buildToolLine(name: string, input: Record<string, any>): string | null {
     // Hidden tools — return null
     if (OutputForwarder.isHidden(name)) return null
@@ -436,12 +434,12 @@ export class OutputForwarder {
     }
 
     if (!summary) return null
-    // ● **Name** (summary) 포맷
+    // Format as ● **Name** (summary)
     let toolLine = (displayName === summary)
       ? '● **' + displayName + '**'
       : '● **' + displayName + '** (' + summary + ')'
     if (!isSearchTool && detail && detail !== summary) {
-      // 5줄 제한
+      // Limit the preview block to 5 lines.
       const lines = detail.substring(0, 500).split('\n')
       const shown = lines.slice(0, 5)
       let block = shown.join('\n')

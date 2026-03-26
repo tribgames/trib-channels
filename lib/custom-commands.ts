@@ -7,7 +7,7 @@
  * - Quoted strings preserve spaces
  */
 
-import { readFileSync, writeFileSync } from 'fs'
+import { readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { DATA_DIR, loadBotConfig, saveBotConfig, loadProfileConfig, saveProfileConfig } from './config.js'
 import type { PluginConfig, TimedSchedule } from '../backends/types.js'
@@ -32,6 +32,7 @@ export interface CommandContext {
   channelId: string
   userId: string
   lang: 'ko' | 'en'
+  reloadRuntimeConfig?: () => void
 }
 
 // ── Parser ───────────────────────────────────────────────────────────
@@ -111,107 +112,107 @@ function savePluginConfig(config: PluginConfig): void {
 
 const msg: Record<string, Record<'ko' | 'en', string>> = {
   'schedule.empty': {
-    ko: '등록된 스케줄이 없습니다.',
+    ko: 'No schedules registered.',
     en: 'No schedules configured.',
   },
   'schedule.added': {
-    ko: '스케줄 "{name}" 추가 완료 ({mode}, {time})',
+    ko: 'Schedule "{name}" added ({mode}, {time})',
     en: 'Schedule "{name}" added ({mode}, {time})',
   },
   'schedule.exists': {
-    ko: '스케줄 "{name}"이(가) 이미 존재합니다.',
+    ko: 'Schedule "{name}" already exists.',
     en: 'Schedule "{name}" already exists.',
   },
   'schedule.not_found': {
-    ko: '스케줄 "{name}"을(를) 찾을 수 없습니다.',
+    ko: 'Schedule "{name}" not found.',
     en: 'Schedule "{name}" not found.',
   },
   'schedule.removed': {
-    ko: '스케줄 "{name}" 삭제 완료.',
+    ko: 'Schedule "{name}" deleted.',
     en: 'Schedule "{name}" removed.',
   },
   'schedule.edited': {
-    ko: '스케줄 "{name}" 수정 완료.',
+    ko: 'Schedule "{name}" updated.',
     en: 'Schedule "{name}" updated.',
   },
   'schedule.triggered': {
-    ko: '스케줄 "{name}" 수동 실행 중...',
+    ko: 'Running schedule "{name}"...',
     en: 'Triggering schedule "{name}"...',
   },
   'schedule.missing_name': {
-    ko: '스케줄 이름이 필요합니다.',
+    ko: 'Schedule name required.',
     en: 'Schedule name is required.',
   },
   'schedule.missing_fields': {
-    ko: 'time, channel 필드가 필요합니다.',
+    ko: 'time and channel fields are required.',
     en: 'time and channel fields are required.',
   },
   'profile.empty': {
-    ko: '프로필이 설정되지 않았습니다.',
+    ko: 'No profile configured.',
     en: 'No profile configured.',
   },
   'profile.updated': {
-    ko: '프로필 업데이트 완료.',
+    ko: 'Profile updated.',
     en: 'Profile updated.',
   },
   'unknown_action': {
-    ko: '알 수 없는 명령: {action}',
+    ko: 'Unknown command: {action}',
     en: 'Unknown action: {action}',
   },
   'unknown_sub': {
-    ko: '알 수 없는 서브커맨드: {sub}',
+    ko: 'Unknown subcommand: {sub}',
     en: 'Unknown subcommand: {sub}',
   },
   'autotalk.status': {
-    ko: '자율대화 상태',
+    ko: 'Autotalk Status',
     en: 'Autotalk Status',
   },
   'autotalk.freq_updated': {
-    ko: '자율대화 빈도가 {freq}(으)로 변경되었습니다.',
+    ko: 'Autotalk frequency changed to {freq}.',
     en: 'Autotalk frequency updated to {freq}.',
   },
   'autotalk.enabled': {
-    ko: '자율대화가 활성화되었습니다.',
+    ko: 'Autotalk enabled.',
     en: 'Autotalk enabled.',
   },
   'autotalk.disabled': {
-    ko: '자율대화가 비활성화되었습니다.',
+    ko: 'Autotalk disabled.',
     en: 'Autotalk disabled.',
   },
   'quiet.status': {
-    ko: '방해금지 설정',
+    ko: 'Quiet Hours',
     en: 'Quiet Settings',
   },
   'quiet.updated': {
-    ko: '방해금지 설정이 업데이트되었습니다.',
+    ko: 'Quiet hours updated.',
     en: 'Quiet settings updated.',
   },
   'activity.empty': {
-    ko: '등록된 활동 채널이 없습니다.',
+    ko: 'No activity channels registered.',
     en: 'No activity channels configured.',
   },
   'activity.added': {
-    ko: '채널 "{name}" 추가 완료.',
+    ko: 'Channel "{name}" added.',
     en: 'Channel "{name}" added.',
   },
   'activity.exists': {
-    ko: '채널 "{name}"이(가) 이미 존재합니다.',
+    ko: 'Channel "{name}" already exists.',
     en: 'Channel "{name}" already exists.',
   },
   'activity.not_found': {
-    ko: '채널 "{name}"을(를) 찾을 수 없습니다.',
+    ko: 'Channel "{name}" not found.',
     en: 'Channel "{name}" not found.',
   },
   'activity.removed': {
-    ko: '채널 "{name}" 삭제 완료.',
+    ko: 'Channel "{name}" deleted.',
     en: 'Channel "{name}" removed.',
   },
   'activity.missing_name': {
-    ko: '채널 이름이 필요합니다.',
+    ko: 'Channel name required.',
     en: 'Channel name is required.',
   },
   'activity.missing_id': {
-    ko: '채널 ID가 필요합니다.',
+    ko: 'Channel ID required.',
     en: 'Channel ID is required.',
   },
 }
@@ -224,6 +225,11 @@ function t(key: string, lang: 'ko' | 'en', vars?: Record<string, string>): strin
     }
   }
   return text
+}
+
+function refreshRuntime(ctx: CommandContext): void {
+  if (ctx.reloadRuntimeConfig) ctx.reloadRuntimeConfig()
+  else ctx.scheduler.restart()
 }
 
 // ── /bot handler ─────────────────────────────────────────────────────
@@ -261,36 +267,36 @@ function handleBotStatus(_ctx: CommandContext): CommandResult {
   const i = config.interactive ?? []
 
   const lines: string[] = []
-  lines.push(`**스케줄** ${ni.length + i.length}개 등록`)
+  lines.push(`**Schedules** ${ni.length + i.length} registered`)
 
-  const autotalkStatus = bot.autotalk?.enabled ? `freq=${bot.autotalk.freq ?? 3}, 활성` : '비활성'
-  lines.push(`**자율대화** ${autotalkStatus}`)
+  const autotalkStatus = bot.autotalk?.enabled ? `freq=${bot.autotalk.freq ?? 3}, active` : 'inactive'
+  lines.push(`**Autotalk** ${autotalkStatus}`)
 
   const quietParts: string[] = []
   if (bot.quiet?.schedule) quietParts.push(bot.quiet.schedule)
-  if (bot.quiet?.autotalk) quietParts.push(`자율대화 ${bot.quiet.autotalk}`)
-  lines.push(`**방해금지** ${quietParts.length > 0 ? quietParts.join(', ') : '없음'}`)
+  if (bot.quiet?.autotalk) quietParts.push(`autotalk ${bot.quiet.autotalk}`)
+  lines.push(`**Quiet** ${quietParts.length > 0 ? quietParts.join(', ') : 'none'}`)
 
   const chCount = Object.keys(config.channelsConfig?.channels ?? {}).length
-  lines.push(`**활동채널** ${chCount}개`)
+  lines.push(`**Channels** ${chCount}`)
 
   const profile = loadProfileConfig()
-  lines.push(`**프로필** ${profile.name || '-'}`)
+  lines.push(`**Profile** ${profile.name || '-'}`)
 
   return {
     embeds: [{
-      title: '\u2699\uFE0F Bot 대시보드',
+      title: '\u2699\uFE0F Bot Dashboard',
       description: lines.join('\n'),
       color: 0x5865F2,
     }],
     components: [{
       type: 1,
       components: [
-        { type: 2, style: 1, label: '스케줄', custom_id: 'bot_schedule' },
-        { type: 2, style: 1, label: '자율대화', custom_id: 'bot_autotalk' },
-        { type: 2, style: 1, label: '방해금지', custom_id: 'bot_quiet' },
-        { type: 2, style: 1, label: '활동채널', custom_id: 'bot_activity' },
-        { type: 2, style: 2, label: '프로필', custom_id: 'bot_profile' },
+        { type: 2, style: 1, label: 'Schedule', custom_id: 'bot_schedule' },
+        { type: 2, style: 1, label: 'Autotalk', custom_id: 'bot_autotalk' },
+        { type: 2, style: 1, label: 'Quiet', custom_id: 'bot_quiet' },
+        { type: 2, style: 1, label: 'Channels', custom_id: 'bot_activity' },
+        { type: 2, style: 2, label: 'Profile', custom_id: 'bot_profile' },
       ],
     }, {
       type: 1,
@@ -326,22 +332,22 @@ function activityList(ctx: CommandContext): CommandResult {
   if (entries.length === 0) {
     return {
       embeds: [{
-        title: '\uD83D\uDCE1 활동 채널',
+        title: '\uD83D\uDCE1 Activity Channels',
         description: t('activity.empty', ctx.lang),
         color: 0x5865F2,
       }],
       components: [{
         type: 1,
         components: [
-          { type: 2, style: 1, label: '추가', custom_id: 'activity_add' },
-          { type: 2, style: 2, label: '\u2190 메인', custom_id: 'gui_back' },
+          { type: 2, style: 1, label: 'Add', custom_id: 'activity_add' },
+          { type: 2, style: 2, label: '← Main', custom_id: 'gui_back' },
           { type: 2, style: 4, label: '\u2715', custom_id: 'gui_close' },
         ],
       }],
     }
   }
 
-  // description 형태로 목록 표시
+  // Render the list in the embed description.
   const chLines = entries.map(([name, entry]) => {
     const star = name === main ? ' \u2B50' : ''
     return `**${name}${star}** — ${entry.mode} (\`${entry.id}\`)`
@@ -360,14 +366,14 @@ function activityList(ctx: CommandContext): CommandResult {
   components.push({
     type: 1,
     components: [
-      { type: 2, style: 1, label: '추가', custom_id: 'activity_add' },
-      { type: 2, style: 2, label: '\u2190 메인', custom_id: 'gui_back' },
+      { type: 2, style: 1, label: 'Add', custom_id: 'activity_add' },
+      { type: 2, style: 2, label: '← Main', custom_id: 'gui_back' },
       { type: 2, style: 4, label: '\u2715', custom_id: 'gui_close' },
     ],
   })
 
   return {
-    embeds: [{ title: '\uD83D\uDCE1 활동 채널', description: chLines.join('\n'), color: 0x5865F2 }],
+    embeds: [{ title: '\uD83D\uDCE1 Activity Channels', description: chLines.join('\n'), color: 0x5865F2 }],
     components,
   }
 }
@@ -392,6 +398,7 @@ function activityAdd(parsed: ParsedCommand, ctx: CommandContext): CommandResult 
 
   config.channelsConfig.channels[name] = { id, mode }
   savePluginConfig(config)
+  refreshRuntime(ctx)
 
   return { text: t('activity.added', ctx.lang, { name }) }
 }
@@ -407,6 +414,7 @@ function activityRemove(parsed: ParsedCommand, ctx: CommandContext): CommandResu
 
   delete config.channelsConfig.channels[name]
   savePluginConfig(config)
+  refreshRuntime(ctx)
 
   return { text: t('activity.removed', ctx.lang, { name }) }
 }
@@ -414,7 +422,7 @@ function activityRemove(parsed: ParsedCommand, ctx: CommandContext): CommandResu
 // ── /bot(profile) ───────────────────────────────────────────────────
 
 function handleBotProfile(parsed: ParsedCommand, ctx: CommandContext): CommandResult {
-  // /bot(profile, set, name="...", ...) — param-based update
+  // /bot(profile, set, name="...", ...) — parameter-based update
   if ((parsed.args[1] === 'set' || Object.keys(parsed.params).length > 0) && parsed.args[0] === 'profile') {
     return handleProfileCommand(
       { cmd: 'profile', args: ['set'], params: parsed.params },
@@ -422,15 +430,15 @@ function handleBotProfile(parsed: ParsedCommand, ctx: CommandContext): CommandRe
     )
   }
 
-  // Default: show profile + edit/nav buttons
+  // Default view: show the profile with edit and navigation buttons.
   const profile = loadProfileConfig()
   const entries = Object.entries(profile).filter(([_, v]) => v !== undefined)
 
   const navComponents: Record<string, unknown>[] = [{
     type: 1,
     components: [
-      { type: 2, style: 1, label: '편집', custom_id: 'profile_edit' },
-      { type: 2, style: 2, label: '\u2190 메인', custom_id: 'gui_back' },
+      { type: 2, style: 1, label: 'Edit', custom_id: 'profile_edit' },
+      { type: 2, style: 2, label: '← Main', custom_id: 'gui_back' },
       { type: 2, style: 4, label: '\u2715', custom_id: 'gui_close' },
     ],
   }]
@@ -438,7 +446,7 @@ function handleBotProfile(parsed: ParsedCommand, ctx: CommandContext): CommandRe
   if (entries.length === 0) {
     return {
       embeds: [{
-        title: '\uD83D\uDC64 프로필',
+        title: '\uD83D\uDC64 Profile',
         description: t('profile.empty', ctx.lang),
         color: 0x57F287,
       }],
@@ -449,7 +457,7 @@ function handleBotProfile(parsed: ParsedCommand, ctx: CommandContext): CommandRe
   const profileLines = entries.map(([k, v]) => `**${k}**: ${v}`)
 
   return {
-    embeds: [{ title: '\uD83D\uDC64 프로필', description: profileLines.join('\n'), color: 0x57F287 }],
+    embeds: [{ title: '\uD83D\uDC64 Profile', description: profileLines.join('\n'), color: 0x57F287 }],
     components: navComponents,
   }
 }
@@ -460,12 +468,13 @@ function handleAutotalk(parsed: ParsedCommand, ctx: CommandContext): CommandResu
   const action = parsed.args[1] ?? 'status'
   const bot = loadBotConfig()
 
-  // /bot(autotalk, freq=N) — freq passed as param
+  // /bot(autotalk, freq=N) — frequency is passed as a named parameter.
   if (parsed.params.freq) {
     const freq = Math.max(1, Math.min(5, parseInt(parsed.params.freq, 10) || 3))
     if (!bot.autotalk) bot.autotalk = {}
     bot.autotalk.freq = freq
     saveBotConfig(bot)
+    refreshRuntime(ctx)
     return { text: t('autotalk.freq_updated', ctx.lang, { freq: String(freq) }) }
   }
 
@@ -479,17 +488,17 @@ function handleAutotalk(parsed: ParsedCommand, ctx: CommandContext): CommandResu
       return {
         embeds: [{
           title: `\uD83D\uDCAC ${t('autotalk.status', ctx.lang)}`,
-          description: `**빈도**: ${freq}\n**상태**: ${statusEmoji} ${enabled ? 'ON' : 'OFF'}`,
+          description: `**Freq**: ${freq}\n**Status**: ${statusEmoji} ${enabled ? 'ON' : 'OFF'}`,
           color: 0x5865F2,
         }],
         components: [{
           type: 1,
           components: [
-            { type: 2, style: 1, label: '빈도 변경', custom_id: 'autotalk_freq' },
+            { type: 2, style: 1, label: 'Change Freq', custom_id: 'autotalk_freq' },
             enabled
               ? { type: 2, style: 4, label: 'OFF', custom_id: 'autotalk_off' }
               : { type: 2, style: 3, label: 'ON', custom_id: 'autotalk_on' },
-            { type: 2, style: 2, label: '\u2190 메인', custom_id: 'gui_back' },
+            { type: 2, style: 2, label: '← Main', custom_id: 'gui_back' },
             { type: 2, style: 4, label: '\u2715', custom_id: 'gui_close' },
           ],
         }],
@@ -499,12 +508,14 @@ function handleAutotalk(parsed: ParsedCommand, ctx: CommandContext): CommandResu
       if (!bot.autotalk) bot.autotalk = {}
       bot.autotalk.enabled = true
       saveBotConfig(bot)
+      refreshRuntime(ctx)
       return { text: t('autotalk.enabled', ctx.lang) }
     }
     case 'off': {
       if (!bot.autotalk) bot.autotalk = {}
       bot.autotalk.enabled = false
       saveBotConfig(bot)
+      refreshRuntime(ctx)
       return { text: t('autotalk.disabled', ctx.lang) }
     }
     default:
@@ -539,8 +550,8 @@ function handleQuiet(parsed: ParsedCommand, ctx: CommandContext): CommandResult 
         components: [{
           type: 1,
           components: [
-            { type: 2, style: 1, label: '설정 변경', custom_id: 'quiet_set' },
-            { type: 2, style: 2, label: '\u2190 메인', custom_id: 'gui_back' },
+            { type: 2, style: 1, label: 'Settings', custom_id: 'quiet_set' },
+            { type: 2, style: 2, label: '← Main', custom_id: 'gui_back' },
             { type: 2, style: 4, label: '\u2715', custom_id: 'gui_close' },
           ],
         }],
@@ -551,6 +562,7 @@ function handleQuiet(parsed: ParsedCommand, ctx: CommandContext): CommandResult 
       if (!bot.quiet) bot.quiet = {}
       bot.quiet.schedule = value
       saveBotConfig(bot)
+      refreshRuntime(ctx)
       return { text: t('quiet.updated', ctx.lang) }
     }
     case 'autotalk': {
@@ -558,6 +570,7 @@ function handleQuiet(parsed: ParsedCommand, ctx: CommandContext): CommandResult 
       if (!bot.quiet) bot.quiet = {}
       bot.quiet.autotalk = value
       saveBotConfig(bot)
+      refreshRuntime(ctx)
       return { text: t('quiet.updated', ctx.lang) }
     }
     case 'holidays': {
@@ -565,6 +578,7 @@ function handleQuiet(parsed: ParsedCommand, ctx: CommandContext): CommandResult 
       if (!bot.quiet) bot.quiet = {}
       bot.quiet.holidays = value
       saveBotConfig(bot)
+      refreshRuntime(ctx)
       return { text: t('quiet.updated', ctx.lang) }
     }
     case 'timezone': {
@@ -572,6 +586,7 @@ function handleQuiet(parsed: ParsedCommand, ctx: CommandContext): CommandResult 
       if (!bot.quiet) bot.quiet = {}
       bot.quiet.timezone = value
       saveBotConfig(bot)
+      refreshRuntime(ctx)
       return { text: t('quiet.updated', ctx.lang) }
     }
     default:
@@ -616,7 +631,7 @@ function scheduleList(ctx: CommandContext): CommandResult {
     return { text: t('schedule.empty', ctx.lang) }
   }
 
-  // description 형태로 목록 표시
+  // Render the list in the embed description.
   const lines = all.map(s => {
     const status = s.enabled === false ? ' [OFF]' : ''
     const days = s.days ?? 'daily'
@@ -638,7 +653,7 @@ function scheduleList(ctx: CommandContext): CommandResult {
       components: [{
         type: 3,
         custom_id: 'schedule_select',
-        placeholder: '스케줄 선택',
+        placeholder: 'Select Schedule',
         options,
       }],
     })
@@ -647,15 +662,15 @@ function scheduleList(ctx: CommandContext): CommandResult {
   components.push({
     type: 1,
     components: [
-      { type: 2, style: 1, label: '추가', custom_id: 'sched_add' },
-      { type: 2, style: 2, label: '\u2190 메인', custom_id: 'gui_back' },
+      { type: 2, style: 1, label: 'Add', custom_id: 'sched_add' },
+      { type: 2, style: 2, label: '← Main', custom_id: 'gui_back' },
       { type: 2, style: 4, label: '\u2715', custom_id: 'gui_close' },
     ],
   })
 
   return {
     embeds: [{
-      title: '\uD83D\uDCC5 스케줄',
+      title: '\uD83D\uDCC5 Schedule',
       description: lines.join('\n'),
       color: 0x5865F2,
     }],
@@ -680,16 +695,16 @@ function scheduleDetail(parsed: ParsedCommand, ctx: CommandContext): CommandResu
 
   if (!entry) return { text: t('schedule.not_found', ctx.lang, { name }) }
 
-  // description 형태로 상세 표시
+  // Render the details in the embed description.
   const detailLines = [
-    `**시간**: ${entry.time}`,
-    `**주기**: ${entry.days ?? 'daily'}`,
-    `**모드**: ${schedType}`,
-    `**채널**: ${entry.channel}`,
-    `**실행**: ${entry.exec ?? 'prompt'}`,
-    `**활성**: ${entry.enabled !== false ? 'Yes' : 'No'}`,
+    `**Time**: ${entry.time}`,
+    `**Period**: ${entry.days ?? 'daily'}`,
+    `**Mode**: ${schedType}`,
+    `**Channel**: ${entry.channel}`,
+    `**Exec**: ${entry.exec ?? 'prompt'}`,
+    `**active**: ${entry.enabled !== false ? 'Yes' : 'No'}`,
   ]
-  if (entry.script) detailLines.push(`**스크립트**: ${entry.script}`)
+  if (entry.script) detailLines.push(`**Script**: ${entry.script}`)
 
   return {
     embeds: [{
@@ -700,10 +715,10 @@ function scheduleDetail(parsed: ParsedCommand, ctx: CommandContext): CommandResu
     components: [{
       type: 1,
       components: [
-        { type: 2, style: 1, label: '편집', custom_id: `sched_edit:${name}` },
-        { type: 2, style: 4, label: '삭제', custom_id: `sched_remove:${name}` },
-        { type: 2, style: 2, label: '테스트', custom_id: `sched_test:${name}` },
-        { type: 2, style: 2, label: '\u2190 목록', custom_id: 'bot_schedule' },
+        { type: 2, style: 1, label: 'Edit', custom_id: `sched_edit:${name}` },
+        { type: 2, style: 4, label: 'Delete', custom_id: `sched_remove:${name}` },
+        { type: 2, style: 2, label: 'Test', custom_id: `sched_test:${name}` },
+        { type: 2, style: 2, label: '← List', custom_id: 'bot_schedule' },
         { type: 2, style: 4, label: '\u2715', custom_id: 'gui_close' },
       ],
     }],
@@ -725,7 +740,7 @@ function scheduleAdd(parsed: ParsedCommand, ctx: CommandContext): CommandResult 
   const config = loadPluginConfig()
   const targetKey = mode === 'non-interactive' ? 'nonInteractive' : 'interactive'
 
-  // Check duplicates in both arrays
+  // Reject duplicate names across both schedule groups.
   const existsI = (config.interactive ?? []).find(s => s.name === name)
   const existsN = (config.nonInteractive ?? []).find(s => s.name === name)
   if (existsI || existsN) {
@@ -737,14 +752,15 @@ function scheduleAdd(parsed: ParsedCommand, ctx: CommandContext): CommandResult 
   arr.push({ name, time, channel, days, enabled: true })
   savePluginConfig(config)
 
-  // Write prompt file if provided
+  // Write the prompt file when prompt content is provided.
   if (prompt) {
     const promptsDir = config.promptsDir ?? join(DATA_DIR, 'prompts')
+    mkdirSync(promptsDir, { recursive: true })
     const promptPath = join(promptsDir, `${name}.md`)
     writeFileSync(promptPath, prompt + '\n', 'utf8')
   }
 
-  ctx.scheduler.restart()
+  refreshRuntime(ctx)
   return { text: t('schedule.added', ctx.lang, { name, mode, time }) }
 }
 
@@ -754,7 +770,7 @@ function scheduleEdit(parsed: ParsedCommand, ctx: CommandContext): CommandResult
 
   const config = loadPluginConfig()
 
-  // Find in either array
+  // Find the schedule in either array.
   let entry: TimedSchedule | undefined
   for (const key of ['interactive', 'nonInteractive'] as const) {
     const list = config[key]
@@ -765,7 +781,7 @@ function scheduleEdit(parsed: ParsedCommand, ctx: CommandContext): CommandResult
 
   if (!entry) return { text: t('schedule.not_found', ctx.lang, { name }) }
 
-  // Apply param overrides
+  // Apply the provided parameter overrides.
   if (parsed.params.time) entry.time = parsed.params.time
   if (parsed.params.channel) entry.channel = parsed.params.channel
   if (parsed.params.period || parsed.params.days) entry.days = (parsed.params.period ?? parsed.params.days) as 'daily' | 'weekday'
@@ -773,15 +789,16 @@ function scheduleEdit(parsed: ParsedCommand, ctx: CommandContext): CommandResult
   if (parsed.params.exec) entry.exec = parsed.params.exec as 'prompt' | 'script' | 'script+prompt'
   if (parsed.params.script) entry.script = parsed.params.script
 
-  // Update prompt file if provided
+  // Update the prompt file when new prompt content is provided.
   if (parsed.params.prompt) {
     const promptsDir = config.promptsDir ?? join(DATA_DIR, 'prompts')
+    mkdirSync(promptsDir, { recursive: true })
     const promptPath = join(promptsDir, `${name}.md`)
     writeFileSync(promptPath, parsed.params.prompt + '\n', 'utf8')
   }
 
   savePluginConfig(config)
-  ctx.scheduler.restart()
+  refreshRuntime(ctx)
   return { text: t('schedule.edited', ctx.lang, { name }) }
 }
 
@@ -806,7 +823,7 @@ function scheduleRemove(parsed: ParsedCommand, ctx: CommandContext): CommandResu
   if (!found) return { text: t('schedule.not_found', ctx.lang, { name }) }
 
   savePluginConfig(config)
-  ctx.scheduler.restart()
+  refreshRuntime(ctx)
   return { text: t('schedule.removed', ctx.lang, { name }) }
 }
 
@@ -850,7 +867,7 @@ export function handleProfileCommand(
     default: {
       const profile = loadProfileConfig()
 
-      // Merge new params
+      // Merge new parameter values into the existing profile.
       for (const [key, val] of Object.entries(parsed.params)) {
         ;(profile as Record<string, string>)[key.toLowerCase()] = val
       }

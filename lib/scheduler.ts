@@ -59,6 +59,7 @@ export class Scheduler {
   private holidayCountry: string | null = null       // ISO country code for holiday check
   private holidayChecked = ''                        // "YYYY-MM-DD" last checked date
   private todayIsHoliday = false                     // cached result for today
+  private quietSchedule: string | null = null        // global quiet hours "HH:MM-HH:MM"
 
   constructor(
     nonInteractive: TimedSchedule[],
@@ -74,6 +75,7 @@ export class Scheduler {
     this.channelsConfig = channelsConfig ?? null
     this.promptsDir = promptsDir ?? join(DATA_DIR, 'prompts')
     this.holidayCountry = botConfig?.quiet?.holidays ?? null
+    this.quietSchedule = botConfig?.quiet?.schedule ?? null
   }
 
   setInjectHandler(fn: InjectFn): void {
@@ -183,6 +185,29 @@ export class Scheduler {
     this.start()
   }
 
+  reloadConfig(
+    nonInteractive: TimedSchedule[],
+    interactive: TimedSchedule[],
+    proactive: ProactiveConfig | undefined,
+    channelsConfig: ChannelsConfig | undefined,
+    promptsDir?: string,
+    botConfig?: BotConfig,
+  ): void {
+    this.nonInteractive = nonInteractive.filter(s => s.enabled !== false)
+    this.interactive = interactive.filter(s => s.enabled !== false)
+    this.proactive = proactive ?? null
+    this.channelsConfig = channelsConfig ?? null
+    this.promptsDir = promptsDir ?? join(DATA_DIR, 'prompts')
+    this.holidayCountry = botConfig?.quiet?.holidays ?? null
+    this.quietSchedule = botConfig?.quiet?.schedule ?? null
+    this.holidayChecked = ''
+    this.todayIsHoliday = false
+    this.proactiveSlots = []
+    this.proactiveSlotsDate = ''
+    this.proactiveFiredToday = 0
+    this.restart()
+  }
+
   getStatus() {
     const result: Array<{
       name: string; time: string; days: string; type: string
@@ -284,10 +309,12 @@ export class Scheduler {
     ]
 
     for (const { schedule: s, type } of allTimed) {
-      if ((s.days ?? 'daily') === 'weekday' && isWeekend) continue
-      // Skip weekday schedules on public holidays
-      if ((s.days ?? 'daily') === 'weekday' && this.todayIsHoliday) {
-        // Log once per schedule per day
+      // Day-of-week check (daily, weekday, weekend, or comma-separated like "mon,wed,fri")
+      const days = s.days ?? 'daily'
+      if (!this.matchesDays(days, dow, isWeekend)) continue
+
+      // Holiday skip: explicit per-schedule (skipHolidays) or weekday backward compat
+      if (this.todayIsHoliday && (s.skipHolidays || days === 'weekday')) {
         const skipKey = `holiday:${dateStr}:${s.name}`
         if (!this.lastFired.has(skipKey)) {
           this.lastFired.set(skipKey, dateStr)
@@ -295,6 +322,9 @@ export class Scheduler {
         }
         continue
       }
+
+      // Per-schedule DND: skip during global quiet hours if dnd is true
+      if (s.dnd && this.isQuietHours(now)) continue
 
       // Determine if this schedule should fire
       const intervalMatch = s.time.match(/^every(\d+)m$/)
@@ -367,6 +397,32 @@ export class Scheduler {
     // Handle overnight DND (e.g. 23:00 - 07:00)
     if (dndStart > dndEnd) return hhmm >= dndStart || hhmm < dndEnd
     return hhmm >= dndStart && hhmm < dndEnd
+  }
+
+  /** Day abbreviation → JS day number (0=Sun...6=Sat) */
+  private static DAY_ABBRS: Record<string, number> = {
+    sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6,
+  }
+
+  /** Check if today matches the schedule's days setting */
+  private matchesDays(days: string, dow: number, isWeekend: boolean): boolean {
+    if (days === 'daily') return true
+    if (days === 'weekday') return !isWeekend
+    if (days === 'weekend') return isWeekend
+    // Comma-separated day abbreviations: "mon,wed,fri"
+    const dayList = days.split(',').map(d => d.trim().toLowerCase())
+    return dayList.some(d => Scheduler.DAY_ABBRS[d] === dow)
+  }
+
+  /** Check if current time is within global quiet hours (quiet.schedule) */
+  private isQuietHours(now: Date): boolean {
+    if (!this.quietSchedule) return false
+    const parts = this.quietSchedule.split('-')
+    if (parts.length !== 2) return false
+    const [start, end] = parts
+    const hhmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
+    if (start > end) return hhmm >= start || hhmm < end
+    return hhmm >= start && hhmm < end
   }
 
   private generateDailySlots(dateStr: string): void {

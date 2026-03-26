@@ -124,6 +124,11 @@ export interface ChannelBackend {
   validateChannel(chatId: string): Promise<void>
 
   /**
+   * Reset the outbound send counter. Called on new inbound turn.
+   */
+  resetSendCount(): void
+
+  /**
    * Start the typing indicator for a channel.
    * Sends the initial typing event and sets up a repeating interval.
    */
@@ -271,8 +276,12 @@ export interface TimedSchedule {
   name: string
   /** "HH:MM" (24h), "hourly", or interval like "every5m", "every10m", "every30m" */
   time: string
-  /** "daily" or "weekday" (Mon-Fri, skips weekends). Default: "daily" */
-  days?: 'daily' | 'weekday'
+  /** "daily", "weekday" (Mon-Fri), "weekend" (Sat-Sun), or comma-separated days "mon,wed,fri". Default: "daily" */
+  days?: 'daily' | 'weekday' | 'weekend' | string
+  /** Respect global quiet hours (quiet.schedule). true = skip during DND, false/undefined = ignore DND */
+  dnd?: boolean
+  /** Skip on public holidays. true = skip, false/undefined = run normally */
+  skipHolidays?: boolean
   /** Target channel label (resolved to ID via channelsConfig) */
   channel: string
   /** Prompt file path relative to promptsDir, or absolute path */

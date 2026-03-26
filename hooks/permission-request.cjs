@@ -81,7 +81,7 @@ function buildContent(toolName, toolInput) {
     detail = JSON.stringify(toolInput).substring(0, 800);
   }
 
-  let msg = '🔐 **권한 요청**\n도구: `' + toolName + '`';
+  let msg = '🔐 **Permission Request**\nTool: `' + toolName + '`';
   if (detail) msg += '\n```\n' + detail + '\n```';
   return msg;
 }
@@ -102,7 +102,7 @@ process.stdin.on('end', async () => {
     const channelId = mainLabel && channels && channels[mainLabel] && channels[mainLabel].id;
     if (!channelId) process.exit(0);
 
-    // Cleanup stale pending files
+    // Clean up stale pending files before creating a new request.
     cleanupStaleFiles();
 
     const uuid = crypto.randomBytes(16).toString('hex');
@@ -116,16 +116,16 @@ process.stdin.on('end', async () => {
     const toolInput = data.tool_input || {};
     const permSuggestions = data.permission_suggestions || [];
 
-    // Send Discord message with buttons
+    // Send the approval message with Discord buttons.
     const content = buildContent(toolName, toolInput);
     const body = {
       content: content,
       components: [{
         type: 1,
         components: [
-          { type: 2, style: 3, label: '승인', custom_id: 'perm-' + uuid + '-allow' },
-          { type: 2, style: 1, label: '세션 승인', custom_id: 'perm-' + uuid + '-session' },
-          { type: 2, style: 4, label: '거부', custom_id: 'perm-' + uuid + '-deny' }
+          { type: 2, style: 3, label: 'Allow', custom_id: 'perm-' + uuid + '-allow' },
+          { type: 2, style: 1, label: 'Session Allow', custom_id: 'perm-' + uuid + '-session' },
+          { type: 2, style: 4, label: 'Deny', custom_id: 'perm-' + uuid + '-deny' }
         ]
       }]
     };
@@ -134,14 +134,14 @@ process.stdin.on('end', async () => {
     const messageId = msgResult.id;
 
     if (!messageId) {
-      // Discord 메시지 전송 실패 → 터미널 폴백
+      // If Discord delivery fails, fall back to the terminal flow.
       process.exit(0);
     }
 
-    // Create pending file
+    // Create the pending marker for the matching result poll.
     fs.writeFileSync(pendingFile, JSON.stringify({ uuid: uuid, messageId: messageId, channelId: channelId, toolName: toolName, createdAt: Date.now() }));
 
-    // Poll for result
+    // Poll for the decision result file.
     const startTime = Date.now();
 
     const STOP_FLAG = path.join(RUNTIME_ROOT, `stop-${instanceId}.flag`);
@@ -149,27 +149,27 @@ process.stdin.on('end', async () => {
     while (Date.now() - startTime < TIMEOUT) {
       await new Promise(r => setTimeout(r, POLL_INTERVAL));
 
-      // STOP 플래그 체크 — /claude stop 명령 시 즉시 중단
+      // Abort immediately when the stop flag is written.
       try {
         if (fs.existsSync(STOP_FLAG)) {
           const ts = parseInt(fs.readFileSync(STOP_FLAG, 'utf8').trim(), 10);
           if (Date.now() - ts < 30000) {
             fs.unlinkSync(STOP_FLAG);
-            // cleanup
+            // Clean up runtime markers.
             try { fs.unlinkSync(pendingFile); } catch {}
             try { fs.unlinkSync(resultFile); } catch {}
-            // Discord 메시지 수정
+            // Update the Discord message to show the interruption.
             if (messageId) {
               await discordApi('PATCH', '/api/v10/channels/' + channelId + '/messages/' + messageId, token, {
-                content: content + '\n\n⛔ 작업이 중단되었습니다.',
+                content: content + '\n\n⛔ Operation interrupted.',
                 components: []
               });
             }
-            // deny + interrupt
+            // Return a deny + interrupt decision to the hook caller.
             process.stdout.write(JSON.stringify({
               hookSpecificOutput: {
                 hookEventName: 'PermissionRequest',
-                decision: { behavior: 'deny', message: '사용자가 작업을 중단했습니다.', interrupt: true }
+                decision: { behavior: 'deny', message: 'User interrupted the operation.', interrupt: true }
               }
             }));
             process.exit(0);
@@ -186,8 +186,7 @@ process.stdin.on('end', async () => {
           if (result === 'allow') {
             decision = { hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'allow' } } };
           } else if (result === 'session') {
-            // permission_suggestions가 있으면 그대로 사용 (공식 방법)
-            // 없으면 도구 전체를 세션에서 허용
+            // Reuse permission suggestions when available; otherwise allow the full tool for the session.
             const perms = permSuggestions.length > 0
               ? permSuggestions.map(s => ({ ...s, destination: 'session' }))
               : [{ type: 'addRules', rules: [{ toolName: toolName }], behavior: 'allow', destination: 'session' }];
@@ -201,13 +200,13 @@ process.stdin.on('end', async () => {
               }
             };
           } else {
-            decision = { hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'deny', message: 'Discord에서 거부됨' } } };
+            decision = { hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'deny', message: 'Denied from Discord' } } };
           }
         } catch {
-          decision = { hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'deny', message: '결과 읽기 실패' } } };
+          decision = { hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'deny', message: 'Failed to read result' } } };
         }
 
-        // Cleanup
+        // Clean up runtime markers.
         try { fs.unlinkSync(pendingFile); } catch {}
         try { fs.unlinkSync(resultFile); } catch {}
 
@@ -217,23 +216,23 @@ process.stdin.on('end', async () => {
       }
     }
 
-    // Timeout — edit Discord message and deny
+    // Timeout — update the Discord message and deny the request.
     if (messageId) {
       await discordApi('PATCH', '/api/v10/channels/' + channelId + '/messages/' + messageId, token, {
-        content: content + '\n\n\u26A0\uFE0F 시간 초과로 자동 거부되었습니다.',
+        content: content + '\n\n\u26A0\uFE0F Auto-denied due to timeout.',
         components: []
       });
     }
 
-    // Cleanup
+    // Clean up runtime markers.
     try { fs.unlinkSync(pendingFile); } catch {}
     try { fs.unlinkSync(resultFile); } catch {}
 
-    const denyDecision = { hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'deny', message: '시간 초과' } } };
+    const denyDecision = { hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'deny', message: 'Timeout' } } };
     process.stdout.write(JSON.stringify(denyDecision));
     process.exit(0);
   } catch {
-    // Fail-closed: empty output → fallback to terminal approval
+    // Fail closed and let Claude fall back to terminal approval.
     process.exit(0);
   }
 });

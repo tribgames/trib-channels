@@ -126,6 +126,7 @@ export class DiscordBackend implements ChannelBackend {
   private isStatic: boolean
   private bootAccess: Access | null = null
   private recentSentIds = new Set<string>()
+  private sendCount = 0
   private approvalTimer: ReturnType<typeof setInterval> | null = null
   private typingIntervals = new Map<string, NodeJS.Timeout>()
 
@@ -200,7 +201,7 @@ export class DiscordBackend implements ChannelBackend {
               userId: interaction.user.id,
               channelId: interaction.channelId ?? '',
               fields,
-              message: undefined,
+              message: interaction.message ? { id: interaction.message.id } : undefined,
             })
           }
           await interaction.deferUpdate().catch(() => {})
@@ -208,7 +209,7 @@ export class DiscordBackend implements ChannelBackend {
         }
 
         if (interaction.isButton() || interaction.isStringSelectMenu() || interaction.isRoleSelectMenu() || interaction.isUserSelectMenu() || interaction.isChannelSelectMenu()) {
-          // Modal이 필요한 버튼은 deferUpdate 안 하고 raw interaction 전달
+          // Pass modal-triggering interactions through without deferUpdate.
           const needsModal = interaction.isButton() && (
             interaction.customId === 'sched_add_next' ||
             interaction.customId === 'sched_edit_next' ||
@@ -218,7 +219,7 @@ export class DiscordBackend implements ChannelBackend {
           )
 
           if (needsModal) {
-            // server.ts에서 showModal 처리할 수 있도록 raw interaction 전달
+            // Forward the raw interaction so server.ts can call showModal().
             if (this.onModalRequest) {
               this.onModalRequest(interaction as any)
             }
@@ -273,6 +274,10 @@ export class DiscordBackend implements ChannelBackend {
     this.client.destroy()
   }
 
+  resetSendCount(): void {
+    this.sendCount = 0
+  }
+
   startTyping(channelId: string): void {
     this.stopTyping(channelId)
     const ch = this.client.channels.cache.get(channelId)
@@ -313,6 +318,11 @@ export class DiscordBackend implements ChannelBackend {
     }
     if (files.length > 10) throw new Error('max 10 attachments per message')
 
+    // Consecutive message padding — prepend ZWS newline when prior messages exist in the same turn
+    if (text && this.sendCount > 0) {
+      text = '\u3164\n' + text
+    }
+
     const access = this.loadAccess()
     const limit = Math.max(1, Math.min(access.textChunkLimit ?? MAX_CHUNK_LIMIT, MAX_CHUNK_LIMIT))
     const mode = access.chunkMode ?? 'length'
@@ -340,6 +350,7 @@ export class DiscordBackend implements ChannelBackend {
         this.noteSent(sent.id)
         sentIds.push(sent.id)
       }
+      this.sendCount += sentIds.length
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       throw new Error(`send failed after ${sentIds.length}/${chunks.length} chunk(s): ${msg}`)

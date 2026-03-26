@@ -1,118 +1,207 @@
 # claude2bot
 
-> 🤖 100% built with Claude Code — inspired by the official Discord plugin, redesigned as an all-in-one autonomous agent
+Discord channel plugin for Claude Code with live chat forwarding, slash controls, scheduler flows, permission buttons, and optional voice transcription.
 
-**v0.1.0-preview** — Claude Code channel mode plugin for autonomous AI agent & personal assistant.
+Preview note:
+- Claude Code channel mode is still experimental.
+- In the current preview environment, this plugin is expected to be both installed/enabled and launched with the development channel flag.
 
-> ⚠️ **Preview**: Claude Code's channel API is currently in preview. The `--dangerously-load-development-channels` flag is required to run this plugin.
+Support:
+- `dev@tribgames.com`
 
-## Features
+## What It Does
 
-- **Discord-first**: purpose-built Discord channel bridge for Claude Code
-- **Built-in scheduler**: non-interactive (`claude -p`), interactive (session inject), proactive (random-interval bot-initiated chat)
-- **Voice transcription**: whisper.cpp with cross-platform auto-detection (macOS / Windows / Linux)
-- **Access control**: DM allowlists, channel policies, pairing codes
-- **Proactive chat**: Memory-driven conversations with feedback loop and idle guard
+- Bridges Discord channel messages into Claude Code
+- Mirrors Claude responses back to Discord
+- Supports slash commands for session status, schedule management, diagnostics, and bot settings
+- Provides permission approval buttons for tool use
+- Supports scheduler-driven interactive, non-interactive, and proactive flows
+- Optionally transcribes voice messages
 
-Windows session control priority:
-- Preferred: `WSL tmux`
-- Fallback: native PowerShell window activation
+## Recommended Runtime
 
-## Quick Start
+- macOS:
+  Run Claude Code inside `tmux`.
 
-### 1. Add marketplace & install
+- Windows:
+  Run Claude Code inside `WSL + tmux`.
+
+- Windows native PowerShell:
+  Supported as a limited fallback only.
+  Status and configuration commands still work, but live session-control commands are not fully reliable unless the Claude window can be activated.
+
+## PowerShell Limitation
+
+On native Windows PowerShell, the plugin can still handle CLI-style and config-driven features such as:
+
+- `/claude status`
+- `/claude config`
+- `/claude access`
+- `/claude doctor`
+- `/claude help`
+- `/claude bot ...`
+- `/claude schedule list`
+- `/claude schedule add`
+- `/claude schedule remove`
+- `/claude schedule restart`
+
+Commands that inject input into the live Claude session are best used in `tmux` or `WSL tmux`:
+
+- `/claude model`
+- `/claude compact`
+- `/claude clear`
+- `/claude new`
+- `/claude resume`
+
+`/claude stop` is usually the only native PowerShell session-control command that behaves acceptably, but `WSL tmux` is still the recommended Windows setup.
+
+## Installation
+
+### 1. Add the marketplace source
 
 ```bash
 claude plugin marketplace add https://github.com/claude2bot/claude2bot
+```
+
+### 2. Install the plugin
+
+```bash
 claude plugin install claude2bot@claude2bot
 ```
 
-### 2. Configure
+### 3. Verify the plugin is enabled
 
-Run the setup wizard inside a Claude Code session:
+Make sure `~/.claude/settings.json` contains:
 
-```
-/claude2bot:setup
-```
-
-The wizard will:
-- Ask for your Discord bot token
-- Connect to verify the token and discover channels
-- Let you select main channel and additional channels
-- Configure access policy and voice transcription
-- Write `config.json` and `access.json` automatically
-
-### 3. Run
-
-```bash
-# Channel API is in preview — this flag is required
-claude --dangerously-load-development-channels plugin:claude2bot@claude2bot
-```
-
-The session will show:
-```
-Listening for channel messages from: plugin:claude2bot@claude2bot
-```
-
-## Commands
-
-| Command | Description |
-|---------|-------------|
-| `/claude2bot:setup` | Interactive first-time setup |
-| `/claude2bot:status` | Bot connection, channels, scheduler status |
-| `/claude2bot:schedule` | List, add, remove, or trigger schedules |
-| `/claude2bot:access` | Manage allowlists, pairings, DM policy |
-| `/claude2bot:doctor` | Diagnose configuration and connectivity |
-| `/claude2bot:voice-setup` | Install voice transcription dependencies |
-
-## Configuration Files
-
-| File | Description |
-|------|-------------|
-| `config.json` | Backend, tokens, channels, schedules, voice settings |
-| `access.json` | Per-backend access control policies |
-| `settings.default.md` | Default behavioral rules (bundled) |
-| `settings.local.md` | User overrides for response style (gitignored) |
-| `prompts/` | Schedule prompt templates (`.md` files) |
-
-### Voice Config
-
-```jsonc
+```json
 {
-  "voice": {
-    "enabled": true,
-    "command": "whisper-cli",    // optional: override binary name or full path
-    "model": null,               // optional: path to GGML model file
-    "language": "auto"           // "auto" for detection, or BCP-47 code
+  "enabledPlugins": {
+    "claude2bot@claude2bot": true
   }
 }
 ```
 
-Cross-platform auto-detection order: `whisper-cli` → `whisper` → `whisper.cpp`
+### 4. Launch Claude Code with the development channel flag
 
-Requires [whisper.cpp](https://github.com/ggerganov/whisper.cpp) and `ffmpeg`.
+```bash
+claude --dangerously-load-development-channels plugin:claude2bot@claude2bot
+```
 
-## Scheduler Types
+This is currently the expected launch command for preview channel mode.
 
-| Type | How it runs | Session required? |
-|------|-------------|-------------------|
-| **non-interactive** | Spawns `claude -p` subprocess | No (independent process) |
-| **interactive** | Injects prompt into current session | Yes |
-| **proactive** | Random-interval session inject with idle guard | Yes |
+### 5. Run the setup flow
 
-## CLI Mirroring
+Inside Claude Code, run:
 
-Assistant text and tool activity are forwarded by the MCP server and transcript watcher. Hooks are only used for session bootstrap, turn-end signaling, and permission requests:
+```text
+/claude2bot:setup
+```
 
-| Hook | Purpose |
-|------|---------|
-| `SessionStart` | Injects bundled + local instruction context |
-| `Stop` | Signals turn end so the server can flush final text and clear typing |
-| `PermissionRequest` | Sends approve/deny buttons to Discord and waits for decision |
+The setup flow will guide you through:
 
-- Action tools (Bash, Edit, Write, Agent, Team) show with `-#` subtext + code block
-- Search tools (Read, Grep, Glob) show as `-#` one-liner
-- Voice messages are auto-transcribed by the server — no manual processing needed
+- Discord bot token configuration
+- Main channel selection
+- Additional channel registration
+- Access policy
+- Optional voice setup
+
+## Daily Start Command
+
+After installation, the normal start command is:
+
+```bash
+claude --dangerously-load-development-channels plugin:claude2bot@claude2bot
+```
+
+Recommended examples:
+
+```bash
+# macOS
+tmux new -s claude
+claude --dangerously-load-development-channels plugin:claude2bot@claude2bot
+```
+
+```bash
+# Windows via WSL
+wsl
+tmux new -s claude
+claude --dangerously-load-development-channels plugin:claude2bot@claude2bot
+```
+
+## Slash Commands
+
+### Session control
+
+- `/claude stop`
+- `/claude status`
+- `/claude config`
+- `/claude model`
+- `/claude compact`
+- `/claude clear`
+- `/claude new`
+- `/claude resume`
+- `/claude language`
+
+### Scheduler
+
+- `/claude schedule list`
+- `/claude schedule add`
+- `/claude schedule remove`
+- `/claude schedule restart`
+
+### Diagnostics and access
+
+- `/claude access`
+- `/claude doctor`
+- `/claude help`
+
+### Bot settings panels
+
+- `/claude bot status`
+- `/claude bot schedule`
+- `/claude bot autotalk`
+- `/claude bot quiet`
+- `/claude bot activity`
+- `/claude bot profile`
+
+## Runtime Files
+
+Main plugin data:
+
+- `config.json`
+- `bot.json`
+- `profile.json`
+- `discord/access.json`
+- `prompts/*.md`
+
+Session runtime files are created under the system temp directory for turn-end, permission, control, and status signaling.
+
+## External Dependencies
+
+Required:
+
+- Node.js
+- npm
+- Discord bot token
+
+Recommended for full session control:
+
+- macOS/Linux: `tmux`
+- Windows: `WSL + tmux`
+
+Optional:
+
+- `ffmpeg`
+- `whisper.cpp` or compatible `whisper-cli`
+
+## Current Packaging Note
+
+The preview package currently starts through `.mcp.json` with:
+
+- `npm install --silent`
+- `npx tsx server.ts`
+
+That means first-run startup can be slower than a prebuilt distribution.
 
 ## License
 

@@ -3,7 +3,7 @@
   "description": "Channel mode plugin for Claude Code — autonomous AI agent for Discord",
   "owner": {
     "name": "claude2bot",
-    "email": "claude2bot@users.noreply.github.com"
+    "email": "dev@tribgames.com"
   },
   "plugins": [
     {

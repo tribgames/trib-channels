@@ -7,7 +7,7 @@
 
 import { REST, Routes, SlashCommandBuilder } from 'discord.js'
 import type { ChatInputCommandInteraction, Client } from 'discord.js'
-import { readFileSync, existsSync } from 'fs'
+import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import type { PluginConfig } from '../backends/types.js'
@@ -62,247 +62,247 @@ const i18n: Record<string, Record<Lang, string>> = {
   // stop
   'stop.not_found': {
     en: 'Parent process not found.',
-    ko: '부모 프로세스를 찾을 수 없습니다.',
+    ko: 'Parent process not found.',
     ja: '親プロセスが見つかりません。',
     zh: '找不到父进程。',
   },
   'stop.sent': {
     en: 'SIGINT sent (PID: {pid})',
-    ko: 'SIGINT 전송 완료 (PID: {pid})',
+    ko: 'SIGINT sent (PID: {pid})',
     ja: 'SIGINT送信完了 (PID: {pid})',
     zh: '已发送SIGINT (PID: {pid})',
   },
   'stop.failed': {
     en: 'Failed to send SIGINT: {error}',
-    ko: 'SIGINT 전송 실패: {error}',
+    ko: 'SIGINT failed: {error}',
     ja: 'SIGINT送信失敗: {error}',
     zh: '发送SIGINT失败: {error}',
   },
   // status
   'status.checking': {
     en: 'Checking status...',
-    ko: '상태 확인 중...',
+    ko: 'Checking status...',
     ja: 'ステータス確認中...',
     zh: '正在检查状态...',
   },
   'status.started': {
     en: 'Started',
-    ko: '시작 시간',
+    ko: 'Start Time',
     ja: '開始時間',
     zh: '启动时间',
   },
   // config
   'config.loading': {
     en: 'Loading config...',
-    ko: '설정 불러오는 중...',
+    ko: 'Loading config...',
     ja: '設定を読み込み中...',
     zh: '正在加载配置...',
   },
   // model
   'model.switched': {
     en: 'Model switch request: **{model}** (forwarded to session)',
-    ko: '모델 전환 요청: **{model}** (세션에 전달됨)',
+    ko: 'Model switch requested: **{model}** (forwarded to session)',
     ja: 'モデル切替リクエスト: **{model}** (セッションに転送済み)',
     zh: '模型切换请求: **{model}** (已转发到会话)',
   },
   // compact
   'compact.forwarded': {
     en: 'Compact request forwarded to session.',
-    ko: '컨텍스트 압축 요청이 세션에 전달되었습니다.',
+    ko: 'Context compact request forwarded to session.',
     ja: '圧縮リクエストをセッションに転送しました。',
     zh: '压缩请求已转发到会话。',
   },
   // clear
   'clear.forwarded': {
     en: 'Clear request forwarded to session.',
-    ko: '대화 초기화 요청이 세션에 전달되었습니다.',
+    ko: 'Clear request forwarded to session.',
     ja: 'クリアリクエストをセッションに転送しました。',
     zh: '清除请求已转发到会话。',
   },
   // new
   'new.forwarded': {
     en: 'New session request forwarded to session.',
-    ko: '새 세션 시작 요청이 세션에 전달되었습니다.',
+    ko: 'New session request forwarded to session.',
     ja: '新しいセッションリクエストをセッションに転送しました。',
     zh: '新建会话请求已转发到会话。',
   },
   // resume
   'resume.forwarded': {
     en: 'Resume request forwarded to session.',
-    ko: '세션 이어하기 요청이 세션에 전달되었습니다.',
+    ko: 'Resume request forwarded to session.',
     ja: 'セッション再開リクエストを転送しました。',
     zh: '恢复会话请求已转发到会话。',
   },
   // schedule
   'schedule.no_schedules': {
     en: 'No schedules registered.',
-    ko: '등록된 스케줄이 없습니다.',
+    ko: 'No schedules registered.',
     ja: '登録済みスケジュールはありません。',
     zh: '没有已注册的计划。',
   },
   'schedule.name_required_remove': {
     en: 'Please specify a schedule name. (`/claude schedule remove [name]`)',
-    ko: '스케줄 이름을 지정해주세요. (`/claude schedule remove [name]`)',
+    ko: 'Please specify schedule name. (`/claude schedule remove [name]`)',
     ja: 'スケジュール名を指定してください。(`/claude schedule remove [name]`)',
     zh: '请指定计划名称。(`/claude schedule remove [name]`)',
   },
   'schedule.name_required_add': {
     en: 'Please specify a schedule name. (`/claude schedule add [name]`)',
-    ko: '스케줄 이름을 지정해주세요. (`/claude schedule add [name]`)',
+    ko: 'Please specify schedule name. (`/claude schedule add [name]`)',
     ja: 'スケジュール名を指定してください。(`/claude schedule add [name]`)',
     zh: '请指定计划名称。(`/claude schedule add [name]`)',
   },
   'schedule.not_found': {
     en: 'Schedule "{name}" not found.',
-    ko: '스케줄 "{name}"을 찾을 수 없습니다.',
+    ko: 'Schedule "{name}" not found.',
     ja: 'スケジュール「{name}」が見つかりません。',
     zh: '找不到计划「{name}」。',
   },
   'schedule.removed': {
     en: 'Schedule "{name}" removed (effective from next tick).',
-    ko: '스케줄 "{name}" 삭제 완료 (다음 틱부터 적용).',
+    ko: 'Schedule "{name}" deleted (effective next tick).',
     ja: 'スケジュール「{name}」を削除しました (次のティックから適用)。',
     zh: '计划「{name}」已删除 (下次执行时生效)。',
   },
   'schedule.remove_failed': {
     en: 'Remove failed: {error}',
-    ko: '삭제 실패: {error}',
+    ko: 'Delete failed: {error}',
     ja: '削除失敗: {error}',
     zh: '删除失败: {error}',
   },
   'schedule.add_missing_options': {
     en: 'Missing required options. Usage: `/claude schedule add name:<name> time:<HH:MM> channel:<label> prompt:<text>`',
-    ko: '필수 옵션이 누락되었습니다. 사용법: `/claude schedule add name:<이름> time:<HH:MM> channel:<채널> prompt:<텍스트>`',
+    ko: 'Required options missing. Usage: `/claude schedule add name:<name> time:<HH:MM> channel:<channel> prompt:<text>`',
     ja: '必須オプションが不足しています。使い方: `/claude schedule add name:<名前> time:<HH:MM> channel:<チャンネル> prompt:<テキスト>`',
     zh: '缺少必填选项。用法: `/claude schedule add name:<名称> time:<HH:MM> channel:<频道> prompt:<文本>`',
   },
   'schedule.already_exists': {
     en: 'Schedule "{name}" already exists.',
-    ko: '스케줄 "{name}"이(가) 이미 존재합니다.',
+    ko: 'Schedule "{name}" already exists.',
     ja: 'スケジュール「{name}」は既に存在します。',
     zh: '计划「{name}」已存在。',
   },
   'schedule.added': {
     en: 'Schedule "{name}" added (time: {time}, channel: {channel}). Prompt saved to {name}.md.',
-    ko: '스케줄 "{name}" 추가 완료 (시간: {time}, 채널: {channel}). 프롬프트가 {name}.md에 저장되었습니다.',
+    ko: 'Schedule "{name}" added (time: {time}, channel: {channel}). Prompt saved to {name}.md.',
     ja: 'スケジュール「{name}」を追加しました (時間: {time}, チャンネル: {channel})。プロンプトを{name}.mdに保存しました。',
     zh: '计划「{name}」已添加 (时间: {time}, 频道: {channel})。提示已保存到{name}.md。',
   },
   'schedule.add_failed': {
     en: 'Add failed: {error}',
-    ko: '추가 실패: {error}',
+    ko: 'Add failed: {error}',
     ja: '追加失敗: {error}',
     zh: '添加失败: {error}',
   },
   'schedule.restarted': {
     en: 'Scheduler restarted.',
-    ko: '스케줄러가 재시작되었습니다.',
+    ko: 'Scheduler restarted.',
     ja: 'スケジューラーを再起動しました。',
     zh: '调度器已重启。',
   },
   // doctor
   'doctor.config_exists': {
     en: '[PASS] Config file exists',
-    ko: '[PASS] Config 파일 존재',
+    ko: '[PASS] Config file exists',
     ja: '[PASS] 設定ファイルあり',
     zh: '[PASS] 配置文件存在',
   },
   'doctor.config_missing': {
     en: '[FAIL] Config file missing',
-    ko: '[FAIL] Config 파일 없음',
+    ko: '[FAIL] Config file missing',
     ja: '[FAIL] 設定ファイルなし',
     zh: '[FAIL] 配置文件缺失',
   },
   'doctor.token_ok': {
     en: '[PASS] Bot token configured',
-    ko: '[PASS] 봇 토큰 설정됨',
+    ko: '[PASS] Bot token configured',
     ja: '[PASS] ボットトークン設定済み',
     zh: '[PASS] 机器人令牌已配置',
   },
   'doctor.token_missing': {
     en: '[FAIL] Bot token missing',
-    ko: '[FAIL] 봇 토큰 없음',
+    ko: '[FAIL] Bot token missing',
     ja: '[FAIL] ボットトークンなし',
     zh: '[FAIL] 机器人令牌缺失',
   },
   'doctor.access_parse_failed': {
     en: '[WARN] access.json parse failed',
-    ko: '[WARN] access.json 파싱 실패',
+    ko: '[WARN] access.json parse failed',
     ja: '[WARN] access.json解析失敗',
     zh: '[WARN] access.json解析失败',
   },
   'doctor.access_missing': {
     en: '[WARN] access.json missing -- configure with /claude2bot:access',
-    ko: '[WARN] access.json 없음 -- /claude2bot:access 로 설정',
+    ko: '[WARN] access.json missing -- configure via /claude2bot:access',
     ja: '[WARN] access.jsonなし -- /claude2bot:accessで設定',
     zh: '[WARN] access.json缺失 -- 使用/claude2bot:access配置',
   },
   'doctor.channels_not_set': {
     en: '[WARN] channelsConfig not set',
-    ko: '[WARN] channelsConfig 미설정',
+    ko: '[WARN] channelsConfig not set',
     ja: '[WARN] channelsConfig未設定',
     zh: '[WARN] channelsConfig未设置',
   },
   'doctor.voice_enabled': {
     en: '[INFO] Voice enabled',
-    ko: '[INFO] Voice 활성화',
+    ko: '[INFO] Voice enabled',
     ja: '[INFO] 音声有効',
     zh: '[INFO] 语音已启用',
   },
   // language
   'language.set': {
     en: 'Language set to English.',
-    ko: '언어가 한국어로 설정되었습니다.',
+    ko: 'Language set to Korean.',
     ja: '言語が日本語に設定されました。',
     zh: '语言已设置为中文。',
   },
   // access
   'access.title': {
     en: '**Access Control Status**',
-    ko: '**접근 제어 상태**',
+    ko: '**Access Control Status**',
     ja: '**アクセス制御状態**',
     zh: '**访问控制状态**',
   },
   'access.dm_policy': {
     en: 'DM Policy: `{policy}`',
-    ko: 'DM 정책: `{policy}`',
+    ko: 'DM policy: `{policy}`',
     ja: 'DMポリシー: `{policy}`',
     zh: 'DM策略: `{policy}`',
   },
   'access.allow_from': {
     en: 'Allowed Users: {count}',
-    ko: '허용된 사용자: {count}명',
+    ko: 'Allowed users: {count}',
     ja: '許可ユーザー: {count}人',
     zh: '允许的用户: {count}人',
   },
   'access.channels': {
     en: 'Registered Channels: {count}',
-    ko: '등록된 채널: {count}개',
+    ko: 'Registered channels: {count}',
     ja: '登録チャンネル: {count}個',
     zh: '已注册频道: {count}个',
   },
   'access.pending': {
     en: 'Pending Pairings: {count}',
-    ko: '대기 중인 페어링: {count}개',
+    ko: 'Pending pairings: {count}',
     ja: '保留中のペアリング: {count}件',
     zh: '待处理配对: {count}个',
   },
   'access.not_found': {
     en: 'access.json not found. Configure with `/claude2bot:access`.',
-    ko: 'access.json을 찾을 수 없습니다. `/claude2bot:access`로 설정해주세요.',
+    ko: 'access.json not found. Configure via `/claude2bot:access`.',
     ja: 'access.jsonが見つかりません。`/claude2bot:access`で設定してください。',
     zh: '找不到access.json。请使用`/claude2bot:access`配置。',
   },
   'access.parse_failed': {
     en: 'Failed to parse access.json: {error}',
-    ko: 'access.json 파싱 실패: {error}',
+    ko: 'access.json parse failed: {error}',
     ja: 'access.json解析失敗: {error}',
     zh: 'access.json解析失败: {error}',
   },
   // common
   'unknown_command': {
     en: 'Unknown command: {cmd}',
-    ko: '알 수 없는 명령: {cmd}',
+    ko: 'Unknown command: {cmd}',
     ja: '不明なコマンド: {cmd}',
     zh: '未知命令: {cmd}',
   },
@@ -328,6 +328,7 @@ export interface SlashCommandContext {
   scheduler: Scheduler
   instanceId: string
   turnEndFile: string
+  reloadRuntimeConfig: () => void
   /** Inject a command into the MCP session as a notification */
   notify: NotifyFn
   /** The MCP server's process (for stop command) */
@@ -341,7 +342,7 @@ function buildCommands(): SlashCommandBuilder {
     .setName('claude')
     .setDescription('Claude Code session control')
     .setDescriptionLocalizations({
-      ko: 'Claude Code 세션 제어',
+      ko: 'Claude Code session control',
       ja: 'Claude Code セッション制御',
       'zh-CN': 'Claude Code 会话控制',
       'zh-TW': 'Claude Code 工作階段控制',
@@ -353,7 +354,7 @@ function buildCommands(): SlashCommandBuilder {
   claude.addSubcommand(sub =>
     sub.setName('stop').setDescription('Stop current task')
       .setDescriptionLocalizations({
-        ko: '현재 작업 중단',
+        ko: 'Stop current task',
         ja: '現在のタスクを停止',
         'zh-CN': '停止当前任务',
         'zh-TW': '停止目前任務',
@@ -366,7 +367,7 @@ function buildCommands(): SlashCommandBuilder {
   claude.addSubcommand(sub =>
     sub.setName('status').setDescription('Show session status')
       .setDescriptionLocalizations({
-        ko: '세션 상태 확인',
+        ko: 'Check session status',
         ja: 'セッション状態確認',
         'zh-CN': '查看会话状态',
         'zh-TW': '查看工作階段狀態',
@@ -379,7 +380,7 @@ function buildCommands(): SlashCommandBuilder {
   claude.addSubcommand(sub =>
     sub.setName('config').setDescription('Show configuration')
       .setDescriptionLocalizations({
-        ko: '설정 확인',
+        ko: 'Check config',
         ja: '設定確認',
         'zh-CN': '查看配置',
         'zh-TW': '查看設定',
@@ -392,7 +393,7 @@ function buildCommands(): SlashCommandBuilder {
   claude.addSubcommand(sub =>
     sub.setName('compact').setDescription('Compact conversation')
       .setDescriptionLocalizations({
-        ko: '대화 압축',
+        ko: 'Compact conversation',
         ja: '会話を圧縮',
         'zh-CN': '压缩对话',
         'zh-TW': '壓縮對話',
@@ -405,7 +406,7 @@ function buildCommands(): SlashCommandBuilder {
   claude.addSubcommand(sub =>
     sub.setName('clear').setDescription('Clear conversation')
       .setDescriptionLocalizations({
-        ko: '대화 초기화',
+        ko: 'Clear conversation',
         ja: '会話をクリア',
         'zh-CN': '清除对话',
         'zh-TW': '清除對話',
@@ -500,7 +501,7 @@ function buildCommands(): SlashCommandBuilder {
         .setRequired(true)
         .addChoices(
           { name: 'English', value: 'en' },
-          { name: '한국어', value: 'ko' },
+          { name: 'Korean', value: 'ko' },
           { name: '日本語', value: 'ja' },
           { name: '中文', value: 'zh' },
         )
@@ -743,7 +744,7 @@ export async function registerSlashCommands(client: Client, token: string): Prom
   const rest = new REST({ version: '10' }).setToken(token)
   const commands = [buildCommands().toJSON()]
 
-  // cache가 비어있으면 fetch 시도
+  // Fetch guilds if the local cache is empty.
   let guilds = client.guilds.cache
   if (guilds.size === 0) {
     process.stderr.write('claude2bot: guild cache empty, fetching...\n')
@@ -805,9 +806,9 @@ export async function handleSlashCommand(
           const ctxPct = data.context_window?.used_percentage
           if (ctxPct != null) lines.push(`**Context** ${Math.round(ctxPct)}%`)
           const fiveH = data.rate_limits?.five_hour
-          if (fiveH) lines.push(`**5시간** ${Math.round(fiveH.used_percentage)}% (리셋 ${fmtTime(fiveH.resets_at)})`)
+          if (fiveH) lines.push(`**5h** ${Math.round(fiveH.used_percentage)}% (reset ${fmtTime(fiveH.resets_at)})`)
           const sevenD = data.rate_limits?.seven_day
-          if (sevenD) lines.push(`**주간** ${Math.round(sevenD.used_percentage)}% (리셋 ${fmtTime(sevenD.resets_at)})`)
+          if (sevenD) lines.push(`**Weekly** ${Math.round(sevenD.used_percentage)}% (reset ${fmtTime(sevenD.resets_at)})`)
           desc = lines.join('\n')
         }
       } catch { /* graceful fallback */ }
@@ -866,7 +867,7 @@ async function handleStop(
   const { writeFileSync } = await import('fs')
   const result = await controlClaudeSession(ctx.instanceId, { type: 'interrupt' })
 
-  // Escape 중단 시 Stop 훅이 안 불릴 수 있으므로 직접 turn-end 파일 생성
+  // Escape-based interruption may not trigger Stop, so write turn-end directly.
   try {
     writeFileSync(ctx.turnEndFile, String(Date.now()))
   } catch {}
@@ -938,16 +939,16 @@ async function handleResume(
 
 async function handleLanguage(
   interaction: ChatInputCommandInteraction,
-  _ctx: SlashCommandContext,
+  ctx: SlashCommandContext,
 ): Promise<void> {
   const lang = interaction.options.getString('lang', true) as Lang
   try {
     const configPath = join(DATA_DIR, 'config.json')
     const config = JSON.parse(readFileSync(configPath, 'utf8'))
     config.language = lang
-    const { writeFileSync } = await import('fs')
     writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n')
     invalidateConfigLangCache()
+    ctx.reloadRuntimeConfig()
     await interaction.reply({ embeds: [{ title: 'Language', description: t('language.set', lang), color: EMBED_COLOR }], flags: 64 })
   } catch (err) {
     await interaction.reply({
@@ -975,7 +976,7 @@ async function handleAccess(
     const dmPolicy = access.dmPolicy ?? 'deny'
     const userCount = (access.allowFrom ?? []).length
     const chCount = Object.keys(access.channels ?? {}).length
-    const pendingCount = (access.pendingPairings ?? []).length
+    const pendingCount = Object.keys(access.pending ?? {}).length
 
     const desc = [
       `**DM Policy** ${dmPolicy}`,
@@ -1038,8 +1039,8 @@ async function handleSchedule(
           await interaction.reply({ embeds: [{ title: 'Schedule', description: t('schedule.not_found', interaction.locale, { name }), color: 0xFEE75C }], flags: 64 })
           return
         }
-        const { writeFileSync } = await import('fs')
         writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n')
+        ctx.reloadRuntimeConfig()
         await interaction.reply({ embeds: [{ title: 'Schedule', description: t('schedule.removed', interaction.locale, { name }), color: 0x57F287 }], flags: 64 })
       } catch (err) {
         await interaction.reply({
@@ -1079,11 +1080,12 @@ async function handleSchedule(
           return
         }
         targetArr.push({ name, time, channel, enabled: true })
-        const { writeFileSync } = await import('fs')
         writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n')
         const promptsDir = ctx.config.promptsDir ?? join(DATA_DIR, 'prompts')
+        mkdirSync(promptsDir, { recursive: true })
         const promptPath = join(promptsDir, `${name}.md`)
         writeFileSync(promptPath, prompt + '\n', 'utf8')
+        ctx.reloadRuntimeConfig()
         await interaction.reply({
           embeds: [{ title: 'Schedule', description: t('schedule.added', interaction.locale, { name, time, channel }), color: 0x57F287 }],
           flags: 64,
@@ -1098,7 +1100,7 @@ async function handleSchedule(
     }
 
     case 'restart': {
-      ctx.scheduler.restart()
+      ctx.reloadRuntimeConfig()
       await interaction.reply({ embeds: [{ title: 'Schedule', description: t('schedule.restarted', interaction.locale), color: 0x57F287 }], flags: 64 })
       return
     }
@@ -1305,6 +1307,7 @@ async function handleBotSub(
     channelId: interaction.channelId,
     userId: interaction.user.id,
     lang: getCmdLang(interaction.locale),
+    reloadRuntimeConfig: ctx.reloadRuntimeConfig,
   }
   try {
     const result = await handleBotCommand(

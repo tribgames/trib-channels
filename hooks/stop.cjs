@@ -5,7 +5,7 @@ const path = require('path');
 const RUNTIME_ROOT = path.join(os.tmpdir(), 'claude2bot');
 const ACTIVE_INSTANCE_FILE = path.join(RUNTIME_ROOT, 'active-instance.json');
 
-// stdin에서 훅 이벤트 읽기 — sidechain이면 turn-end 안 씀
+// Read the hook event from stdin and ignore sidechain/team stop events.
 let input = '';
 try {
   input = fs.readFileSync(0, 'utf8');
@@ -14,7 +14,7 @@ try {
 if (input) {
   try {
     const event = JSON.parse(input);
-    // sidechain/team agent 턴 종료면 메인 typing 건드리지 않음
+    // Do not touch the main typing state for sidechain or team turns.
     if (event.isSidechain || event.teamName) process.exit(0);
   } catch {}
 }
