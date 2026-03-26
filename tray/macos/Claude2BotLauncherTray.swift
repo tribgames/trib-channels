@@ -211,15 +211,15 @@ final class SettingsWindowController: NSObject {
 
     @discardableResult
     private func addLabelWithHelp(to view: NSView, text: String, x: CGFloat, y: CGFloat, help: String, bold: Bool = false) -> NSTextField {
-        let label = addLabel(to: view, text: "\(text)  ", x: x, y: y, bold: bold)
+        let label = addLabel(to: view, text: text, x: x, y: y, bold: bold)
         let font = bold ? NSFont.boldSystemFont(ofSize: 13) : NSFont.systemFont(ofSize: 13)
         let textWidth = (text as NSString).size(withAttributes: [.font: font]).width
-        let helpBtn = NSButton(frame: NSRect(x: x + textWidth + 6, y: y + 1, width: 16, height: 16))
-        helpBtn.bezelStyle = .helpButton
-        helpBtn.controlSize = .small
+        let helpBtn = NSButton(title: "?", target: self, action: #selector(showHelp(_:)))
+        helpBtn.frame = NSRect(x: x + textWidth + 4, y: y, width: 18, height: 18)
+        helpBtn.bezelStyle = .circular
+        helpBtn.controlSize = .mini
+        helpBtn.font = .systemFont(ofSize: 10)
         helpBtn.toolTip = help
-        helpBtn.target = self
-        helpBtn.action = #selector(showHelp(_:))
         view.addSubview(helpBtn)
         return label
     }
