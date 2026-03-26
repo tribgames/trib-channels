@@ -123,6 +123,10 @@ export class OutputForwarder {
   private mainSessionId = ''
   private watchDebounce: ReturnType<typeof setTimeout> | null = null
 
+  hasBinding(): boolean {
+    return !!this.transcriptPath
+  }
+
   constructor(
     private cb: ForwarderCallbacks,
     private readonly statusState: JsonStateFile<StatusState>,
