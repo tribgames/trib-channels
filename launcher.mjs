@@ -908,6 +908,21 @@ function findTranscriptsForDate(workspacePath, dateStr) {
   }
 }
 
+function findTranscriptsSince(workspacePath, sinceTimestamp) {
+  const projectKey = workspacePath.replace(/\//g, '-')
+  const projectDir = join(homedir(), '.claude', 'projects', projectKey)
+  try {
+    return readdirSync(projectDir)
+      .filter(f => f.endsWith('.jsonl') && !f.startsWith('agent-'))
+      .map(f => ({ path: join(projectDir, f), mtime: statSync(join(projectDir, f)).mtimeMs }))
+      .filter(f => f.mtime >= sinceTimestamp)
+      .sort((a, b) => a.mtime - b.mtime)
+      .map(f => f.path)
+  } catch {
+    return []
+  }
+}
+
 function findTranscriptsForRange(workspacePath, fromDate, toDate) {
   // fromDate/toDate: "2026-03-20", "2026-03-27"
   const projectKey = workspacePath.replace(/\//g, '-')
@@ -988,12 +1003,17 @@ function buildContextFile() {
 
 function sleepCycle(workspacePath) {
   const ws = workspacePath || getConfiguredWorkspace()
+  const now = Date.now()
   const today = new Date().toISOString().slice(0, 10)
   const [year, month] = today.split('-')
   const weekNum = getWeekNumber(new Date())
   const weekKey = `${year}-W${String(weekNum).padStart(2, '0')}`
 
-  process.stderr.write(`[sleep-cycle] Starting for ${today} workspace: ${ws}\n`)
+  // Read lastSleepAt from config
+  const config = readLauncherConfig() ?? {}
+  const lastSleepAt = config.lastSleepAt ?? (now - 24 * 60 * 60 * 1000) // default: 24h ago
+
+  process.stderr.write(`[sleep-cycle] Starting. Last sleep: ${new Date(lastSleepAt).toISOString()}\n`)
 
   mkdirSync(join(HISTORY_DIR, 'daily'), { recursive: true })
   mkdirSync(join(HISTORY_DIR, 'weekly'), { recursive: true })
@@ -1003,63 +1023,55 @@ function sleepCycle(workspacePath) {
   // 1. Stop current session
   stopLauncher()
 
-  // 2. Generate missing summaries (bottom-up: daily → weekly → monthly → yearly)
+  // 2. Collect transcripts since last sleep
+  const transcripts = findTranscriptsSince(ws, lastSleepAt)
   const promptPath = join(resourceDir(), 'sleep-prompt.md')
   const sleepPrompt = existsSync(promptPath) ? readFileSync(promptPath, 'utf8') : 'Summarize the conversation.'
 
-  // Daily: 오늘 파일 없으면 → 오늘 transcript로 생성
-  const dailyFile = join(HISTORY_DIR, 'daily', `${today}.md`)
-  if (!existsSync(dailyFile)) {
-    const transcripts = findTranscriptsForDate(ws, today)
-    if (transcripts.length > 0) {
-      const pingpong = extractPingPong(transcripts)
-      if (pingpong) {
-        runSleepPrompt(sleepPrompt, { date: today, pingpong, ws })
-        process.stderr.write(`[sleep-cycle] Daily ${today} generated.\n`)
-      }
-    } else {
-      process.stderr.write('[sleep-cycle] No transcripts for today.\n')
+  if (transcripts.length > 0) {
+    const pingpong = extractPingPong(transcripts)
+    if (pingpong) {
+      // Daily: Sleep 시점 날짜로 생성
+      runSleepPrompt(sleepPrompt, { date: today, pingpong, ws })
+      process.stderr.write(`[sleep-cycle] Daily ${today} generated.\n`)
     }
+  } else {
+    process.stderr.write('[sleep-cycle] No transcripts since last sleep.\n')
   }
 
-  // Weekly: 이번 주 파일 없으면 → 이번 주 daily들로 생성
+  // 3. Rollups: weekly/monthly/yearly (파일 없으면 생성)
   const weeklyFile = join(HISTORY_DIR, 'weekly', `${weekKey}.md`)
   if (!existsSync(weeklyFile)) {
-    const weekDailies = collectDailiesForWeek(weekNum, year)
-    if (weekDailies) {
-      runRollup('weekly', weekKey, weekDailies)
-    }
+    const content = collectDailiesForWeek(weekNum, year)
+    if (content) runRollup('weekly', weekKey, content)
   }
 
-  // Monthly: 이번 달 파일 없으면 → 이번 달 weekly들로 생성
   const monthKey = `${year}-${month}`
   const monthlyFile = join(HISTORY_DIR, 'monthly', `${monthKey}.md`)
   if (!existsSync(monthlyFile)) {
-    const monthWeeklies = collectFilesForMonth(HISTORY_DIR, 'weekly', year, month)
-    if (monthWeeklies) {
-      runRollup('monthly', monthKey, monthWeeklies)
-    }
+    const content = collectFilesForMonth(HISTORY_DIR, 'weekly', year, month)
+    if (content) runRollup('monthly', monthKey, content)
   }
 
-  // Yearly: 올해 파일 없으면 → 올해 monthly들로 생성
   const yearlyFile = join(HISTORY_DIR, 'yearly', `${year}.md`)
   if (!existsSync(yearlyFile)) {
-    const yearMonthlies = collectFilesForYear(HISTORY_DIR, 'monthly', year)
-    if (yearMonthlies) {
-      runRollup('yearly', year, yearMonthlies)
-    }
+    const content = collectFilesForYear(HISTORY_DIR, 'monthly', year)
+    if (content) runRollup('yearly', year, content)
   }
 
-  // Lifetime merge
+  // 4. Lifetime merge
   generateLifetimeMerge()
 
-  // 3. Build context.md
+  // 5. Build context.md
   buildContextFile()
 
-  // 4. Update plugin
-  try { updatePlugin() } catch { /* best effort */ }
+  // 6. Save lastSleepAt
+  const updatedConfig = readLauncherConfig()
+  updatedConfig.lastSleepAt = now
+  writeLauncherConfig(updatedConfig)
 
-  // 6. Launch new session
+  // 7. Update + launch
+  try { updatePlugin() } catch { /* best effort */ }
   const displayMode = getConfiguredDisplayMode()
   launchClaude(ws, displayMode)
   process.stderr.write('[sleep-cycle] New session launched.\n')
