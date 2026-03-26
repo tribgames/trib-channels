@@ -5,7 +5,8 @@ import { join, resolve } from 'path'
 import { execFileSync } from 'child_process'
 import { platform } from 'os'
 
-const root = resolve(new URL('..', import.meta.url).pathname)
+import { fileURLToPath } from 'url'
+const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const distDir = join(root, 'dist')
 const bundlePath = join(distDir, 'launcher.cjs')
 const blobPath = join(distDir, 'launcher.blob')
