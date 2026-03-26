@@ -121,6 +121,9 @@ jobs:
         with:
           path: artifacts
 
+      - name: Checkout (for install scripts)
+        uses: actions/checkout@v4
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
@@ -129,3 +132,5 @@ jobs:
             artifacts/claude2bot-launcher-win-x64/claude2bot-launcher-win-x64.zip
             artifacts/claude2bot-launcher-app-macos/claude2bot-launcher-app-macos.zip
             artifacts/claude2bot-launcher-tray-win/claude2bot-launcher-tray-win.zip
+            scripts/install.sh
+            scripts/install.ps1
