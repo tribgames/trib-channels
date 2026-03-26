@@ -27,7 +27,7 @@ export function controlLauncher(action: LauncherControlAction): LauncherControlR
     const mode = action === 'display-view' ? 'view' : 'hide'
     try {
       execFileSync(launcherExecPath, launcherEntryPath ? [launcherEntryPath, 'display', mode] : ['display', mode], { stdio: 'ignore' })
-      return { ok: true, message: `Display mode saved: ${mode}. Restart the launcher session to apply it.` }
+      return { ok: true, message: `Display mode: ${mode}` }
     } catch (err) {
       return { ok: false, message: `Launcher control failed: ${err instanceof Error ? err.message : String(err)}` }
     }

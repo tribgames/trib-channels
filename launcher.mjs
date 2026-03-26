@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { execFileSync, spawn } from 'child_process'
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'fs'
 import { homedir } from 'os'
 import { dirname, join, resolve } from 'path'
 import readline from 'readline'
@@ -13,10 +13,9 @@ const MARKETPLACE_SOURCE =
 const DEFAULT_SCOPE = process.env.CLAUDE2BOT_INSTALL_SCOPE ?? 'user'
 const CONFIG_PATH = join(homedir(), '.claude2bot-launcher.json')
 const STATE_PATH = join(homedir(), '.claude2bot-launcher-state.json')
-const WEZTERM_DATA_HOME = join(homedir(), '.claude2bot-launcher', 'wezterm-data')
-const WEZTERM_RUNTIME_DIR = join(homedir(), '.claude2bot-launcher', 'wezterm-runtime')
-const WEZTERM_SOCKET_PATH = join(WEZTERM_RUNTIME_DIR, 'claude2bot.sock')
-const WEZTERM_CLASS = 'claude2bot-launcher'
+const WEZTERM_DATA_HOME = join(homedir(), '.local', 'share', 'wezterm')
+const WEZTERM_RUNTIME_DIR = join(homedir(), '.local', 'share', 'wezterm')
+const WEZTERM_SOCKET_PATH = join(WEZTERM_RUNTIME_DIR, 'sock')
 const WEZTERM_WORKSPACE = 'default'
 const WEZTERM_PROCESS_NAME = 'wezterm-gui'
 const STARTUP_CONFIRM_SEQUENCE =
@@ -26,7 +25,7 @@ const STARTUP_CONFIRM_SEQUENCE =
         .split(',')
         .map(part => part.trim())
         .filter(Boolean)
-const INTERNAL_COMMANDS = new Set(['__confirm-wezterm', '__resolve-wezterm-visible'])
+const INTERNAL_COMMANDS = new Set(['__confirm-wezterm'])
 const LAUNCHER_EXEC_PATH = process.execPath
 const LAUNCHER_ENTRY_PATH =
   process.argv[1] && process.argv[1].endsWith('.mjs')
@@ -420,6 +419,62 @@ function ensureWezTermInstalled() {
   throw new Error('WezTerm is required but could not be installed automatically.')
 }
 
+function ensureWezTermMuxRunning(wezterm) {
+  const env = weztermEnv()
+  const configArgs = ['--config-file', resolveWezTermConfigPath()]
+
+  // Check if mux server is reachable via socket
+  try {
+    execFileSync(wezterm, [...configArgs, 'cli', 'list'], {
+      env,
+      stdio: 'ignore',
+      timeout: 5000,
+    })
+    return // mux is already running
+  } catch {
+    // mux not available — start it
+  }
+
+  // Clean stale PID lock if the process is dead
+  const pidFile = join(WEZTERM_DATA_HOME, 'pid')
+  try {
+    const stalePid = Number(readFileSync(pidFile, 'utf8').trim())
+    if (stalePid) {
+      try { process.kill(stalePid, 0) } catch { unlinkSync(pidFile) }
+    }
+  } catch { /* no pid file or not readable */ }
+
+  // Start wezterm-mux-server --daemonize (headless, no GUI)
+  const muxServer = resolveCommand('wezterm-mux-server')
+  if (muxServer) {
+    try {
+      execFileSync(muxServer, [...configArgs, '--daemonize'], {
+        env,
+        stdio: 'ignore',
+        timeout: 10000,
+      })
+    } catch (e) {
+      process.stderr.write(`[launcher] mux-server daemonize failed: ${e.message}\n`)
+    }
+  }
+
+  // Wait for mux socket to become available
+  for (let i = 0; i < 20; i++) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500)
+    try {
+      execFileSync(wezterm, [...configArgs, 'cli', 'list'], {
+        env,
+        stdio: 'ignore',
+        timeout: 3000,
+      })
+      return // mux is ready
+    } catch {
+      // not yet
+    }
+  }
+  throw new Error('Failed to start WezTerm mux server.')
+}
+
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
@@ -456,7 +511,7 @@ function wezTermStatePatch(pane, patch = {}) {
 function weztermCli(args, inherit = false) {
   const wezterm = resolveWezTermCommand()
   if (!wezterm) throw new Error('WezTerm is not installed.')
-  return execFileSync(wezterm, ['--config-file', resolveWezTermConfigPath(), 'cli', '--prefer-mux', ...args], {
+  return execFileSync(wezterm, ['--config-file', resolveWezTermConfigPath(), 'cli', ...args], {
     encoding: 'utf8',
     env: weztermEnv(),
     stdio: inherit ? 'inherit' : ['ignore', 'pipe', 'ignore'],
@@ -679,23 +734,6 @@ function spawnWezTermWarningWatcher(paneId, windowId, workspacePath) {
   writeLauncherState({ watcherPid: child.pid })
 }
 
-function spawnWezTermVisibleResolver(workspacePath) {
-  killExistingWatcher()
-  const child = spawn(process.execPath, [
-    ...selfArgs(['__resolve-wezterm-visible', workspacePath]),
-  ], {
-    detached: true,
-    stdio: 'ignore',
-    env: {
-      ...process.env,
-      WEZTERM_CONFIG_FILE: resolveWezTermConfigPath(),
-      ...weztermEnv(),
-    },
-  })
-  child.unref()
-  writeLauncherState({ watcherPid: child.pid })
-}
-
 function waitForWezTermPane(workspacePath, paneId) {
   for (let attempt = 0; attempt < 80; attempt += 1) {
     const pane = Number.isFinite(paneId)
@@ -713,8 +751,6 @@ function launchClaude(workspacePath, displayMode) {
     `plugin:${PLUGIN_SPEC}`,
   ]
   const launchCwd = resolve(workspacePath)
-  const visibleLaunch = displayMode === 'view'
-
   const wezterm = resolveWezTermCommand()
   if ((process.platform === 'darwin' || process.platform === 'win32') && wezterm) {
     cleanupManagedWezTermPane()
@@ -745,37 +781,20 @@ function launchClaude(workspacePath, displayMode) {
       windowTitle,
     })
 
-    let paneId = NaN
-    if (visibleLaunch) {
-      spawn(wezterm, [
-        '--config-file', resolveWezTermConfigPath(),
-        'start',
-        '--always-new-process',
-        '--class', WEZTERM_CLASS,
-        '--workspace', WEZTERM_WORKSPACE,
-        '--cwd', launchCwd,
-        ...command,
-      ], {
-        detached: true,
-        env: weztermEnv(),
-        stdio: 'ignore',
-        windowsHide: false,
-      }).unref()
-      spawnWezTermVisibleResolver(launchCwd)
-      ensureTrayAppRunningMac()
-      return
-    } else {
-      const spawnOut = weztermCli([
-        'spawn',
-        '--domain-name', 'unix',
-        '--new-window',
-        '--workspace', WEZTERM_WORKSPACE,
-        '--cwd', launchCwd,
-        '--',
-        ...command,
-      ]).trim()
-      paneId = Number(spawnOut)
-    }
+    // Ensure WezTerm mux server is running (required for mux spawn)
+    ensureWezTermMuxRunning(wezterm)
+
+    // Always use mux spawn — enables instant show/hide toggle without restart
+    const spawnOut = weztermCli([
+      'spawn',
+      '--domain-name', 'unix',
+      '--new-window',
+      '--workspace', WEZTERM_WORKSPACE,
+      '--cwd', launchCwd,
+      '--',
+      ...command,
+    ]).trim()
+    const paneId = Number(spawnOut)
 
     const pane = waitForWezTermPane(launchCwd, paneId)
     writeLauncherState(wezTermStatePatch(pane))
@@ -986,56 +1005,6 @@ async function main() {
         writeLauncherState({ phase: 'error', connected: false })
         return
       }
-      case '__resolve-wezterm-visible': {
-        const workspacePath = USER_ARGS[1] ? resolve(USER_ARGS[1]) : ''
-        let handled = 0
-        for (let attempt = 0; attempt < 120; attempt += 1) {
-          const pane = findWezTermPane(workspacePath)
-          if (!pane?.paneId) {
-            writeLauncherState({ phase: 'launching' })
-            await sleep(150)
-            continue
-          }
-
-          const content = getWezTermPaneText(pane.paneId)
-          const signals = getLaunchSignals(content)
-
-          if (signals.needsConfirmation && handled < STARTUP_CONFIRM_SEQUENCE.length) {
-            writeLauncherState(wezTermStatePatch(pane, {
-              phase: 'warning_confirm',
-              displayMode: 'view',
-            }))
-            await sendWezTermChoice(pane.paneId, STARTUP_CONFIRM_SEQUENCE[handled] ?? '1')
-            handled += 1
-            await sleep(300)
-            continue
-          }
-          const latestSession = workspacePath ? latestSessionForWorkspace(workspacePath) : null
-
-          if (!signals.channelReady) {
-            writeLauncherState(wezTermStatePatch(pane, {
-              phase: 'connecting',
-              displayMode: 'view',
-            }))
-            await sleep(150)
-            continue
-          }
-
-          writeLauncherState(wezTermStatePatch(pane, {
-            runtimeMode: 'launcher',
-            phase: 'ready',
-            workspacePath,
-            terminalApp: 'WezTerm',
-            displayMode: 'view',
-            connected: true,
-            sessionId: latestSession?.sessionId,
-            claudePid: latestSession?.pid,
-          }))
-          return
-        }
-        writeLauncherState({ phase: 'error', connected: false, displayMode: 'view' })
-        return
-      }
       default:
         return
     }
@@ -1094,7 +1063,22 @@ async function main() {
         break
       }
       const nextMode = setDisplayModeConfig(rawMode)
-      process.stdout.write(`Display mode saved: ${nextMode}\n`)
+      // Immediately apply show/hide if a session is connected
+      const displayState = readLauncherState()
+      if (displayState?.connected && displayState.weztermPaneId != null) {
+        try {
+          if (nextMode === 'view') {
+            showWezTermWindow(displayState.weztermPaneId)
+          } else {
+            hideWezTermApp()
+          }
+          process.stdout.write(`Display mode: ${nextMode} (applied immediately)\n`)
+        } catch {
+          process.stdout.write(`Display mode saved: ${nextMode} (will apply on next launch)\n`)
+        }
+      } else {
+        process.stdout.write(`Display mode saved: ${nextMode}\n`)
+      }
       break
     }
     default:
