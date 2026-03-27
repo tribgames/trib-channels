@@ -68,12 +68,16 @@ import type { InboundMessage } from './backends/types.js'
 import type { ChatInputCommandInteraction } from 'discord.js'
 import { PLUGIN_ROOT } from './lib/config.js'
 
-process.on('unhandledRejection', err => {
-  process.stderr.write(`claude2bot: unhandled rejection: ${err}\n`)
-})
-process.on('uncaughtException', err => {
-  process.stderr.write(`claude2bot: uncaught exception: ${err}\n`)
-})
+function logCrash(label: string, err: unknown): void {
+  const msg = `[${new Date().toISOString()}] claude2bot: ${label}: ${err}\n${err instanceof Error ? err.stack : ''}\n`
+  process.stderr.write(msg)
+  try {
+    const crashLog = path.join(DATA_DIR, 'crash.log')
+    fs.appendFileSync(crashLog, msg)
+  } catch { /* best effort */ }
+}
+process.on('unhandledRejection', err => logCrash('unhandled rejection', err))
+process.on('uncaughtException', err => logCrash('uncaught exception', err))
 
 // ── Bootstrap ──────────────────────────────────────────────────────────
 
