@@ -496,7 +496,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let state = launcherState()
         let connected = state?.connected ?? false
         let phase = state?.phase ?? ""
-        if connected || phase == "launching" || phase == "warning_confirm" || phase == "connecting" {
+        if connected || phase == "launching" || phase == "warning_confirm" || phase == "connecting" || phase == "sleeping" {
             return
         }
         if Date().timeIntervalSince(lastLaunchAttempt) < 10 { return }

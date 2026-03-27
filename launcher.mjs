@@ -987,7 +987,10 @@ function sleepCycle(workspacePath) {
   mkdirSync(join(HISTORY_DIR, 'monthly'), { recursive: true })
   mkdirSync(join(HISTORY_DIR, 'yearly'), { recursive: true })
 
-  // 1. Stop current session
+  // 1. Mark sleeping phase (prevents tray auto-launch during sleep)
+  resetLauncherState({ phase: 'sleeping', connected: false })
+
+  // 2. Stop current session
   stopLauncher()
 
   // 2. Collect transcripts since last sleep
@@ -1290,8 +1293,9 @@ function stopLauncher() {
     if (muxPid) process.kill(muxPid)
   } catch { /* no mux running */ }
 
-  // 5. Reset state
-  resetLauncherState({ phase: 'stopped', connected: false })
+  // 5. Reset state (preserve "sleeping" phase if set)
+  const currentPhase = readLauncherState()?.phase
+  resetLauncherState({ phase: currentPhase === 'sleeping' ? 'sleeping' : 'stopped', connected: false })
   process.stdout.write('Launcher stopped.\n')
 }
 
