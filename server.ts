@@ -1200,6 +1200,10 @@ if (process.env.CLAUDE2BOT_NO_CONNECT) {
   scheduler.start()
   process.stderr.write(`claude2bot: running with ${backend.name} backend\n`)
 
+  // Ensure transcript exists for forwarder binding
+  // Transcript is created by Claude Code on first interaction — we can't force it
+  // The polling bind above (2s interval) will catch it when it appears
+
   // Greeting — inject once, then bind forwarder when transcript appears
   const greetingDone = path.join(DATA_DIR, '.greeting-sent')
   const today = new Date().toISOString().slice(0, 10)
