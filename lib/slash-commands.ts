@@ -315,6 +315,17 @@ function buildClaude2BotCommand(): SlashCommandBuilder {
     sub.setName('profile').setDescription('Show/edit bot profile'),
   )
 
+  // /claude2bot voice [join/leave]
+  claude2bot.addSubcommand(sub =>
+    sub.setName('voice').setDescription('Join/leave voice channel')
+      .addStringOption(opt =>
+        opt.setName('action').setDescription('join or leave').setRequired(true)
+          .addChoices(
+            { name: 'join', value: 'join' },
+            { name: 'leave', value: 'leave' },
+          )),
+  )
+
   // /claude2bot summarize
   claude2bot.addSubcommand(sub =>
     sub.setName('summarize').setDescription('Summarize conversations and update memory (no restart)'),
@@ -439,6 +450,51 @@ async function handleSessionPassthrough(
     }],
     flags: 64,
   })
+}
+
+// ── Voice channel ───────────────────────────────────────────────────
+
+let voiceSession: import('./voice-channel.js').VoiceSession | null = null
+
+async function handleVoice(
+  interaction: ChatInputCommandInteraction,
+  ctx: SlashCommandContext,
+): Promise<void> {
+  const action = interaction.options.getString('action', true)
+
+  if (action === 'join') {
+    const member = interaction.member as any
+    const voiceChannel = member?.voice?.channel
+    if (!voiceChannel) {
+      await interaction.reply({ content: 'Join a voice channel first.', flags: 64 })
+      return
+    }
+
+    const { VoiceSession } = await import('./voice-channel.js')
+    voiceSession = new VoiceSession(
+      voiceChannel.guild.id,
+      voiceChannel.id,
+      voiceChannel.guild.voiceAdapterCreator,
+    )
+
+    // STT → inject into Claude session
+    voiceSession.setInjectHandler((text) => {
+      ctx.notify(interaction.channelId, `voice:${interaction.user.id}`, text)
+    })
+
+    await voiceSession.join()
+    await interaction.reply({
+      embeds: [{ title: '🎙️ Voice', description: `Joined <#${voiceChannel.id}>. Listening...`, color: 0x57F287 }],
+    })
+  } else if (action === 'leave') {
+    if (voiceSession) {
+      voiceSession.leave()
+      voiceSession = null
+    }
+    await interaction.reply({
+      embeds: [{ title: '🎙️ Voice', description: 'Left voice channel.', color: 0xED4245 }],
+    })
+  }
 }
 
 async function handleModel(
@@ -622,6 +678,8 @@ async function handleClaude2BotCommand(
       return handleBotCommandArgs(interaction, ctx, ['profile', 'status'])
     case 'summarize':
       return handleBotCommandArgs(interaction, ctx, ['sleeping', 'run'])
+    case 'voice':
+      return handleVoice(interaction, ctx)
     case 'workspace': {
       const wsPath = interaction.options.getString('path')
       if (wsPath) {
