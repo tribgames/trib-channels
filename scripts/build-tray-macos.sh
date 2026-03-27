@@ -21,9 +21,10 @@ mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
   -framework Cocoa \
   -o "$MACOS_DIR/$APP_NAME"
 
-# Copy resources
-cp "$ROOT/launcher.mjs" "$RESOURCES_DIR/launcher.mjs"
-cp "$ROOT/launcher-wezterm.lua" "$RESOURCES_DIR/launcher-wezterm.lua"
+# Copy resources (from external_plugins/claude2bot/)
+PLUGIN_DIR="$ROOT/external_plugins/claude2bot"
+cp "$PLUGIN_DIR/launcher.mjs" "$RESOURCES_DIR/launcher.mjs"
+cp "$PLUGIN_DIR/launcher-wezterm.lua" "$RESOURCES_DIR/launcher-wezterm.lua"
 cat > "$RESOURCES_DIR/claude2bot-launcher" <<'SCRIPT'
 #!/bin/bash
 APP_DIR="$(cd "$(dirname "$0")" && pwd)"
