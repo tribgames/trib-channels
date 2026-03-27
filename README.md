@@ -121,6 +121,7 @@ Memory files are stored at `~/.claude/plugins/data/claude2bot-claude2bot/history
 | `/bot autotalk` | Proactive chat settings |
 | `/bot quiet` | Quiet hours |
 | `/bot sleeping` | Sleeping mode ON/OFF/time |
+| `/bot sleeping run` | Run sleep cycle manually |
 | `/bot display` | View/hide mode |
 | `/bot schedule` | Schedule management |
 | `/bot profile` | Bot profile |
@@ -133,7 +134,10 @@ node launcher.mjs install        # Install dependencies
 node launcher.mjs launch         # Start session
 node launcher.mjs restart        # Stop + launch
 node launcher.mjs stop           # Stop everything
-node launcher.mjs sleep-cycle    # Run sleeping mode now
+node launcher.mjs sleep-cycle    # Run sleeping mode (summarize + restart)
+node launcher.mjs summarize      # Summarize only (no restart)
+node launcher.mjs config         # Show all settings
+node launcher.mjs config <k> [v] # Get/set (autotalk, quiet, sleeping, sleeping-time)
 node launcher.mjs display [mode] # View or hide
 node launcher.mjs workspace [p]  # Set workspace
 node launcher.mjs doctor         # Environment check
