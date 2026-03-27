@@ -893,7 +893,7 @@ function extractPingPong(transcriptPaths) {
 }
 
 function findTranscriptsSince(workspacePath, sinceTimestamp) {
-  const projectKey = workspacePath.replace(/\//g, '-')
+  const projectKey = workspacePath.replace(/[\\/]/g, '-')
   const projectDir = join(homedir(), '.claude', 'projects', projectKey)
   try {
     return readdirSync(projectDir)
