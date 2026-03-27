@@ -22,7 +22,6 @@ import { loadSettings, tryRead } from './lib/settings.js'
 import { Scheduler } from './lib/scheduler.js'
 import { handleSlashCommand, type SlashCommandContext } from './lib/slash-commands.js'
 import {
-  routeCustomCommand,
   runBotCommand,
   runProfileCommand,
   type CommandContext,
@@ -673,7 +672,7 @@ backend.onInteraction = (interaction: BackendInteraction) => {
 
   if (interaction.customId === 'sleeping_time') {
     // TODO: Modal for time input — for now, guide user to text command
-    void backend.sendMessage(interaction.channelId, 'Use `/bot sleeping time HH:MM` to set sleep time.')
+    void backend.sendMessage(interaction.channelId, 'Use `/claude2bot sleeping action:time value:HH:MM` to set sleep time.')
     return
   }
 
@@ -793,23 +792,7 @@ backend.onSlashCommand = (interaction) => {
   void handleSlashCommand(interaction as ChatInputCommandInteraction, slashCtx)
 }
 
-// ── Custom command handling (/bot, /profile) ──────────────────────────
-
-backend.onCustomCommand = (text, channelId, userId, replyFn) => {
-  scheduler.noteActivity()
-  const ctx = makeCommandContext(channelId, userId, config.language === 'en' ? 'en' : 'ko')
-  void (async () => {
-    try {
-      const result = await routeCustomCommand(text, ctx)
-      if (result?.text || result?.embeds) {
-        await replyFn(result.text ?? '', { embeds: result.embeds, components: result.components })
-      }
-    } catch (err) {
-      process.stderr.write(`claude2bot: custom command failed: ${err}\n`)
-      await replyFn(`Error: ${err instanceof Error ? err.message : String(err)}`)
-    }
-  })()
-}
+// /bot text commands removed — use /claude2bot slash commands instead
 
 // ── Voice transcription ───────────────────────────────────────────────
 
