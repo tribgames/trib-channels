@@ -483,6 +483,13 @@ async function handleVoice(
     })
 
     await voiceSession.join()
+
+    // Register with server for TTS
+    try {
+      const { setActiveVoiceSession } = await import('../server.js')
+      setActiveVoiceSession(voiceSession)
+    } catch { /* server import may fail in some contexts */ }
+
     await interaction.reply({
       embeds: [{ title: '🎙️ Voice', description: `Joined <#${voiceChannel.id}>. Listening...`, color: 0x57F287 }],
     })
@@ -490,6 +497,10 @@ async function handleVoice(
     if (voiceSession) {
       voiceSession.leave()
       voiceSession = null
+      try {
+        const { setActiveVoiceSession } = await import('../server.js')
+        setActiveVoiceSession(null)
+      } catch {}
     }
     await interaction.reply({
       embeds: [{ title: '🎙️ Voice', description: 'Left voice channel.', color: 0xED4245 }],

@@ -268,8 +268,20 @@ function pickUsableTranscriptPath(
 
 // ── Output Forwarder ──────────────────────────────────────────────────
 
+// Voice TTS: exported for slash-commands to set
+export let activeVoiceSession: import('./lib/voice-channel.js').VoiceSession | null = null
+export function setActiveVoiceSession(session: import('./lib/voice-channel.js').VoiceSession | null): void {
+  activeVoiceSession = session
+}
+
 const forwarder = new OutputForwarder({
-  send: (ch, text) => backend.sendMessage(ch, text).then(() => {}),
+  send: async (ch, text) => {
+    await backend.sendMessage(ch, text)
+    // TTS: if voice session active, speak the response
+    if (activeVoiceSession?.isConnected() && text.length > 0 && text.length < 500) {
+      activeVoiceSession.speak(text).catch(() => {})
+    }
+  },
   react: (ch, mid, emoji) => backend.react(ch, mid, emoji),
   removeReaction: (ch, mid, emoji) => backend.removeReaction(ch, mid, emoji),
 }, statusState)
