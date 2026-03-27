@@ -455,30 +455,10 @@ scheduler.setSendHandler(async (channelId: string, text: string) => {
   await backend.sendMessage(channelId, text)
 })
 
-// ── Webhook handler wiring ────────────────────────────────────────────
+// ── Webhook → Event pipeline wiring ───────────────────────────────────
 
 function wireWebhookHandlers(): void {
   if (!webhookServer) return
-  webhookServer.setInjectHandler((channelId: string, name: string, prompt: string) => {
-    void mcp.notification({
-      method: 'notifications/claude/channel',
-      params: {
-        content: prompt,
-        meta: {
-          chat_id: channelId,
-          user: `webhook:${name}`,
-          user_id: 'system',
-          ts: new Date().toISOString(),
-        },
-      },
-    }).catch(e => {
-      process.stderr.write(`claude2bot webhook: notification failed: ${e}\n`)
-    })
-  })
-  webhookServer.setSendHandler(async (channelId: string, text: string) => {
-    await backend.sendMessage(channelId, text)
-  })
-  webhookServer.setSessionStateGetter(() => scheduler.getSessionState())
   webhookServer.setEventPipeline(eventPipeline)
 }
 wireWebhookHandlers()

@@ -6,15 +6,16 @@
  * - proactive: bot-initiated conversation at random intervals based on frequency
  */
 
-import { spawn } from 'child_process'
-import { readFileSync, writeFileSync, unlinkSync, existsSync, mkdirSync } from 'fs'
-import { join, isAbsolute, extname, normalize } from 'path'
+import { readFileSync, writeFileSync, unlinkSync, existsSync } from 'fs'
+import { join, isAbsolute } from 'path'
 import { tmpdir } from 'os'
 import type { TimedSchedule, ProactiveConfig, ProactiveItem, ChannelsConfig, BotConfig } from '../backends/types.js'
 import { DATA_DIR } from './config.js'
 import { appendFileSync } from 'fs'
+import { spawnClaudeP, runScript as execScript, ensureNopluginDir } from './executor.js'
 
 const SCHEDULE_LOG = join(DATA_DIR, 'schedule.log')
+// SCRIPTS_DIR moved to executor.ts
 function logSchedule(msg: string): void {
   const line = `[${new Date().toISOString()}] ${msg}\n`
   process.stderr.write(`claude2bot scheduler: ${msg}\n`)
@@ -22,8 +23,6 @@ function logSchedule(msg: string): void {
 }
 import { isHoliday } from './holidays.js'
 import { tryRead } from './settings.js'
-
-const SCRIPTS_DIR = join(DATA_DIR, 'scripts')
 
 const TICK_INTERVAL = 60_000 // 1 minute
 
@@ -162,8 +161,7 @@ export class Scheduler {
       return
     }
 
-    // Ensure empty plugin dir for claude -p (prevents loading claude2bot plugin)
-    mkdirSync('/tmp/claude2bot-noplugin', { recursive: true })
+    ensureNopluginDir()
 
     // Scheduler-level lock: only one session runs the scheduler
     if (existsSync(Scheduler.SCHEDULER_LOCK)) {
@@ -536,24 +534,8 @@ export class Scheduler {
     if (this.running.has(schedule.name)) return
     this.running.add(schedule.name)
 
-    // --plugin-dir with empty dir prevents child from loading claude2bot plugin (avoids killPreviousServer)
-    const proc = spawn('claude', ['-p', '--dangerously-skip-permissions', '--no-session-persistence', '--plugin-dir', '/tmp/claude2bot-noplugin'], {
-      env: { ...process.env, CLAUDE2BOT_NO_CONNECT: '1' },
-    })
-
-    const wrappedPrompt = prompt + '\n\nIMPORTANT: Output your final result as plain text to stdout. Do NOT use any reply, messaging, or channel tools. Just print the result.'
-    proc.stdin.write(wrappedPrompt)
-    proc.stdin.end()
-
-    let stdout = ''
-    if (proc.stdout) proc.stdout.on('data', (d: Buffer) => { stdout += d })
-
-    proc.on('close', (code: number | null) => {
+    spawnClaudeP(schedule.name, prompt, (result, code) => {
       this.running.delete(schedule.name)
-      // Only relay the last portion of stdout (skip internal tool logs, keep final result)
-      const lines = stdout.trim().split('\n')
-      // Take last 30 lines max, truncate to 1900 chars
-      const result = lines.slice(-30).join('\n').substring(0, 1900)
       if (result && this.sendFn) {
         this.sendFn(channelId, result).catch(err =>
           process.stderr.write(`claude2bot scheduler: ${schedule.name} relay failed: ${err}\n`),
@@ -561,58 +543,18 @@ export class Scheduler {
       }
       process.stderr.write(`claude2bot scheduler: ${schedule.name} exited (${code})\n`)
     })
-    proc.on('error', (err: Error) => {
-      this.running.delete(schedule.name)
-      process.stderr.write(`claude2bot scheduler: ${schedule.name} error: ${err}\n`)
-    })
   }
 
-  // ── Script execution ────────────────────────────────────────────────
+  // ── Script execution (delegates to shared executor) ────────────────
 
-  /** Run a script from the scripts directory. Returns stdout (max 2000 chars). */
   private runScript(scriptName: string): Promise<string> {
     return new Promise((resolve, reject) => {
-      // Ensure scripts directory exists
-      if (!existsSync(SCRIPTS_DIR)) {
-        mkdirSync(SCRIPTS_DIR, { recursive: true })
-      }
-
-      // Security: resolve path and verify it stays within SCRIPTS_DIR
-      const scriptPath = normalize(join(SCRIPTS_DIR, scriptName))
-      if (!scriptPath.startsWith(SCRIPTS_DIR)) {
-        reject(new Error(`script path escapes scripts directory: ${scriptName}`))
-        return
-      }
-
-      if (!existsSync(scriptPath)) {
-        reject(new Error(`script not found: ${scriptPath}`))
-        return
-      }
-
-      const ext = extname(scriptName).toLowerCase()
-      const cmd = ext === '.py' ? 'python3' : 'node'
-
-      const proc = spawn(cmd, [scriptPath], {
-        timeout: 30_000,
-        env: { ...process.env },
-      })
-
-      let stdout = ''
-      let stderr = ''
-      if (proc.stdout) proc.stdout.on('data', (d: Buffer) => { stdout += d })
-      if (proc.stderr) proc.stderr.on('data', (d: Buffer) => { stderr += d })
-
-      proc.on('close', (code: number | null) => {
-        if (code !== 0) {
-          reject(new Error(`script exited with code ${code}: ${stderr.substring(0, 500)}`))
-          return
+      execScript(`schedule:${scriptName}`, scriptName, (result, code) => {
+        if (code !== 0 && code !== null) {
+          reject(new Error(`script exited with code ${code}`))
+        } else {
+          resolve(result)
         }
-        // Truncate to 2000 chars (Discord limit)
-        resolve(stdout.substring(0, 2000))
-      })
-
-      proc.on('error', (err: Error) => {
-        reject(new Error(`script spawn error: ${err.message}`))
       })
     })
   }

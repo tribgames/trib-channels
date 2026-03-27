@@ -1,6 +1,6 @@
 {
   "name": "claude2bot",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "Discord channel plugin for Claude Code with scheduler, voice transcription, and access control",
   "license": "Apache-2.0",
   "type": "module",
