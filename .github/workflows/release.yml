@@ -9,7 +9,55 @@ permissions:
   contents: write
 
 jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate plugin structure
+        run: |
+          PLUGIN="external_plugins/claude2bot"
+          ERRORS=0
+          check() { [ -f "$1" ] && echo "✓ $1" || { echo "✗ $1 MISSING"; ERRORS=$((ERRORS+1)); }; }
+
+          check "$PLUGIN/.mcp.json"
+          check "$PLUGIN/.claude-plugin/plugin.json"
+          check "$PLUGIN/package.json"
+          check "$PLUGIN/server.ts"
+          check "$PLUGIN/hooks/hooks.json"
+          check ".claude-plugin/marketplace.json"
+
+          # No stale .mcp.json at root
+          if [ -f ".mcp.json" ]; then
+            echo "✗ .mcp.json at ROOT (should be in external_plugins/)"
+            ERRORS=$((ERRORS+1))
+          fi
+
+          # Version match
+          PKG_VER=$(python3 -c "import json; print(json.load(open('$PLUGIN/package.json'))['version'])")
+          PLG_VER=$(python3 -c "import json; print(json.load(open('$PLUGIN/.claude-plugin/plugin.json'))['version'])")
+          TAG_VER="${GITHUB_REF_NAME#v}"
+
+          echo "package.json: $PKG_VER"
+          echo "plugin.json:  $PLG_VER"
+          echo "tag:          $TAG_VER"
+
+          if [ "$PKG_VER" != "$PLG_VER" ]; then
+            echo "✗ version mismatch: package.json=$PKG_VER, plugin.json=$PLG_VER"
+            ERRORS=$((ERRORS+1))
+          fi
+          if [ "$PKG_VER" != "$TAG_VER" ]; then
+            echo "✗ version mismatch: package.json=$PKG_VER, tag=$TAG_VER"
+            ERRORS=$((ERRORS+1))
+          fi
+
+          if [ "$ERRORS" -gt 0 ]; then
+            echo "::error::$ERRORS validation errors"
+            exit 1
+          fi
+          echo "✓ All checks passed"
+
   build-macos:
+    needs: validate
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -23,6 +71,7 @@ jobs:
           path: Claude2BotLauncher-macos.zip
 
   build-windows:
+    needs: validate
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -31,7 +80,7 @@ jobs:
         run: |
           Install-Module ps2exe -Scope CurrentUser -Force
           powershell -ExecutionPolicy Bypass -File scripts/build-tray-windows.ps1
-          Compress-Archive -Path dist\Claude2BotLauncher.exe, dist\launcher.mjs, dist\launcher-wezterm.lua -DestinationPath Claude2BotLauncher-windows.zip
+          Compress-Archive -Path dist\Claude2BotLauncher.exe, dist\launcher.mjs, dist\launcher-wezterm.lua, tray\windows\icon.ico -DestinationPath Claude2BotLauncher-windows.zip
       - uses: actions/upload-artifact@v4
         with:
           name: windows-tray
