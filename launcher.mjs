@@ -76,6 +76,7 @@ function printHelp() {
     '  workspace [path]       Show or set the default workspace path',
     '  display [hide|view]    Show or set the launcher display mode',
     '  sleep-cycle            Run sleeping mode: summarize, restart session',
+    '  summarize              Summarize conversations without restart',
     '  config <key> [value]   Get/set config (autotalk, quiet, sleeping, sleeping-time)',
     '',
     'Options:',
@@ -1182,6 +1183,35 @@ function getWeekNumber(date) {
   return Math.ceil(((d - yearStart) / 86400000 + 1) / 7)
 }
 
+function summarizeOnly(workspacePath) {
+  const ws = workspacePath || getConfiguredWorkspace()
+  const now = Date.now()
+  const today = new Date().toISOString().slice(0, 10)
+  const config = readLauncherConfig() ?? {}
+  const lastSleepAt = config.lastSleepAt ?? (now - 24 * 60 * 60 * 1000)
+
+  process.stderr.write(`[summarize] Starting for workspace: ${ws}\n`)
+
+  mkdirSync(join(HISTORY_DIR, 'daily'), { recursive: true })
+
+  const transcripts = findTranscriptsSince(ws, lastSleepAt)
+  const promptPath = join(resourceDir(), 'sleep-prompt.md')
+  const sleepPrompt = existsSync(promptPath) ? readFileSync(promptPath, 'utf8') : 'Summarize the conversation.'
+
+  if (transcripts.length > 0) {
+    const pingpong = extractPingPong(transcripts)
+    if (pingpong) {
+      runSleepPrompt(sleepPrompt, { date: today, pingpong, ws })
+      process.stderr.write(`[summarize] Done.\n`)
+    }
+  } else {
+    process.stderr.write('[summarize] No transcripts found.\n')
+  }
+
+  buildContextFile()
+  process.stderr.write('[summarize] context.md updated.\n')
+}
+
 function handleConfig(key, value) {
   const BOT_FILE = join(PLUGIN_DATA_DIR, 'bot.json')
 
@@ -1535,6 +1565,9 @@ async function main() {
       break
     case 'sleep-cycle':
       sleepCycle(cliWorkspace)
+      break
+    case 'summarize':
+      summarizeOnly(cliWorkspace)
       break
     case 'config':
       handleConfig(USER_ARGS[1], USER_ARGS[2])

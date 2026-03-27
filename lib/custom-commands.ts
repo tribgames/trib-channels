@@ -648,6 +648,20 @@ function handleSleeping(parsed: ParsedCommand, ctx: CommandContext): CommandResu
       writeLauncherConfigField('sleepTime', time)
       return { text: `Sleep time set to ${time}` }
     }
+    case 'now':
+    case 'run': {
+      // Try launcher sleep-cycle if available, otherwise just summarize
+      const state = readLauncherState()
+      if (state?.launcherExecPath) {
+        const { execFile } = require('child_process')
+        const entryPath = state.launcherEntryPath ?? ''
+        const args = entryPath ? [entryPath, 'sleep-cycle'] : ['sleep-cycle']
+        execFile(state.launcherExecPath, args, { stdio: 'ignore', detached: true }).unref?.()
+        return { text: 'Sleep cycle started. Session will restart shortly.' }
+      }
+      // No launcher — just trigger summary via scheduler inject
+      return { text: 'Summarize today\'s conversation and update memory files (history/daily, identity, ongoing, lifetime).' }
+    }
     default:
       return { text: t('unknown_action', ctx.lang, { action }) }
   }
