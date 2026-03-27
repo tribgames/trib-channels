@@ -12,6 +12,14 @@ import { join, isAbsolute, extname, normalize } from 'path'
 import { tmpdir } from 'os'
 import type { TimedSchedule, ProactiveConfig, ProactiveItem, ChannelsConfig, BotConfig } from '../backends/types.js'
 import { DATA_DIR } from './config.js'
+import { appendFileSync } from 'fs'
+
+const SCHEDULE_LOG = join(DATA_DIR, 'schedule.log')
+function logSchedule(msg: string): void {
+  const line = `[${new Date().toISOString()}] ${msg}\n`
+  process.stderr.write(`claude2bot scheduler: ${msg}\n`)
+  try { appendFileSync(SCHEDULE_LOG, line) } catch { /* best effort */ }
+}
 import { isHoliday } from './holidays.js'
 import { tryRead } from './settings.js'
 
@@ -166,7 +174,7 @@ export class Scheduler {
     writeFileSync(Scheduler.SCHEDULER_LOCK, `${process.pid}\n${Date.now()}`)
     process.on('exit', () => { try { unlinkSync(Scheduler.SCHEDULER_LOCK) } catch { /* ignore */ } })
 
-    process.stderr.write(`claude2bot scheduler: ${this.nonInteractive.length} non-interactive, ${this.interactive.length} interactive, ${this.proactive?.items.length ?? 0} proactive\n`)
+    logSchedule(`${this.nonInteractive.length} non-interactive, ${this.interactive.length} interactive, ${this.proactive?.items.length ?? 0} proactive\n`)
     this.tick()
     this.tickTimer = setInterval(() => this.tick(), TICK_INTERVAL)
   }
@@ -320,7 +328,7 @@ export class Scheduler {
         const skipKey = `holiday:${dateStr}:${s.name}`
         if (!this.lastFired.has(skipKey)) {
           this.lastFired.set(skipKey, dateStr)
-          process.stderr.write(`claude2bot scheduler: skipping "${s.name}" — public holiday\n`)
+          logSchedule(`skipping "${s.name}" — public holiday\n`)
         }
         continue
       }
@@ -458,7 +466,7 @@ export class Scheduler {
       this.running.add(schedule.name)
 
       const channelId = this.resolveChannel(schedule.channel)
-      process.stderr.write(`claude2bot scheduler: firing ${schedule.name} (${type}, exec=${execMode})\n`)
+      logSchedule(`firing ${schedule.name} (${type}, exec=${execMode})\n`)
 
       try {
         const scriptResult = await this.runScript(schedule.script)
@@ -513,7 +521,7 @@ export class Scheduler {
     prompt: string,
     channelId: string,
   ): Promise<void> {
-    process.stderr.write(`claude2bot scheduler: firing ${schedule.name} (${type})\n`)
+    logSchedule(`firing ${schedule.name} (${type})\n`)
 
     if (type === 'interactive') {
       const wrapped = this.wrapPrompt(schedule.name, prompt, 'interactive')
@@ -628,7 +636,7 @@ export class Scheduler {
       }
     }
 
-    process.stderr.write(`claude2bot scheduler: firing proactive "${item.topic}"\n`)
+    logSchedule(`firing proactive "${item.topic}"\n`)
     this.proactiveLastFire = Date.now()
     this.proactiveFiredToday++
     this.lastFired.set(`proactive:${item.topic}`, new Date().toISOString().slice(0, 16))
