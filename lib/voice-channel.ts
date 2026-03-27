@@ -16,7 +16,7 @@ import {
   EndBehaviorType,
 } from '@discordjs/voice'
 import { spawn } from 'child_process'
-import { createWriteStream, unlinkSync, existsSync, mkdirSync } from 'fs'
+import { appendFileSync, createWriteStream, unlinkSync, existsSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { pipeline } from 'stream'
@@ -27,6 +27,13 @@ const pipelineAsync = promisify(pipeline)
 
 const VOICE_TMP = join(tmpdir(), 'claude2bot-voice')
 mkdirSync(VOICE_TMP, { recursive: true })
+
+const VOICE_LOG = join(VOICE_TMP, 'voice.log')
+function vlog(msg: string): void {
+  const line = `[${new Date().toISOString()}] ${msg}\n`
+  try { process.stderr.write(line) } catch {}
+  try { appendFileSync(VOICE_LOG, line) } catch {}
+}
 
 // VAD: silence threshold
 const SILENCE_THRESHOLD = 500 // ms of silence to consider end of speech
@@ -70,7 +77,7 @@ export class VoiceSession {
     this.connection.subscribe(this.player)
 
     await entersState(this.connection, VoiceConnectionStatus.Ready, 10_000)
-    process.stderr.write(`claude2bot voice: joined ${this.channelId}\n`)
+    vlog(` joined ${this.channelId}\n`)
 
     this.startListening()
   }
@@ -82,7 +89,7 @@ export class VoiceSession {
       this.connection = null
     }
     this.player = null
-    process.stderr.write('claude2bot voice: left channel\n')
+    vlog(' left channel\n')
   }
 
   isConnected(): boolean {
@@ -94,9 +101,14 @@ export class VoiceSession {
 
     const receiver = this.connection.receiver
 
+    vlog(' listening started\n')
     receiver.speaking.on('start', (userId) => {
+      vlog(` speaking start — ${userId}\n`)
       if (this.recording) return
       this.recordUser(userId)
+    })
+    receiver.speaking.on('end', (userId) => {
+      vlog(` speaking end — ${userId}\n`)
     })
   }
 
@@ -136,11 +148,11 @@ export class VoiceSession {
       // WAV → Text (whisper)
       const text = await this.stt(wavFile)
       if (text && text.trim().length > 1) {
-        process.stderr.write(`claude2bot voice: STT: "${text.trim()}"\n`)
+        vlog(` STT: "${text.trim()}"\n`)
         if (this.onInject) this.onInject(text.trim())
       }
     } catch (err) {
-      process.stderr.write(`claude2bot voice: record error: ${err}\n`)
+      vlog(` record error: ${err}\n`)
     } finally {
       this.recording = false
       try { unlinkSync(pcmFile) } catch {}
@@ -188,7 +200,7 @@ export class VoiceSession {
       this.player.play(resource)
       await entersState(this.player, AudioPlayerStatus.Idle, 60_000)
     } catch (err) {
-      process.stderr.write(`claude2bot voice: TTS error: ${err}\n`)
+      vlog(` TTS error: ${err}\n`)
     } finally {
       try { unlinkSync(mp3File) } catch {}
     }

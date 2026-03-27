@@ -256,10 +256,14 @@ export class DiscordBackend implements ChannelBackend {
     })
 
     this.client.on('voiceStateUpdate', (oldState, newState) => {
+      const msg = `[${new Date().toISOString()}] voiceStateUpdate — user=${newState.member?.user.tag} old=${oldState.channelId} new=${newState.channelId}\n`
+      try { process.stderr.write(msg) } catch {}
+      try { require('fs').appendFileSync('/tmp/claude2bot-voice/discord-voice.log', msg) } catch {}
       if (newState.member?.user.bot) return
       const access = this.readAccessFile()
       const userId = newState.member?.id ?? oldState.member?.id ?? ''
       const isAllowed = access.allowFrom?.includes(userId)
+      process.stderr.write(`claude2bot discord: voice check — userId=${userId} allowed=${isAllowed}\n`)
       if (!isAllowed) return
       if (newState.channel && oldState.channelId !== newState.channelId) {
         if (this.onVoiceJoin) this.onVoiceJoin(newState.guild.id, newState.channel.id, newState.guild.voiceAdapterCreator)
