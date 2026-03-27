@@ -261,17 +261,6 @@ function buildClaude2BotCommand(): SlashCommandBuilder {
       }),
   )
 
-  claude2bot.addSubcommand(sub =>
-    sub.setName('launcher').setDescription('Open launcher controls')
-      .setDescriptionLocalizations({
-        ko: 'launcher 제어 열기',
-        ja: 'launcher 制御を開く',
-        'zh-CN': '打开 launcher 控制',
-        'zh-TW': '開啟 launcher 控制',
-        'pt-BR': 'Abrir controles do launcher',
-        'es-ES': 'Abrir controles del launcher',
-      }),
-  )
 
   // /claude2bot schedule [action] [name] [time] [channel]
   claude2bot.addSubcommand(sub =>
@@ -321,17 +310,6 @@ function buildClaude2BotCommand(): SlashCommandBuilder {
         opt.setName('value').setDescription('Time value for "time" action (HH:MM)').setRequired(false)),
   )
 
-  // /claude2bot display [mode]
-  claude2bot.addSubcommand(sub =>
-    sub.setName('display').setDescription('Set display mode')
-      .addStringOption(opt =>
-        opt.setName('mode').setDescription('view or hide').setRequired(false)
-          .addChoices(
-            { name: 'view', value: 'view' },
-            { name: 'hide', value: 'hide' },
-          )),
-  )
-
   // /claude2bot profile
   claude2bot.addSubcommand(sub =>
     sub.setName('profile').setDescription('Show/edit bot profile'),
@@ -340,13 +318,6 @@ function buildClaude2BotCommand(): SlashCommandBuilder {
   // /claude2bot summarize
   claude2bot.addSubcommand(sub =>
     sub.setName('summarize').setDescription('Summarize conversations and update memory (no restart)'),
-  )
-
-  // /claude2bot workspace [path]
-  claude2bot.addSubcommand(sub =>
-    sub.setName('workspace').setDescription('Show or set workspace path')
-      .addStringOption(opt =>
-        opt.setName('path').setDescription('New workspace path').setRequired(false)),
   )
 
   return claude2bot
@@ -632,8 +603,6 @@ async function handleClaude2BotCommand(
     }
     case 'doctor':
       return handleDoctor(interaction, ctx)
-    case 'launcher':
-      return handleBotCommandArgs(interaction, ctx, ['launcher', 'list'])
     case 'autotalk': {
       const level = interaction.options.getString('level')
       return handleBotCommandArgs(interaction, ctx, level ? ['autotalk', level] : ['autotalk', 'status'])
@@ -648,10 +617,6 @@ async function handleClaude2BotCommand(
       const args = ['sleeping', action]
       if (value) args.push(value)
       return handleBotCommandArgs(interaction, ctx, args)
-    }
-    case 'display': {
-      const mode = interaction.options.getString('mode')
-      return handleBotCommandArgs(interaction, ctx, mode ? ['display', mode] : ['display'])
     }
     case 'profile':
       return handleBotCommandArgs(interaction, ctx, ['profile', 'status'])
