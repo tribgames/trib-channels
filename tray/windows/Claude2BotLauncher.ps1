@@ -17,6 +17,7 @@ if (-not (Test-Path $LauncherScript)) {
     $Found = Get-ChildItem $PluginCache -Recurse -Filter "launcher.mjs" -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($Found) { $LauncherScript = $Found.FullName }
 }
+$SavedPATH = $env:PATH
 
 # ── Helpers ──
 function Read-Json($path) {
@@ -42,6 +43,12 @@ function Run-LauncherSync($args) {
     $proc = Start-Process -NoNewWindow -FilePath $node.Source -ArgumentList @($LauncherScript) + $args -PassThru -Wait
 }
 
+function Run-LauncherHidden($args) {
+    $node = Get-Command node -ErrorAction SilentlyContinue
+    if (-not $node) { return }
+    Start-Process -WindowStyle Hidden -FilePath $node.Source -ArgumentList @($LauncherScript) + $args
+}
+
 function Get-LauncherState {
     return Read-Json $StatePath
 }
@@ -52,6 +59,13 @@ function Get-LauncherConfig {
 
 function Get-BotConfig {
     return Read-Json $BotConfigPath
+}
+
+function Set-Phase($phase) {
+    $s = Get-LauncherState
+    if (-not $s) { $s = [PSCustomObject]@{} }
+    $s | Add-Member -NotePropertyName "phase" -NotePropertyValue $phase -Force
+    Write-Json $StatePath $s
 }
 
 # ── Tray Icon ──
@@ -91,11 +105,12 @@ function Build-Menu {
     $restartItem.Enabled = $connected
     $restartItem.Add_Click({
         Start-Job -ScriptBlock {
-            param($script)
+            param($script, $p)
+            $env:PATH = $p
             $node = (Get-Command node).Source
             & $node $script stop | Out-Null
             & $node $script launch | Out-Null
-        } -ArgumentList $LauncherScript
+        } -ArgumentList $LauncherScript, $SavedPATH
     })
 
     $menu.Items.Add("-") | Out-Null
@@ -167,8 +182,8 @@ function Show-Settings {
         if ($dialog.ShowDialog() -eq "OK") {
             Run-LauncherSync @("workspace", $dialog.SelectedPath)
             Start-Job -ScriptBlock {
-                param($s) $n = (Get-Command node).Source; & $n $s stop; & $n $s launch
-            } -ArgumentList $LauncherScript
+                param($s, $p) $env:PATH = $p; $n = (Get-Command node).Source; & $n $s stop; & $n $s launch
+            } -ArgumentList $LauncherScript, $SavedPATH
             $form.Close()
         }
     })
@@ -343,15 +358,13 @@ function Show-Settings {
     $form.ShowDialog()
 }
 
-# ── Timer (poll state every 2s) ──
+# ── Timer (poll state every 5s) ──
 $timer = New-Object System.Windows.Forms.Timer
-$timer.Interval = 2000
+$timer.Interval = 5000
 $lastSleepDate = ""
+$script:launchGuard = $false
 
 $timer.Add_Tick({
-    # Rebuild menu on open
-    $notifyIcon.ContextMenuStrip = Build-Menu
-
     # Check sleep schedule
     $config = Get-LauncherConfig
     $sleepEnabled = if ($config.sleepEnabled -eq $false) { $false } else { $true }
@@ -363,30 +376,40 @@ $timer.Add_Tick({
         if ($now -ge $sleepTime -and $now -lt $endTime -and $lastSleepDate -ne $today) {
             $script:lastSleepDate = $today
             Start-Job -ScriptBlock {
-                param($s) $n = (Get-Command node).Source; & $n $s sleep-cycle
-            } -ArgumentList $LauncherScript
+                param($s, $p) $env:PATH = $p; $n = (Get-Command node).Source; & $n $s sleep-cycle
+            } -ArgumentList $LauncherScript, $SavedPATH
         }
     }
 
-    # Ensure launcher running
+    # Ensure launcher running (with guard to prevent double-launch)
     $state = Get-LauncherState
     $connected = $state.connected -eq $true
     $phase = $state.phase
-    if (-not $connected -and $phase -notin @("launching", "warning_confirm", "connecting")) {
-        Run-Launcher @("launch")
+    if (-not $connected -and -not $script:launchGuard -and $phase -notin @("launching", "sleeping", "warning_confirm", "connecting")) {
+        $script:launchGuard = $true
+        Run-LauncherHidden @("launch")
     }
+    if ($connected) { $script:launchGuard = $false }
 })
 $timer.Start()
 
+# Build menu on right-click (not on timer)
+$notifyIcon.Add_MouseClick({
+    if ($_.Button -eq [System.Windows.Forms.MouseButtons]::Right) {
+        $notifyIcon.ContextMenuStrip = Build-Menu
+    }
+})
+
 # ── Initial launch ──
+Set-Phase "launching"
 Start-Job -ScriptBlock {
-    param($s, $envPath)
-    $env:PATH = $envPath
+    param($s, $p)
+    $env:PATH = $p
     $n = (Get-Command node).Source
-    & $n $s stop | Out-Null
-    & $n $s install | Out-Null
-    & $n $s launch | Out-Null
-} -ArgumentList $LauncherScript, $env:PATH
+    & $n $s stop 2>&1 | Out-Null
+    & $n $s install 2>&1 | Out-Null
+    & $n $s launch 2>&1 | Out-Null
+} -ArgumentList $LauncherScript, $SavedPATH
 
 # ── Run ──
 $notifyIcon.ContextMenuStrip = Build-Menu
