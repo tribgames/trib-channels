@@ -7,9 +7,9 @@
 
 import { REST, Routes, SlashCommandBuilder } from 'discord.js'
 import type { ChatInputCommandInteraction, Client } from 'discord.js'
-import { existsSync, readFileSync } from 'fs'
+import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
-import type { PluginConfig } from '../backends/types.js'
+import type { PluginConfig, WebhookEndpoint, EventRule } from '../backends/types.js'
 import type { Scheduler } from './scheduler.js'
 import { DATA_DIR } from './config.js'
 import { runBotCommand, type CommandContext, type CommandResult } from './custom-commands.js'
@@ -238,18 +238,6 @@ function buildClaude2BotCommand(): SlashCommandBuilder {
   )
 
   claude2bot.addSubcommand(sub =>
-    sub.setName('schedule').setDescription('Open claude2bot schedule management')
-      .setDescriptionLocalizations({
-        ko: 'claude2bot 스케줄 관리 열기',
-        ja: 'claude2bot スケジュール管理を開く',
-        'zh-CN': '打开 claude2bot 计划管理',
-        'zh-TW': '開啟 claude2bot 排程管理',
-        'pt-BR': 'Abrir gerenciamento de agendamentos do claude2bot',
-        'es-ES': 'Abrir gestion de programaciones de claude2bot',
-      }),
-  )
-
-  claude2bot.addSubcommand(sub =>
     sub.setName('doctor').setDescription('Run claude2bot diagnostics')
       .setDescriptionLocalizations({
         ko: 'claude2bot 진단 실행',
@@ -318,6 +306,58 @@ function buildClaude2BotCommand(): SlashCommandBuilder {
   // /claude2bot summarize
   claude2bot.addSubcommand(sub =>
     sub.setName('summarize').setDescription('Summarize conversations and update memory (no restart)'),
+  )
+
+  // /claude2bot webhook [action] [name] [parser] [mode] [exec] [channel]
+  claude2bot.addSubcommand(sub =>
+    sub.setName('webhook').setDescription('Manage webhook endpoints')
+      .addStringOption(opt =>
+        opt.setName('action').setDescription('list, add, remove, test').setRequired(false)
+          .addChoices(
+            { name: 'list', value: 'list' },
+            { name: 'add', value: 'add' },
+            { name: 'remove', value: 'remove' },
+            { name: 'test', value: 'test' },
+          ))
+      .addStringOption(opt =>
+        opt.setName('name').setDescription('Endpoint name').setRequired(false))
+      .addStringOption(opt =>
+        opt.setName('parser').setDescription('Parser type').setRequired(false)
+          .addChoices(
+            { name: 'github', value: 'github' },
+            { name: 'sentry', value: 'sentry' },
+            { name: 'generic', value: 'generic' },
+            { name: 'none (raw)', value: 'none' },
+          ))
+      .addStringOption(opt =>
+        opt.setName('mode').setDescription('Processing mode').setRequired(false)
+          .addChoices(
+            { name: 'immediate', value: 'immediate' },
+            { name: 'batch', value: 'batch' },
+          ))
+      .addStringOption(opt =>
+        opt.setName('exec').setDescription('Execution type').setRequired(false)
+          .addChoices(
+            { name: 'interactive', value: 'interactive' },
+            { name: 'non-interactive', value: 'non-interactive' },
+            { name: 'script', value: 'script' },
+          ))
+      .addStringOption(opt =>
+        opt.setName('channel').setDescription('Target channel label').setRequired(false)),
+  )
+
+  // /claude2bot event [action] [name]
+  claude2bot.addSubcommand(sub =>
+    sub.setName('event').setDescription('Manage event automation rules')
+      .addStringOption(opt =>
+        opt.setName('action').setDescription('list, remove, status').setRequired(false)
+          .addChoices(
+            { name: 'list', value: 'list' },
+            { name: 'remove', value: 'remove' },
+            { name: 'status', value: 'status' },
+          ))
+      .addStringOption(opt =>
+        opt.setName('name').setDescription('Rule name').setRequired(false)),
   )
 
   return claude2bot
@@ -622,6 +662,14 @@ async function handleClaude2BotCommand(
       return handleBotCommandArgs(interaction, ctx, ['profile', 'status'])
     case 'summarize':
       return handleBotCommandArgs(interaction, ctx, ['sleeping', 'run'])
+    case 'webhook': {
+      const action = interaction.options.getString('action') ?? 'list'
+      return handleWebhook(interaction, ctx, action)
+    }
+    case 'event': {
+      const action = interaction.options.getString('action') ?? 'list'
+      return handleEvent(interaction, ctx, action)
+    }
     case 'workspace': {
       const wsPath = interaction.options.getString('path')
       if (wsPath) {
@@ -641,5 +689,284 @@ async function handleClaude2BotCommand(
     }
     default:
       await interaction.reply({ content: `Unknown command: ${sub}`, flags: 64 })
+  }
+}
+
+// ── Webhook slash command handler ─────────────────────────────────────
+
+async function handleWebhook(
+  interaction: ChatInputCommandInteraction,
+  ctx: SlashCommandContext,
+  action: string,
+): Promise<void> {
+  const configPath = join(DATA_DIR, 'config.json')
+
+  switch (action) {
+    case 'list': {
+      const webhook = ctx.config.webhook
+      if (!webhook?.enabled || !webhook.endpoints || Object.keys(webhook.endpoints).length === 0) {
+        await interaction.reply({
+          embeds: [{
+            title: 'Webhook Endpoints',
+            description: 'No webhook endpoints configured.\nUse `/claude2bot webhook add` to create one.',
+            color: EMBED_COLOR,
+          }],
+          flags: 64,
+        })
+        return
+      }
+
+      const lines = Object.entries(webhook.endpoints).map(([name, ep]) => {
+        const url = webhook.ngrokDomain
+          ? `https://${webhook.ngrokDomain}/webhook/${name}`
+          : `http://localhost:${webhook.port}/webhook/${name}`
+        return `**${name}** — ${ep.mode} / ${ep.exec}\n  parser: \`${ep.parser ?? 'raw'}\` → channel: \`${ep.channel}\`\n  URL: \`${url}\``
+      })
+
+      await interaction.reply({
+        embeds: [{
+          title: `Webhook Endpoints (${Object.keys(webhook.endpoints).length})`,
+          description: lines.join('\n\n'),
+          footer: { text: `port: ${webhook.port} | batch: ${webhook.batchInterval}m` },
+          color: EMBED_COLOR,
+        }],
+        flags: 64,
+      })
+      return
+    }
+
+    case 'add': {
+      const name = interaction.options.getString('name')
+      if (!name) {
+        await interaction.reply({ content: 'Endpoint name is required. Usage: `/claude2bot webhook add name:<name>`', flags: 64 })
+        return
+      }
+
+      const parser = interaction.options.getString('parser') ?? undefined
+      const mode = (interaction.options.getString('mode') ?? 'batch') as 'immediate' | 'batch'
+      const exec = (interaction.options.getString('exec') ?? 'interactive') as 'interactive' | 'non-interactive' | 'script'
+      const channel = interaction.options.getString('channel') ?? ctx.config.channelsConfig?.main ?? 'general'
+
+      // Build endpoint
+      const endpoint: WebhookEndpoint = {
+        execute: '{{raw}}',
+        mode,
+        exec,
+        channel,
+      }
+      if (parser && parser !== 'none') {
+        endpoint.parser = parser as 'github' | 'sentry' | 'generic'
+      }
+
+      // Update config
+      try {
+        const raw = readFileSync(configPath, 'utf8')
+        const cfg = JSON.parse(raw)
+        if (!cfg.webhook) {
+          cfg.webhook = { enabled: true, port: 3333, endpoints: {}, batchInterval: 30 }
+        }
+        cfg.webhook.enabled = true
+        cfg.webhook.endpoints[name] = endpoint
+        writeFileSync(configPath, JSON.stringify(cfg, null, 2))
+        ctx.reloadRuntimeConfig()
+
+        const url = cfg.webhook.ngrokDomain
+          ? `https://${cfg.webhook.ngrokDomain}/webhook/${name}`
+          : `http://localhost:${cfg.webhook.port}/webhook/${name}`
+
+        await interaction.reply({
+          embeds: [{
+            title: `Webhook Added: ${name}`,
+            description: `mode: ${mode} | exec: ${exec} | parser: ${parser ?? 'raw'} | channel: ${channel}\n\nURL: \`${url}\``,
+            color: 0x57F287,
+          }],
+          flags: 64,
+        })
+      } catch (err) {
+        await interaction.reply({ content: `Failed to add webhook: ${err}`, flags: 64 })
+      }
+      return
+    }
+
+    case 'remove': {
+      const name = interaction.options.getString('name')
+      if (!name) {
+        await interaction.reply({ content: 'Endpoint name is required.', flags: 64 })
+        return
+      }
+
+      try {
+        const raw = readFileSync(configPath, 'utf8')
+        const cfg = JSON.parse(raw)
+        if (!cfg.webhook?.endpoints?.[name]) {
+          await interaction.reply({ content: `Endpoint "${name}" not found.`, flags: 64 })
+          return
+        }
+        delete cfg.webhook.endpoints[name]
+        writeFileSync(configPath, JSON.stringify(cfg, null, 2))
+        ctx.reloadRuntimeConfig()
+
+        await interaction.reply({
+          embeds: [{
+            title: `Webhook Removed: ${name}`,
+            color: 0xED4245,
+          }],
+          flags: 64,
+        })
+      } catch (err) {
+        await interaction.reply({ content: `Failed to remove webhook: ${err}`, flags: 64 })
+      }
+      return
+    }
+
+    case 'test': {
+      const name = interaction.options.getString('name')
+      if (!name) {
+        await interaction.reply({ content: 'Endpoint name is required.', flags: 64 })
+        return
+      }
+
+      const port = ctx.config.webhook?.port ?? 3333
+      const testBody = JSON.stringify({ test: true, source: 'slash-command', timestamp: new Date().toISOString() })
+
+      try {
+        const { request } = await import('http')
+        await new Promise<void>((resolve, reject) => {
+          const req = request({
+            hostname: 'localhost',
+            port,
+            path: `/webhook/${name}`,
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+          }, (res) => {
+            let data = ''
+            res.on('data', (chunk: Buffer) => { data += chunk })
+            res.on('end', () => {
+              interaction.reply({
+                embeds: [{
+                  title: `Webhook Test: ${name}`,
+                  description: `Status: ${res.statusCode}\nResponse: \`${data.substring(0, 200)}\``,
+                  color: res.statusCode === 200 ? 0x57F287 : 0xED4245,
+                }],
+                flags: 64,
+              }).catch(() => {})
+              resolve()
+            })
+          })
+          req.on('error', (err) => {
+            interaction.reply({ content: `Test failed: ${err.message}`, flags: 64 }).catch(() => {})
+            reject(err)
+          })
+          req.write(testBody)
+          req.end()
+        })
+      } catch { /* handled in callbacks */ }
+      return
+    }
+
+    default:
+      await interaction.reply({ content: `Unknown webhook action: ${action}`, flags: 64 })
+  }
+}
+
+// ── Event slash command handler ───────────────────────────────────────
+
+async function handleEvent(
+  interaction: ChatInputCommandInteraction,
+  ctx: SlashCommandContext,
+  action: string,
+): Promise<void> {
+  const configPath = join(DATA_DIR, 'config.json')
+
+  switch (action) {
+    case 'list': {
+      const rules = ctx.config.events?.rules?.filter(r => r.enabled !== false) ?? []
+      if (rules.length === 0) {
+        await interaction.reply({
+          embeds: [{
+            title: 'Event Rules',
+            description: 'No event rules configured.\nTell Claude to add one: "GitHub PR 오면 알려줘"',
+            color: EMBED_COLOR,
+          }],
+          flags: 64,
+        })
+        return
+      }
+
+      const lines = rules.map(r => {
+        const trigger = r.source === 'watcher' ? `match: \`${r.match}\`` :
+                        r.source === 'webhook' ? `parser: \`${r.parser ?? 'raw'}\`` :
+                        `path: \`${r.path}\``
+        return `**${r.name}** — ${r.source} / ${r.exec}\n  ${trigger} → ${r.priority} priority → channel: \`${r.channel}\``
+      })
+
+      await interaction.reply({
+        embeds: [{
+          title: `Event Rules (${rules.length})`,
+          description: lines.join('\n\n'),
+          color: EMBED_COLOR,
+        }],
+        flags: 64,
+      })
+      return
+    }
+
+    case 'remove': {
+      const name = interaction.options.getString('name')
+      if (!name) {
+        await interaction.reply({ content: 'Rule name is required.', flags: 64 })
+        return
+      }
+
+      try {
+        const raw = readFileSync(configPath, 'utf8')
+        const cfg = JSON.parse(raw)
+        const rules: EventRule[] = cfg.events?.rules ?? []
+        const idx = rules.findIndex(r => r.name === name)
+        if (idx === -1) {
+          await interaction.reply({ content: `Rule "${name}" not found.`, flags: 64 })
+          return
+        }
+        rules.splice(idx, 1)
+        if (!cfg.events) cfg.events = {}
+        cfg.events.rules = rules
+        writeFileSync(configPath, JSON.stringify(cfg, null, 2))
+        ctx.reloadRuntimeConfig()
+
+        await interaction.reply({
+          embeds: [{
+            title: `Event Removed: ${name}`,
+            color: 0xED4245,
+          }],
+          flags: 64,
+        })
+      } catch (err) {
+        await interaction.reply({ content: `Failed to remove rule: ${err}`, flags: 64 })
+      }
+      return
+    }
+
+    case 'status': {
+      const rules = ctx.config.events?.rules?.filter(r => r.enabled !== false) ?? []
+      const webhookEnabled = ctx.config.webhook?.enabled ?? false
+      const port = ctx.config.webhook?.port ?? 3333
+
+      await interaction.reply({
+        embeds: [{
+          title: 'Event System Status',
+          description: [
+            `**Rules:** ${rules.length} active`,
+            `**Webhook server:** ${webhookEnabled ? `ON (port ${port})` : 'OFF'}`,
+            `**Sources:** ${[...new Set(rules.map(r => r.source))].join(', ') || 'none'}`,
+          ].join('\n'),
+          color: EMBED_COLOR,
+        }],
+        flags: 64,
+      })
+      return
+    }
+
+    default:
+      await interaction.reply({ content: `Unknown event action: ${action}`, flags: 64 })
   }
 }

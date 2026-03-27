@@ -233,6 +233,10 @@ export interface PluginConfig {
   voice?: VoiceConfig
   /** UI / response language override (e.g. "ko", "en", "ja") */
   language?: string
+  /** Webhook receiver configuration */
+  webhook?: WebhookConfig
+  /** Event automation system */
+  events?: EventsConfig
 }
 
 // ── Bot config (bot.json) ─────────────────────────────────────────────
@@ -316,4 +320,87 @@ export interface ProactiveConfig {
   dndStart?: string
   /** Do-not-disturb end time "HH:MM" (e.g. "07:00") */
   dndEnd?: string
+}
+
+// ── Event system types ────────────────────────────────────────────────
+
+export interface EventRule {
+  /** Unique name for this rule */
+  name: string
+  /** Event source type */
+  source: 'webhook' | 'watcher' | 'file'
+  /** Built-in parser: 'github', 'sentry', 'generic', or omit for raw */
+  parser?: 'github' | 'sentry' | 'generic'
+  /** Filter expression (e.g. "event == 'pull_request'") */
+  filter?: string
+  /** Regex pattern for watcher source */
+  match?: string
+  /** File path or glob for file source */
+  path?: string
+  /** Output template with {{field}} placeholders */
+  execute: string
+  /** Priority: high (next tick), normal (idle), low (batch) */
+  priority: 'high' | 'normal' | 'low'
+  /** Execution type */
+  exec: 'interactive' | 'non-interactive' | 'script'
+  /** Target channel label */
+  channel: string
+  /** Script filename for exec: 'script' mode */
+  script?: string
+  /** Whether this rule is enabled (default: true) */
+  enabled?: boolean
+}
+
+export interface EventQueueConfig {
+  /** Queue processor tick interval in seconds (default: 60) */
+  tickInterval?: number
+  /** Max concurrent non-interactive executions (default: 2) */
+  maxConcurrent?: number
+  /** Batch interval in minutes for low priority (default: 30) */
+  batchInterval?: number
+}
+
+export interface EventsConfig {
+  rules: EventRule[]
+  webhook?: WebhookServerConfig
+  queue?: EventQueueConfig
+}
+
+export interface WebhookServerConfig {
+  enabled: boolean
+  /** HTTP server port (default: 3333) */
+  port: number
+  /** ngrok fixed domain for external access */
+  ngrokDomain?: string
+}
+
+// ── Webhook types (legacy, used by slash commands) ────────────────────
+
+export interface WebhookEndpoint {
+  /** Built-in parser: 'github', 'sentry', 'generic', or omit for raw */
+  parser?: 'github' | 'sentry' | 'generic'
+  /** Filter expression (e.g. "event == 'pull_request'") — unmatched events are silently dropped */
+  filter?: string
+  /** Output template with {{field}} placeholders, or {{raw}} for full JSON body */
+  execute: string
+  /** 'immediate' fires instantly, 'batch' queues for periodic processing */
+  mode: 'immediate' | 'batch'
+  /** Execution type: inject into session, spawn claude -p, or run a script */
+  exec: 'interactive' | 'non-interactive' | 'script'
+  /** Target channel label (resolved via channelsConfig) */
+  channel: string
+  /** Script filename for exec: 'script' mode */
+  script?: string
+}
+
+export interface WebhookConfig {
+  enabled: boolean
+  /** HTTP server port (default: 3333) */
+  port: number
+  /** ngrok fixed domain for external access */
+  ngrokDomain?: string
+  /** Named webhook endpoints */
+  endpoints: Record<string, WebhookEndpoint>
+  /** Batch processing interval in minutes (default: 30) */
+  batchInterval: number
 }

@@ -162,6 +162,9 @@ export class Scheduler {
       return
     }
 
+    // Ensure empty plugin dir for claude -p (prevents loading claude2bot plugin)
+    mkdirSync('/tmp/claude2bot-noplugin', { recursive: true })
+
     // Scheduler-level lock: only one session runs the scheduler
     if (existsSync(Scheduler.SCHEDULER_LOCK)) {
       try {
@@ -533,8 +536,8 @@ export class Scheduler {
     if (this.running.has(schedule.name)) return
     this.running.add(schedule.name)
 
-    // CLAUDE2BOT_NO_CONNECT prevents child from connecting Discord bot (avoids WebSocket conflict)
-    const proc = spawn('claude', ['-p', '--dangerously-skip-permissions', '--no-session-persistence'], {
+    // --plugin-dir with empty dir prevents child from loading claude2bot plugin (avoids killPreviousServer)
+    const proc = spawn('claude', ['-p', '--dangerously-skip-permissions', '--no-session-persistence', '--plugin-dir', '/tmp/claude2bot-noplugin'], {
       env: { ...process.env, CLAUDE2BOT_NO_CONNECT: '1' },
     })
 
