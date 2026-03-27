@@ -337,6 +337,18 @@ function buildClaude2BotCommand(): SlashCommandBuilder {
     sub.setName('profile').setDescription('Show/edit bot profile'),
   )
 
+  // /claude2bot summarize
+  claude2bot.addSubcommand(sub =>
+    sub.setName('summarize').setDescription('Summarize conversations and update memory (no restart)'),
+  )
+
+  // /claude2bot workspace [path]
+  claude2bot.addSubcommand(sub =>
+    sub.setName('workspace').setDescription('Show or set workspace path')
+      .addStringOption(opt =>
+        opt.setName('path').setDescription('New workspace path').setRequired(false)),
+  )
+
   return claude2bot
 }
 
@@ -643,6 +655,25 @@ async function handleClaude2BotCommand(
     }
     case 'profile':
       return handleBotCommandArgs(interaction, ctx, ['profile', 'status'])
+    case 'summarize':
+      return handleBotCommandArgs(interaction, ctx, ['sleeping', 'run'])
+    case 'workspace': {
+      const wsPath = interaction.options.getString('path')
+      if (wsPath) {
+          await interaction.reply({
+          embeds: [{ title: 'Workspace', description: `Use CLI: \`launcher workspace ${wsPath}\``, color: 0x5865F2 }],
+          flags: 64,
+        })
+      } else {
+        const { readLauncherState } = await import('./launcher-state.js')
+        const state = readLauncherState()
+        await interaction.reply({
+          embeds: [{ title: 'Workspace', description: state?.workspacePath ?? '(not set)', color: 0x5865F2 }],
+          flags: 64,
+        })
+      }
+      return
+    }
     default:
       await interaction.reply({ content: `Unknown command: ${sub}`, flags: 64 })
   }
