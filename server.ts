@@ -1155,17 +1155,41 @@ async function handleInbound(
 
 await mcp.connect(new StdioServerTransport())
 
-// Start transcript watch immediately — runs once, stays alive permanently
+// Start transcript watch — poll until transcript exists, then bind
 {
-  const initialTranscript = discoverSessionBoundTranscript()
-  // Resolve default channel ID from config
   const mainLabel = config.channelsConfig?.main || 'general'
   const defaultChannelId = config.channelsConfig?.channels?.[mainLabel]?.id || ''
-  if (initialTranscript?.exists) {
-    applyTranscriptBinding(defaultChannelId, initialTranscript.transcriptPath, {
-      persistStatus: false,
-    })
-    process.stderr.write(`claude2bot: watching transcript: ${initialTranscript.transcriptPath}, channel: ${defaultChannelId}\n`)
+
+  const tryBind = () => {
+    const t = discoverSessionBoundTranscript()
+    if (t?.exists) {
+      applyTranscriptBinding(defaultChannelId, t.transcriptPath, { persistStatus: false })
+      process.stderr.write(`claude2bot: watching transcript: ${t.transcriptPath}\n`)
+      return true
+    }
+    // Fallback: find most recent transcript for this project
+    try {
+      const projectDir = path.join(require('os').homedir(), '.claude', 'projects', process.cwd().replace(/\//g, '-'))
+      const files = fs.readdirSync(projectDir)
+        .filter((f: string) => f.endsWith('.jsonl') && !f.startsWith('agent-'))
+        .map((f: string) => ({ p: path.join(projectDir, f), m: fs.statSync(path.join(projectDir, f)).mtimeMs }))
+        .sort((a: any, b: any) => b.m - a.m)
+      if (files.length > 0) {
+        applyTranscriptBinding(defaultChannelId, files[0].p, { persistStatus: false })
+        process.stderr.write(`claude2bot: fallback transcript: ${files[0].p}\n`)
+        return true
+      }
+    } catch {}
+    return false
+  }
+
+  if (!tryBind()) {
+    // Poll every 2s until transcript appears
+    const bindTimer = setInterval(() => {
+      if (tryBind()) clearInterval(bindTimer)
+    }, 2000)
+    // Stop polling after 60s
+    setTimeout(() => clearInterval(bindTimer), 60_000)
   }
 }
 
