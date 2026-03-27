@@ -10,7 +10,13 @@ $StatePath = Join-Path $env:USERPROFILE ".claude2bot-launcher-state.json"
 $PluginDataDir = Join-Path $env:USERPROFILE ".claude\plugins\data\claude2bot-claude2bot"
 $BotConfigPath = Join-Path $PluginDataDir "bot.json"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+# Find launcher.mjs: local first, then plugin cache
 $LauncherScript = Join-Path $ScriptDir "launcher.mjs"
+if (-not (Test-Path $LauncherScript)) {
+    $PluginCache = Join-Path $env:USERPROFILE ".claude\plugins\cache\claude2bot\claude2bot"
+    $Found = Get-ChildItem $PluginCache -Recurse -Filter "launcher.mjs" -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($Found) { $LauncherScript = $Found.FullName }
+}
 
 # ── Helpers ──
 function Read-Json($path) {
