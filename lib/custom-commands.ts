@@ -147,6 +147,25 @@ export async function handleBotCommand(
       return handleDisplay(parsed, ctx)
     case 'status':
       return handleBotStatus(ctx)
+    case 'help':
+      return {
+        embeds: [{
+          title: 'Bot Commands',
+          description: [
+            '`/bot status` — Dashboard',
+            '`/bot autotalk [on/off/1-5]` — Proactive chat',
+            '`/bot quiet [HH:MM-HH:MM/off]` — Quiet hours',
+            '`/bot sleeping [on/off]` — Sleeping mode',
+            '`/bot sleeping time HH:MM` — Sleep time',
+            '`/bot sleeping run` — Run now',
+            '`/bot display [view/hide]` — Terminal mode',
+            '`/bot schedule` — Schedule management',
+            '`/bot profile` — Edit profile',
+            '`/bot launcher` — Launcher status',
+          ].join('\n'),
+          color: 0x5865F2,
+        }],
+      }
     default:
       return { text: t('unknown_sub', ctx.lang, { sub }) }
   }

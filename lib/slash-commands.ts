@@ -273,6 +273,51 @@ function buildClaude2BotCommand(): SlashCommandBuilder {
       }),
   )
 
+  // /claude2bot autotalk [level]
+  claude2bot.addSubcommand(sub =>
+    sub.setName('autotalk').setDescription('Set autotalk frequency')
+      .addStringOption(opt =>
+        opt.setName('level').setDescription('OFF, 1-5, very-low~very-high').setRequired(false)),
+  )
+
+  // /claude2bot quiet [schedule]
+  claude2bot.addSubcommand(sub =>
+    sub.setName('quiet').setDescription('Set quiet hours')
+      .addStringOption(opt =>
+        opt.setName('schedule').setDescription('HH:MM-HH:MM or off').setRequired(false)),
+  )
+
+  // /claude2bot sleeping [action] [value]
+  claude2bot.addSubcommand(sub =>
+    sub.setName('sleeping').setDescription('Sleeping mode control')
+      .addStringOption(opt =>
+        opt.setName('action').setDescription('on, off, run, time').setRequired(false)
+          .addChoices(
+            { name: 'on', value: 'on' },
+            { name: 'off', value: 'off' },
+            { name: 'run', value: 'run' },
+            { name: 'time', value: 'time' },
+          ))
+      .addStringOption(opt =>
+        opt.setName('value').setDescription('Time value for "time" action (HH:MM)').setRequired(false)),
+  )
+
+  // /claude2bot display [mode]
+  claude2bot.addSubcommand(sub =>
+    sub.setName('display').setDescription('Set display mode')
+      .addStringOption(opt =>
+        opt.setName('mode').setDescription('view or hide').setRequired(false)
+          .addChoices(
+            { name: 'view', value: 'view' },
+            { name: 'hide', value: 'hide' },
+          )),
+  )
+
+  // /claude2bot profile
+  claude2bot.addSubcommand(sub =>
+    sub.setName('profile').setDescription('Show/edit bot profile'),
+  )
+
   return claude2bot
 }
 
@@ -549,6 +594,27 @@ async function handleClaude2BotCommand(
       return handleDoctor(interaction, ctx)
     case 'launcher':
       return handleBotCommandArgs(interaction, ctx, ['launcher', 'list'])
+    case 'autotalk': {
+      const level = interaction.options.getString('level')
+      return handleBotCommandArgs(interaction, ctx, level ? ['autotalk', level] : ['autotalk', 'status'])
+    }
+    case 'quiet': {
+      const schedule = interaction.options.getString('schedule')
+      return handleBotCommandArgs(interaction, ctx, schedule ? ['quiet', 'schedule', schedule] : ['quiet', 'status'])
+    }
+    case 'sleeping': {
+      const action = interaction.options.getString('action') ?? 'status'
+      const value = interaction.options.getString('value')
+      const args = ['sleeping', action]
+      if (value) args.push(value)
+      return handleBotCommandArgs(interaction, ctx, args)
+    }
+    case 'display': {
+      const mode = interaction.options.getString('mode')
+      return handleBotCommandArgs(interaction, ctx, mode ? ['display', mode] : ['display'])
+    }
+    case 'profile':
+      return handleBotCommandArgs(interaction, ctx, ['profile', 'status'])
     default:
       await interaction.reply({ content: `Unknown command: ${sub}`, flags: 64 })
   }
