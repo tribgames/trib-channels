@@ -1010,7 +1010,7 @@ function sleepCycle(workspacePath) {
   } else if (transcripts.length > 0) {
     const pingpong = extractPingPong(transcripts)
     if (pingpong) {
-      runSleepPrompt(sleepPrompt, { date: today, pingpong, ws })
+      runSleepPrompt(sleepPrompt, { date: today, pingpong, ws, firstRun: isFirstRun })
       process.stderr.write(`[sleep-cycle] Daily ${today} generated. (${existingDailies + 1}/7)\n`)
     }
   } else {
@@ -1070,7 +1070,7 @@ function sleepCycle(workspacePath) {
   process.stderr.write('[sleep-cycle] New session launched.\n')
 }
 
-function runSleepPrompt(template, { date, pingpong, ws }) {
+function runSleepPrompt(template, { date, pingpong, ws, firstRun = false }) {
   const existing = {
     lifetime: existsSync(join(HISTORY_DIR, 'lifetime.md')) ? readFileSync(join(HISTORY_DIR, 'lifetime.md'), 'utf8') : '',
     identity: existsSync(join(HISTORY_DIR, 'identity.md')) ? readFileSync(join(HISTORY_DIR, 'identity.md'), 'utf8') : '',
@@ -1079,7 +1079,7 @@ function runSleepPrompt(template, { date, pingpong, ws }) {
   }
   const prompt = template
     .replace('{{DATE}}', date)
-    .replace('{{PINGPONG}}', pingpong.slice(-50000))
+    .replace('{{PINGPONG}}', pingpong.slice(firstRun ? -200000 : -50000))
     .replace('{{LIFETIME}}', existing.lifetime)
     .replace('{{IDENTITY}}', existing.identity)
     .replace('{{ONGOING}}', existing.ongoing)
