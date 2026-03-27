@@ -1413,7 +1413,7 @@ if (process.env.CLAUDE2BOT_NO_CONNECT) {
     await mcp.notification({
       method: 'notifications/claude/channel',
       params: {
-        content: 'New session started. Say hi naturally. Keep it to one short message only — do not read files, use tools, or do anything else.',
+        content: 'New session started. Say something different each time — vary your tone, topic, or style. You can mention recent work, ask a question, share a thought, or just be casual. Never repeat the same greeting pattern. One short message only, no tools.',
         meta: { chat_id: greetChannel, user: 'system:greeting', user_id: 'system', ts: new Date().toISOString() },
       },
     }).catch(() => {})
