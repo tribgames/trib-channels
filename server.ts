@@ -1095,8 +1095,10 @@ async function handleInbound(
     }
   }
 
+  // If voice was transcribed, hide attachment meta so Claude doesn't re-process
+  const voiceTranscribed = text !== msg.text && config.voice?.enabled
   const attMeta =
-    msg.attachments.length > 0
+    msg.attachments.length > 0 && !voiceTranscribed
       ? {
           attachment_count: String(msg.attachments.length),
           attachments: msg.attachments
