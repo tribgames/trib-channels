@@ -71,13 +71,41 @@ export class VoiceSession {
       adapterCreator: this.adapterCreator,
       selfDeaf: false,
       selfMute: false,
-      daveEncryption: false,
-    } as any)
+    })
 
     this.player = createAudioPlayer()
     this.connection.subscribe(this.player)
 
     await entersState(this.connection, VoiceConnectionStatus.Ready, 30_000)
+
+    // Patch parsePacket to fallback to raw RTP payload on DAVE decrypt failure
+    try {
+      const receiver = this.connection.receiver as any
+      const origParsePacket = receiver.parsePacket.bind(receiver)
+      receiver.parsePacket = (buffer: Buffer, mode: string, nonce: Buffer, secretKey: Uint8Array, userId: string) => {
+        try {
+          return origParsePacket(buffer, mode, nonce, secretKey, userId)
+        } catch {
+          // DAVE decrypt failed — extract raw payload after RTP header
+          let offset = 12
+          const csrcCount = buffer[0]! & 0x0f
+          offset += csrcCount * 4
+          if ((buffer[0]! & 0x10) !== 0 && buffer.length > offset + 4) {
+            const extLen = buffer.readUInt16BE(offset + 2)
+            offset += 4 + extLen * 4
+          }
+          if (offset < buffer.length) {
+            const payload = buffer.subarray(offset)
+            vlog(`raw fallback: ${payload.length}b\n`)
+            return payload
+          }
+          return null
+        }
+      }
+      vlog('parsePacket patched for DAVE fallback\n')
+    } catch (err) {
+      vlog(`parsePacket patch failed: ${err}\n`)
+    }
 
     vlog(` joined ${this.channelId} (daveEncryption: false)\n`)
 
@@ -117,10 +145,16 @@ export class VoiceSession {
   private async recordUser(userId: string): Promise<void> {
     if (!this.connection || this.recording) return
     this.recording = true
+    vlog(`recordUser started for ${userId}\n`)
 
     const receiver = this.connection.receiver
     const opusStream = receiver.subscribe(userId, {
       end: { behavior: EndBehaviorType.AfterSilence, duration: SILENCE_THRESHOLD },
+    })
+
+    // Prevent stream destruction on decrypt errors
+    opusStream.on('error', (err) => {
+      vlog(`stream error (ignored): ${err.message}\n`)
     })
 
     const pcmFile = join(VOICE_TMP, `${userId}-${Date.now()}.pcm`)
