@@ -8,7 +8,7 @@
     "claude2bot-launcher": "./launcher.mjs"
   },
   "scripts": {
-    "start": "npx tsx server.ts",
+    "start": "npm install --production --silent && npx tsx server.ts",
     "launcher": "node launcher.mjs",
     "launcher:install": "node launcher.mjs install",
     "launcher:launch": "node launcher.mjs launch",
