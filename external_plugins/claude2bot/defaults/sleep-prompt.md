@@ -3,29 +3,14 @@ You are analyzing today's conversation to generate daily records for the c2b Mem
 Date: {{DATE}}
 History directory: {{HISTORY_DIR}}
 
-## Existing Files
+## Data Sources
 
-### lifetime.md (cumulative history compression)
-{{LIFETIME}}
-
-### identity.md (user profile, recent > past)
-{{IDENTITY}}
-
-### ongoing.md (active tasks, cumulative)
-{{ONGOING}}
-
-### interests.json (keyword frequency tracking)
-{{INTERESTS}}
-
-## Today's Conversation (user ↔ assistant ping-pong only)
-
-{{PINGPONG}}
-
----
+- **Transcripts**: Read .jsonl files from `{{TRANSCRIPT_DIR}}/` (modified today only). Each file is JSON Lines — extract "human"/"assistant" messages.
+- **Existing history**: Read files from `{{HISTORY_DIR}}/` (lifetime.md, identity.md, ongoing.md, interests.json). Skip if not found.
 
 ## Instructions
 
-Analyze the conversation above and generate/update the following files. Write ALL content in English except proper nouns (Korean project names, etc.) to save tokens.
+Read the transcript files above, then generate/update the following files. Write ALL content in English except proper nouns (Korean project names, etc.) to save tokens.
 
 ### 1. Create: {{HISTORY_DIR}}/daily/{{DATE}}.md
 Summarize today's work in ~5 lines:

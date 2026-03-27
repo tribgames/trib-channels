@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { execFileSync, spawn } from 'child_process'
+import { execFileSync, spawnSync, spawn } from 'child_process'
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'fs'
 import { homedir } from 'os'
 import { dirname, join, resolve } from 'path'
@@ -999,7 +999,7 @@ function sleepCycle(workspacePath) {
 
   // 2. Collect transcripts since last sleep
   const transcripts = findTranscriptsSince(ws, lastSleepAt)
-  const promptPath = join(resourceDir(), 'sleep-prompt.md')
+  const promptPath = join(resourceDir(), 'defaults', 'sleep-prompt.md')
   const sleepPrompt = existsSync(promptPath) ? readFileSync(promptPath, 'utf8') : 'Summarize the conversation.'
 
   // Daily: 최대 7개 (1주치)
@@ -1076,18 +1076,15 @@ function runSleepPrompt(template, { date, ws }) {
   const transcriptDir = join(homedir(), '.claude', 'projects', projectKey)
   const prompt = template
     .replace('{{DATE}}', date)
-    .replace('{{PINGPONG}}', `[Read .jsonl files from: ${transcriptDir}]\nAnalyze all .jsonl transcript files modified today in the directory above. Each file is a JSON Lines session log with "type":"human"/"assistant" messages. Read them using the Read tool and extract the conversation content.`)
-    .replace('{{LIFETIME}}', `[Read if exists: ${join(HISTORY_DIR, 'lifetime.md')}]`)
-    .replace('{{IDENTITY}}', `[Read if exists: ${join(HISTORY_DIR, 'identity.md')}]`)
-    .replace('{{ONGOING}}', `[Read if exists: ${join(HISTORY_DIR, 'ongoing.md')}]`)
-    .replace('{{INTERESTS}}', `[Read if exists: ${join(HISTORY_DIR, 'interests.json')}]`)
+    .replace('{{TRANSCRIPT_DIR}}', transcriptDir)
     .replace('{{HISTORY_DIR}}', HISTORY_DIR)
   try {
-    execFileSync('claude', ['-p', prompt], {
-      cwd: ws,
-      stdio: 'inherit', timeout: 300000,
-      env: process.env,
+    const { status } = spawnSync('claude', ['-p'], {
+      cwd: ws, input: prompt,
+      stdio: ['pipe', 'inherit', 'inherit'],
+      env: process.env, timeout: 300000,
     })
+    if (status !== 0) throw new Error(`exit code ${status}`)
   } catch (e) {
     process.stderr.write(`[sleep-cycle] claude -p failed: ${e.message}\n`)
   }
@@ -1191,7 +1188,7 @@ function summarizeOnly(workspacePath) {
   mkdirSync(join(HISTORY_DIR, 'daily'), { recursive: true })
 
   const transcripts = findTranscriptsSince(ws, lastSleepAt)
-  const promptPath = join(resourceDir(), 'sleep-prompt.md')
+  const promptPath = join(resourceDir(), 'defaults', 'sleep-prompt.md')
   const sleepPrompt = existsSync(promptPath) ? readFileSync(promptPath, 'utf8') : 'Summarize the conversation.'
 
   if (transcripts.length > 0) {
