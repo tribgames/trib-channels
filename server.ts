@@ -1097,12 +1097,16 @@ async function handleInbound(
             const transcript = await transcribeVoice(f.path)
             if (transcript) {
               text = transcript
-              process.stderr.write(`claude2bot: transcribed voice (${f.name})\n`)
+              process.stderr.write(`claude2bot: transcribed voice (${f.name}): ${transcript.slice(0, 50)}\n`)
+            } else {
+              process.stderr.write(`claude2bot: voice transcription returned empty (${f.name})\n`)
+              text = text || '[voice message — transcription failed]'
             }
           }
         }
       } catch (err) {
         process.stderr.write(`claude2bot: voice transcription failed: ${err}\n`)
+        text = text || '[voice message — transcription error]'
       }
     }
   }
