@@ -98,6 +98,8 @@ export class DiscordBackend implements ChannelBackend {
   onSlashCommand: ((interaction: ChatInputCommandInteraction) => void) | null = null
   onModalRequest: ((interaction: any) => void) | null = null
   onCustomCommand: ((text: string, channelId: string, userId: string, replyFn: (text: string, opts?: { embeds?: Record<string, unknown>[]; components?: Record<string, unknown>[] }) => Promise<void>) => void) | null = null
+  onVoiceJoin: ((guildId: string, channelId: string, adapterCreator: any) => void) | null = null
+  onVoiceLeave: (() => void) | null = null
 
   private client: Client
   private stateDir: string
@@ -126,6 +128,7 @@ export class DiscordBackend implements ChannelBackend {
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent,
+        GatewayIntentBits.GuildVoiceStates,
       ],
       partials: [Partials.Channel],
     })
@@ -250,6 +253,20 @@ export class DiscordBackend implements ChannelBackend {
 
     this.client.on('warn', msg => {
       process.stderr.write(`claude2bot discord: warn: ${msg}\n`)
+    })
+
+    this.client.on('voiceStateUpdate', (oldState, newState) => {
+      if (newState.member?.user.bot) return
+      const access = this.readAccessFile()
+      const userId = newState.member?.id ?? oldState.member?.id ?? ''
+      const isAllowed = access.allowFrom?.includes(userId)
+      if (!isAllowed) return
+      if (newState.channel && oldState.channelId !== newState.channelId) {
+        if (this.onVoiceJoin) this.onVoiceJoin(newState.guild.id, newState.channel.id, newState.guild.voiceAdapterCreator)
+      }
+      if (!newState.channel && oldState.channel) {
+        if (this.onVoiceLeave) this.onVoiceLeave()
+      }
     })
 
     await this.client.login(this.token)

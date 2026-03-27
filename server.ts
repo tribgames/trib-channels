@@ -589,7 +589,31 @@ backend.onSlashCommand = (interaction) => {
   void handleSlashCommand(interaction as ChatInputCommandInteraction, slashCtx)
 }
 
-// /bot text commands removed — use /claude2bot slash commands instead
+// Voice auto-join/leave
+backend.onVoiceJoin = async (guildId: string, channelId: string, adapterCreator: any) => {
+  if (activeVoiceSession?.isConnected()) return
+  const { VoiceSession } = await import('./lib/voice-channel.js')
+  activeVoiceSession = new VoiceSession(guildId, channelId, adapterCreator)
+  const mainLabel = config.channelsConfig?.main || 'general'
+  const mainChannelId = config.channelsConfig?.channels?.[mainLabel]?.id || ''
+  activeVoiceSession.setInjectHandler((text) => {
+    void mcp.notification({
+      method: 'notifications/claude/channel',
+      params: { content: text, meta: { chat_id: mainChannelId, user: 'voice', user_id: 'voice', ts: new Date().toISOString() } },
+    }).catch(() => {})
+  })
+  await activeVoiceSession.join()
+  if (mainChannelId) void backend.sendMessage(mainChannelId, '🎙️ Joined voice channel.')
+}
+
+let voiceLeaveTimer: ReturnType<typeof setTimeout> | null = null
+backend.onVoiceLeave = () => {
+  if (voiceLeaveTimer) clearTimeout(voiceLeaveTimer)
+  voiceLeaveTimer = setTimeout(() => {
+    if (activeVoiceSession) { activeVoiceSession.leave(); activeVoiceSession = null }
+    voiceLeaveTimer = null
+  }, 30_000)
+}
 
 // ── Voice transcription ───────────────────────────────────────────────
 
