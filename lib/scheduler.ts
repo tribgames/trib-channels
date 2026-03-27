@@ -138,6 +138,7 @@ export class Scheduler {
     const header = [
       `[schedule: ${name} | type: ${type} | session: ${state}]`,
       `[time: ${time.dayOfWeek} ${String(time.hour).padStart(2, '0')}:${String(new Date().getMinutes()).padStart(2, '0')} | weekend: ${time.isWeekend}]`,
+      `Before starting any work, briefly tell the user what you're about to do in one short sentence.`,
     ].join('\n')
     return `${header}\n\n${prompt}`
   }
