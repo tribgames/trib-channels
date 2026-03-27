@@ -273,6 +273,25 @@ function buildClaude2BotCommand(): SlashCommandBuilder {
       }),
   )
 
+  // /claude2bot schedule [action] [name] [time] [channel]
+  claude2bot.addSubcommand(sub =>
+    sub.setName('schedule').setDescription('Manage schedules')
+      .addStringOption(opt =>
+        opt.setName('action').setDescription('list, add, remove, test').setRequired(false)
+          .addChoices(
+            { name: 'list', value: 'list' },
+            { name: 'add', value: 'add' },
+            { name: 'remove', value: 'remove' },
+            { name: 'test', value: 'test' },
+          ))
+      .addStringOption(opt =>
+        opt.setName('name').setDescription('Schedule name').setRequired(false))
+      .addStringOption(opt =>
+        opt.setName('time').setDescription('Time (HH:MM, hourly, every30m)').setRequired(false))
+      .addStringOption(opt =>
+        opt.setName('channel').setDescription('Target channel').setRequired(false)),
+  )
+
   // /claude2bot autotalk [level]
   claude2bot.addSubcommand(sub =>
     sub.setName('autotalk').setDescription('Set autotalk frequency')
@@ -588,8 +607,17 @@ async function handleClaude2BotCommand(
   switch (sub) {
     case 'setup':
       return handleBotCommandArgs(interaction, ctx, ['status'])
-    case 'schedule':
-      return handleBotCommandArgs(interaction, ctx, ['schedule', 'list'])
+    case 'schedule': {
+      const action = interaction.options.getString('action') ?? 'list'
+      const name = interaction.options.getString('name')
+      const time = interaction.options.getString('time')
+      const channel = interaction.options.getString('channel')
+      const args = ['schedule', action]
+      if (name) args.push(name)
+      if (time) args.push(`time=${time}`)
+      if (channel) args.push(`channel=${channel}`)
+      return handleBotCommandArgs(interaction, ctx, args)
+    }
     case 'doctor':
       return handleDoctor(interaction, ctx)
     case 'launcher':
