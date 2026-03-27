@@ -43,7 +43,8 @@ if (platform() === 'darwin') {
   try { execFileSync('codesign', ['--remove-signature', targetBinary], { stdio: 'ignore' }) } catch {}
 }
 
-execFileSync('npx', [
+const npxCmd = platform() === 'win32' ? 'npx.cmd' : 'npx'
+execFileSync(npxCmd, [
   '--yes',
   'postject@1.0.0-alpha.6',
   targetBinary,
