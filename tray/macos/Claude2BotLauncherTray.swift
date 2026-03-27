@@ -430,6 +430,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var timer: Timer?
     private var lastLaunchAttempt = Date.distantPast
     private var lastSleepDate = ""
+    private var initialLaunchDone = false
     private lazy var settingsController = SettingsWindowController(delegate: self)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -444,6 +445,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.runLauncherSync(["stop"])
             self?.runLauncherSync(["install"])
             self?.runLauncher(["launch"])
+            DispatchQueue.main.async { self?.initialLaunchDone = true }
         }
     }
 
@@ -493,6 +495,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func ensureLauncherRunningIfNeeded() {
+        guard initialLaunchDone else { return }
         let state = launcherState()
         let connected = state?.connected ?? false
         let phase = state?.phase ?? ""
