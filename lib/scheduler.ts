@@ -28,11 +28,11 @@ type SendFn = (channelId: string, text: string) => Promise<void>
 // ── Frequency → daily count / idle guard mapping ─────────────────────
 
 const FREQUENCY_MAP: Record<number, { daily: number; idleMinutes: number }> = {
-  1: { daily: 1, idleMinutes: 480 },  // ~1/day, 8h guard
-  2: { daily: 2, idleMinutes: 240 },  // ~2/day, 4h guard
-  3: { daily: 4, idleMinutes: 120 },  // ~4/day, 2h guard
-  4: { daily: 7, idleMinutes: 60 },   // ~7/day, 1h guard
-  5: { daily: 10, idleMinutes: 30 },  // ~10/day, 30m guard
+  1: { daily: 3, idleMinutes: 180 },  // 3/day, 3h guard
+  2: { daily: 5, idleMinutes: 120 },  // 5/day, 2h guard
+  3: { daily: 7, idleMinutes: 90 },   // 7/day, 1.5h guard
+  4: { daily: 10, idleMinutes: 60 },  // 10/day, 1h guard
+  5: { daily: 15, idleMinutes: 30 },  // 15/day, 30m guard
 }
 
 export class Scheduler {

@@ -187,7 +187,7 @@ function Show-Settings {
     $form.Controls.Add($atLabel)
 
     $atCombo = New-Object System.Windows.Forms.ComboBox
-    $atCombo.Items.AddRange(@("OFF", "Very Low", "Low", "Medium", "High", "Very High"))
+    $atCombo.Items.AddRange(@("OFF", "3/day", "5/day", "7/day", "10/day", "15/day"))
     $atCombo.DropDownStyle = "DropDownList"
     $atCombo.Location = New-Object System.Drawing.Point($controlX, $y)
     $atCombo.Size = New-Object System.Drawing.Size($controlW, 24)

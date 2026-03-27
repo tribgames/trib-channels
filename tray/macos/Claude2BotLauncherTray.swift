@@ -85,7 +85,7 @@ final class SettingsWindowController: NSObject {
 
         addLabelWithHelp(to: content, text: "Autotalk", x: p, y: y,
             help: "Proactive conversation frequency. Claude initiates topics based on context and schedule.")
-        let freqLabels = ["OFF", "Very Low", "Low", "Medium", "High", "Very High"]
+        let freqLabels = ["OFF", "3/day", "5/day", "7/day", "10/day", "15/day"]
         let freqPopup = NSPopUpButton(frame: NSRect(x: rEdge - cw, y: y - 2, width: cw, height: 24), pullsDown: false)
         freqPopup.font = .systemFont(ofSize: 12)
         for label in freqLabels { freqPopup.addItem(withTitle: label) }

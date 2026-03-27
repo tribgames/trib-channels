@@ -285,7 +285,7 @@ function buildClaude2BotCommand(): SlashCommandBuilder {
   claude2bot.addSubcommand(sub =>
     sub.setName('autotalk').setDescription('Set autotalk frequency')
       .addStringOption(opt =>
-        opt.setName('level').setDescription('OFF, 1-5, very-low~very-high').setRequired(false)),
+        opt.setName('level').setDescription('OFF, or 1-5 (3/5/7/10/15 per day)').setRequired(false)),
   )
 
   // /claude2bot quiet [schedule]
