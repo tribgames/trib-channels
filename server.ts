@@ -1382,8 +1382,15 @@ if (process.env.CLAUDE2BOT_NO_CONNECT) {
   scheduler.start()
   process.stderr.write(`claude2bot: running with ${backend.name} backend\n`)
 
-  // Greeting — inject first, then bind forwarder when transcript appears
+  // Greeting — inject once, then bind forwarder when transcript appears
+  const greetingDone = path.join(DATA_DIR, '.greeting-sent')
+  const sessionId = discoverSessionBoundTranscript()?.sessionId || ''
+  const lastGreeting = tryRead(greetingDone)
+  if (lastGreeting === sessionId) {
+    // Already greeted this session
+  } else {
   void (async () => {
+    fs.writeFileSync(greetingDone, sessionId)
     const mainLabel = config.channelsConfig?.main || 'general'
     const greetChannel = config.channelsConfig?.channels?.[mainLabel]?.id || ''
     if (!greetChannel) return
@@ -1424,6 +1431,8 @@ if (process.env.CLAUDE2BOT_NO_CONNECT) {
       }
     }
   })()
+  } // end greeting guard
+
 }
 
 let shuttingDown = false
