@@ -43,17 +43,14 @@ if (platform() === 'darwin') {
   try { execFileSync('codesign', ['--remove-signature', targetBinary], { stdio: 'ignore' }) } catch {}
 }
 
-const npxCmd = platform() === 'win32' ? 'npx.cmd' : 'npx'
-execFileSync(npxCmd, [
-  '--yes',
-  'postject@1.0.0-alpha.6',
-  targetBinary,
-  'NODE_SEA_BLOB',
-  blobPath,
-  '--sentinel-fuse',
-  'NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2',
+import { execSync } from 'child_process'
+const postjectArgs = [
+  'npx', '--yes', 'postject@1.0.0-alpha.6',
+  targetBinary, 'NODE_SEA_BLOB', blobPath,
+  '--sentinel-fuse', 'NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2',
   ...(platform() === 'darwin' ? ['--macho-segment-name', 'NODE_SEA'] : []),
-], { stdio: 'inherit' })
+].join(' ')
+execSync(postjectArgs, { stdio: 'inherit' })
 
 copyFileSync(weztermConfigPath, distWeztermConfigPath)
 
