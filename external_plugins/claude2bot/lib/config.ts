@@ -23,16 +23,29 @@ export const PLUGIN_ROOT =
 
 const CONFIG_FILE = join(DATA_DIR, 'config.json')
 
+const DEFAULT_CONFIG = {
+  backend: 'discord',
+  discord: { token: '' },
+  channelsConfig: {
+    main: 'general',
+    channels: {
+      general: { id: '', mode: 'interactive' },
+    },
+  },
+}
+
 export function loadConfig(): PluginConfig {
   try {
     return JSON.parse(readFileSync(CONFIG_FILE, 'utf8'))
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      mkdirSync(DATA_DIR, { recursive: true })
+      writeFileSync(CONFIG_FILE, JSON.stringify(DEFAULT_CONFIG, null, 2) + '\n')
       process.stderr.write(
-        `claude2bot: config not found at ${CONFIG_FILE}\n` +
-        `  create it with: { "backend": "discord", "discord": { "token": "MTIz..." } }\n`,
+        `claude2bot: default config created at ${CONFIG_FILE}\n` +
+        `  edit discord.token and channelsConfig.channels.general.id to connect.\n`,
       )
-      process.exit(1)
+      return DEFAULT_CONFIG as PluginConfig
     }
     throw err
   }
