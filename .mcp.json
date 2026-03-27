@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "claude2bot": {
-      "command": "sh",
-      "args": ["-c", "cd ${CLAUDE_PLUGIN_ROOT} && npm install --silent && npx tsx server.ts"]
-    }
-  }
-}

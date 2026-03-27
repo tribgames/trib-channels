@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "claude2bot": {
+      "command": "npx",
+      "args": ["--yes", "tsx", "${CLAUDE_PLUGIN_ROOT}/server.ts"],
+      "cwd": "${CLAUDE_PLUGIN_ROOT}"
+    }
+  }
+}
