@@ -69,7 +69,7 @@ function Build-Menu {
     $displayMode = if ($state.displayMode) { $state.displayMode } elseif ($config.displayMode) { $config.displayMode } else { "view" }
 
     # Status
-    $statusText = if ($connected) { [char]0x1F7E2 + " Connected" } else { [char]0x1F534 + " Disconnected" }
+    $statusText = if ($connected) { "● Connected" } else { "● Disconnected" }
     $statusItem = $menu.Items.Add($statusText)
     $statusItem.Enabled = $false
 
@@ -374,12 +374,13 @@ $timer.Start()
 
 # ── Initial launch ──
 Start-Job -ScriptBlock {
-    param($s)
+    param($s, $envPath)
+    $env:PATH = $envPath
     $n = (Get-Command node).Source
     & $n $s stop | Out-Null
     & $n $s install | Out-Null
     & $n $s launch | Out-Null
-} -ArgumentList $LauncherScript
+} -ArgumentList $LauncherScript, $env:PATH
 
 # ── Run ──
 $notifyIcon.ContextMenuStrip = Build-Menu

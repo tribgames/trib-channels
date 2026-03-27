@@ -242,6 +242,11 @@ function commandSearchPaths() {
     '/Applications/WezTerm.app/Contents/MacOS',
     '/usr/bin',
     '/bin',
+    // Windows WezTerm paths
+    'C:\\Program Files\\WezTerm',
+    'C:\\Program Files (x86)\\WezTerm',
+    join(homedir(), 'scoop', 'apps', 'wezterm', 'current'),
+    join(homedir(), 'AppData', 'Local', 'Programs', 'WezTerm'),
   ]) {
     paths.add(extra)
   }
