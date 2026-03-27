@@ -272,19 +272,11 @@ function pickUsableTranscriptPath(
 
 // ── Output Forwarder ──────────────────────────────────────────────────
 
-// Voice TTS: exported for slash-commands to set
-export let activeVoiceSession: import('./lib/voice-channel.js').VoiceSession | null = null
-export function setActiveVoiceSession(session: import('./lib/voice-channel.js').VoiceSession | null): void {
-  activeVoiceSession = session
-}
 
 const forwarder = new OutputForwarder({
   send: async (ch, text) => {
     await backend.sendMessage(ch, text)
-    // TTS: if voice session active, speak the response
-    if (activeVoiceSession?.isConnected() && text.length > 0 && text.length < 500) {
-      activeVoiceSession.speak(text).catch(() => {})
-    }
+
   },
   react: (ch, mid, emoji) => backend.react(ch, mid, emoji),
   removeReaction: (ch, mid, emoji) => backend.removeReaction(ch, mid, emoji),
@@ -593,43 +585,7 @@ backend.onSlashCommand = (interaction) => {
   void handleSlashCommand(interaction as ChatInputCommandInteraction, slashCtx)
 }
 
-// Voice auto-join/leave
-backend.onVoiceJoin = async (guildId: string, channelId: string, adapterCreator: any) => {
-  const vfile = '/tmp/claude2bot-voice/server-voice.log'
-  try { fs.mkdirSync('/tmp/claude2bot-voice', { recursive: true }) } catch {}
-  const vl = (m: string) => { try { fs.appendFileSync(vfile, `[${new Date().toISOString()}] ${m}\n`) } catch {} }
 
-  vl(`onVoiceJoin called: guild=${guildId} channel=${channelId}`)
-
-  if (activeVoiceSession?.isConnected()) { vl('already connected, skip'); return }
-
-  try {
-    const { VoiceSession } = await import('./lib/voice-channel.js')
-    vl('VoiceSession imported')
-    activeVoiceSession = new VoiceSession(guildId, channelId, adapterCreator)
-    const mainLabel = config.channelsConfig?.main || 'general'
-    const mainChannelId = config.channelsConfig?.channels?.[mainLabel]?.id || ''
-    activeVoiceSession.setInjectHandler((text) => {
-      vl(`inject: ${text.slice(0, 50)}`)
-      void mcp.notification({
-        method: 'notifications/claude/channel',
-        params: { content: text, meta: { chat_id: mainChannelId, user: 'voice', user_id: 'voice', ts: new Date().toISOString() } },
-      }).catch(() => {})
-    })
-    vl('calling join...')
-    await activeVoiceSession.join()
-    vl('joined OK')
-    if (mainChannelId) void backend.sendMessage(mainChannelId, '🎙️ Joined voice channel.')
-  } catch (err) {
-    vl(`ERROR: ${err}`)
-  }
-}
-
-let voiceLeaveTimer: ReturnType<typeof setTimeout> | null = null
-backend.onVoiceLeave = () => {
-  if (voiceLeaveTimer) clearTimeout(voiceLeaveTimer)
-  if (activeVoiceSession) { activeVoiceSession.leave(); activeVoiceSession = null }
-}
 
 // ── Voice transcription ───────────────────────────────────────────────
 

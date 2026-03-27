@@ -163,8 +163,6 @@ export interface ChannelBackend {
    * The replyFn sends the response back to the same channel.
    */
   onCustomCommand: ((text: string, channelId: string, userId: string, replyFn: (text: string, opts?: { embeds?: Record<string, unknown>[]; components?: Record<string, unknown>[] }) => Promise<void>) => void) | null
-  onVoiceJoin: ((guildId: string, channelId: string, adapterCreator: any) => void) | null
-  onVoiceLeave: (() => void) | null
 
   /** Callback for button interactions that need to show a Modal */
   onModalRequest: ((interaction: any) => void) | null
