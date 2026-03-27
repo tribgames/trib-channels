@@ -199,17 +199,8 @@ function handleBotStatus(_ctx: CommandContext): CommandResult {
   lines.push(`**Profile** ${profile.name || '-'}`)
   lines.push(`**Launcher** ${launcherConnected ? `connected (${launcher?.workspacePath || '-'})` : 'not connected'}`)
 
-  const mainButtons = [
-    { type: 2, style: 1, label: 'Schedule', custom_id: 'bot_schedule' },
-    { type: 2, style: 1, label: 'Autotalk', custom_id: 'bot_autotalk' },
-    { type: 2, style: 1, label: 'Quiet', custom_id: 'bot_quiet' },
-    { type: 2, style: 1, label: 'Channels', custom_id: 'bot_activity' },
-    { type: 2, style: 2, label: 'Profile', custom_id: 'bot_profile' },
-  ]
-  mainButtons.push({ type: 2, style: 1, label: 'Sleeping', custom_id: 'bot_sleeping' })
+// [components removed]
   if (launcherConnected) {
-    mainButtons.push({ type: 2, style: 2, label: 'Display', custom_id: 'bot_display' })
-    mainButtons.push({ type: 2, style: 2, label: 'Launcher', custom_id: 'bot_launcher' })
   }
 
   return {
@@ -218,23 +209,6 @@ function handleBotStatus(_ctx: CommandContext): CommandResult {
       description: lines.join('\n'),
       color: 0x5865F2,
     }],
-    components: [{
-      type: 1,
-      components: mainButtons.slice(0, 5),
-    },
-    ...(mainButtons.length > 5 ? [{
-      type: 1,
-      components: mainButtons.slice(5),
-    }] : []),
-    {
-      type: 1,
-      components: [
-        { type: 2, style: 4, label: '\u2715', custom_id: 'gui_close' },
-      ],
-    }, {
-      type: 1,
-      components: [],
-    }].filter((row: any) => row.components.length > 0),
   }
 }
 
@@ -254,16 +228,6 @@ function handleLauncher(parsed: ParsedCommand, ctx: CommandContext): CommandResu
         title: '\uD83D\uDE80 Launcher',
         description: 'Launcher is not connected.',
         color: 0xFEE75C,
-      }],
-      components: [{
-        type: 1,
-        components: [
-          { type: 2, style: 1, label: 'Launch', custom_id: 'launcher_launch' },
-          { type: 2, style: savedDisplay === 'view' ? 1 : 2, label: 'View Mode', custom_id: 'launcher_mode_view' },
-          { type: 2, style: savedDisplay === 'hide' ? 1 : 2, label: 'Hide Mode', custom_id: 'launcher_mode_hide' },
-          { type: 2, style: 2, label: '← Main', custom_id: 'gui_back' },
-          { type: 2, style: 4, label: '\u2715', custom_id: 'gui_close' },
-        ],
       }],
     }
   }
@@ -312,24 +276,6 @@ function handleLauncher(parsed: ParsedCommand, ctx: CommandContext): CommandResu
           description: lines.join('\n'),
           color: 0x5865F2,
         }],
-        components: [
-          {
-            type: 1,
-            components: [
-              { type: 2, style: 1, label: 'Launch', custom_id: 'launcher_launch' },
-              { type: 2, style: savedDisplay === 'view' ? 1 : 2, label: 'View Mode', custom_id: 'launcher_mode_view' },
-              { type: 2, style: savedDisplay === 'hide' ? 1 : 2, label: 'Hide Mode', custom_id: 'launcher_mode_hide' },
-              { type: 2, style: 1, label: 'Restart', custom_id: 'launcher_restart', disabled: !launcherReady },
-            ],
-          },
-          {
-            type: 1,
-            components: [
-              { type: 2, style: 2, label: '← Main', custom_id: 'gui_back' },
-              { type: 2, style: 4, label: '\u2715', custom_id: 'gui_close' },
-            ],
-          },
-        ],
       }
     }
     default:
@@ -366,14 +312,6 @@ function activityList(ctx: CommandContext): CommandResult {
         description: t('activity.empty', ctx.lang),
         color: 0x5865F2,
       }],
-      components: [{
-        type: 1,
-        components: [
-          { type: 2, style: 1, label: 'Add', custom_id: 'activity_add' },
-          { type: 2, style: 2, label: '← Main', custom_id: 'gui_back' },
-          { type: 2, style: 4, label: '\u2715', custom_id: 'gui_close' },
-        ],
-      }],
     }
   }
 
@@ -383,28 +321,14 @@ function activityList(ctx: CommandContext): CommandResult {
     return `**${name}${star}** — ${entry.mode} (\`${entry.id}\`)`
   })
 
-  const components: Record<string, unknown>[] = []
+// [components removed]
 
   // Remove buttons (max 5 per row)
-  const removeButtons = entries.map(([name]) => ({
-    type: 2, style: 4, label: `${name}`, custom_id: `activity_remove:${name}`,
-  }))
-  for (let i = 0; i < removeButtons.length; i += 5) {
-    components.push({ type: 1, components: removeButtons.slice(i, i + 5) })
-  }
+// [components removed]
 
-  components.push({
-    type: 1,
-    components: [
-      { type: 2, style: 1, label: 'Add', custom_id: 'activity_add' },
-      { type: 2, style: 2, label: '← Main', custom_id: 'gui_back' },
-      { type: 2, style: 4, label: '\u2715', custom_id: 'gui_close' },
-    ],
-  })
 
   return {
     embeds: [{ title: '\uD83D\uDCE1 Activity Channels', description: chLines.join('\n'), color: 0x5865F2 }],
-    components,
   }
 }
 
@@ -464,14 +388,7 @@ function handleBotProfile(parsed: ParsedCommand, ctx: CommandContext): CommandRe
   const profile = loadProfileConfig()
   const entries = Object.entries(profile).filter(([_, v]) => v !== undefined)
 
-  const navComponents: Record<string, unknown>[] = [{
-    type: 1,
-    components: [
-      { type: 2, style: 1, label: 'Edit', custom_id: 'profile_edit' },
-      { type: 2, style: 2, label: '← Main', custom_id: 'gui_back' },
-      { type: 2, style: 4, label: '\u2715', custom_id: 'gui_close' },
-    ],
-  }]
+// [components removed]
 
   if (entries.length === 0) {
     return {
@@ -480,7 +397,6 @@ function handleBotProfile(parsed: ParsedCommand, ctx: CommandContext): CommandRe
         description: t('profile.empty', ctx.lang),
         color: 0x57F287,
       }],
-      components: navComponents,
     }
   }
 
@@ -488,7 +404,6 @@ function handleBotProfile(parsed: ParsedCommand, ctx: CommandContext): CommandRe
 
   return {
     embeds: [{ title: '\uD83D\uDC64 Profile', description: profileLines.join('\n'), color: 0x57F287 }],
-    components: navComponents,
   }
 }
 
@@ -520,17 +435,6 @@ function handleAutotalk(parsed: ParsedCommand, ctx: CommandContext): CommandResu
           title: `\uD83D\uDCAC ${t('autotalk.status', ctx.lang)}`,
           description: `**Freq**: ${freq}\n**Status**: ${statusEmoji} ${enabled ? 'ON' : 'OFF'}`,
           color: 0x5865F2,
-        }],
-        components: [{
-          type: 1,
-          components: [
-            { type: 2, style: 1, label: 'Change Freq', custom_id: 'autotalk_freq' },
-            enabled
-              ? { type: 2, style: 4, label: 'OFF', custom_id: 'autotalk_off' }
-              : { type: 2, style: 3, label: 'ON', custom_id: 'autotalk_on' },
-            { type: 2, style: 2, label: '← Main', custom_id: 'gui_back' },
-            { type: 2, style: 4, label: '\u2715', custom_id: 'gui_close' },
-          ],
         }],
       }
     }
@@ -576,14 +480,6 @@ function handleQuiet(parsed: ParsedCommand, ctx: CommandContext): CommandResult 
           title: `\uD83D\uDD15 ${t('quiet.status', ctx.lang)}`,
           description: lines.join('\n'),
           color: 0x5865F2,
-        }],
-        components: [{
-          type: 1,
-          components: [
-            { type: 2, style: 1, label: 'Settings', custom_id: 'quiet_set' },
-            { type: 2, style: 2, label: '← Main', custom_id: 'gui_back' },
-            { type: 2, style: 4, label: '\u2715', custom_id: 'gui_close' },
-          ],
         }],
       }
     }
@@ -641,16 +537,6 @@ function handleSleeping(parsed: ParsedCommand, ctx: CommandContext): CommandResu
           description: `**Status**: ${enabled ? 'ON' : 'OFF'}\n**Sleep Time**: ${time}`,
           color: 0x5865F2,
         }],
-        components: [{
-          type: 1,
-          components: [
-            enabled
-              ? { type: 2, style: 4, label: 'OFF', custom_id: 'sleeping_off' }
-              : { type: 2, style: 3, label: 'ON', custom_id: 'sleeping_on' },
-            { type: 2, style: 1, label: 'Set Time', custom_id: 'sleeping_time' },
-            { type: 2, style: 2, label: '\u2190 Main', custom_id: 'gui_back' },
-          ],
-        }],
       }
     }
     case 'on': {
@@ -699,14 +585,6 @@ function handleDisplay(parsed: ParsedCommand, _ctx: CommandContext): CommandResu
         title: '\uD83D\uDDA5 Display Mode',
         description: `**Current**: ${displayMode}`,
         color: 0x5865F2,
-      }],
-      components: [{
-        type: 1,
-        components: [
-          { type: 2, style: displayMode === 'view' ? 3 : 2, label: 'View', custom_id: 'display_view' },
-          { type: 2, style: displayMode === 'hide' ? 3 : 2, label: 'Hide', custom_id: 'display_hide' },
-          { type: 2, style: 2, label: '\u2190 Main', custom_id: 'gui_back' },
-        ],
       }],
     }
   }
@@ -784,28 +662,11 @@ function scheduleList(ctx: CommandContext): CommandResult {
     description: `${s.time} (${s.type})`.substring(0, 100),
   }))
 
-  const components: Record<string, unknown>[] = []
+// [components removed]
 
   if (options.length > 0) {
-    components.push({
-      type: 1,
-      components: [{
-        type: 3,
-        custom_id: 'schedule_select',
-        placeholder: 'Select Schedule',
-        options,
-      }],
-    })
   }
 
-  components.push({
-    type: 1,
-    components: [
-      { type: 2, style: 1, label: 'Add', custom_id: 'sched_add' },
-      { type: 2, style: 2, label: '← Main', custom_id: 'gui_back' },
-      { type: 2, style: 4, label: '\u2715', custom_id: 'gui_close' },
-    ],
-  })
 
   return {
     embeds: [{
@@ -813,7 +674,6 @@ function scheduleList(ctx: CommandContext): CommandResult {
       description: lines.join('\n'),
       color: 0x5865F2,
     }],
-    components,
   }
 }
 
@@ -850,16 +710,6 @@ function scheduleDetail(parsed: ParsedCommand, ctx: CommandContext): CommandResu
       title: `\uD83D\uDCC4 ${name}`,
       description: detailLines.join('\n'),
       color: 0x5865F2,
-    }],
-    components: [{
-      type: 1,
-      components: [
-        { type: 2, style: 1, label: 'Edit', custom_id: `sched_edit:${name}` },
-        { type: 2, style: 4, label: 'Delete', custom_id: `sched_remove:${name}` },
-        { type: 2, style: 2, label: 'Test', custom_id: `sched_test:${name}` },
-        { type: 2, style: 2, label: '← List', custom_id: 'bot_schedule' },
-        { type: 2, style: 4, label: '\u2715', custom_id: 'gui_close' },
-      ],
     }],
   }
 }
