@@ -978,9 +978,12 @@ function sleepCycle(workspacePath) {
 
   // Read lastSleepAt from config
   const config = readLauncherConfig() ?? {}
-  const lastSleepAt = config.lastSleepAt ?? (now - 24 * 60 * 60 * 1000) // default: 24h ago
 
-  process.stderr.write(`[sleep-cycle] Starting. Last sleep: ${new Date(lastSleepAt).toISOString()}\n`)
+  // First run detection: no history files → scan all transcripts for initial memory
+  const isFirstRun = !config.lastSleepAt && !existsSync(join(HISTORY_DIR, 'lifetime.md'))
+  const lastSleepAt = isFirstRun ? 0 : (config.lastSleepAt ?? (now - 24 * 60 * 60 * 1000))
+
+  process.stderr.write(`[sleep-cycle] Starting.${isFirstRun ? ' (FIRST RUN — scanning all history)' : ''} Last sleep: ${lastSleepAt ? new Date(lastSleepAt).toISOString() : 'never'}\n`)
 
   mkdirSync(join(HISTORY_DIR, 'daily'), { recursive: true })
   mkdirSync(join(HISTORY_DIR, 'weekly'), { recursive: true })
