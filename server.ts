@@ -1111,10 +1111,10 @@ async function handleInbound(
     }
   }
 
-  // If voice was transcribed, hide attachment meta so Claude doesn't re-process
-  const voiceTranscribed = text !== msg.text && config.voice?.enabled
+  // Hide voice attachment meta — server handles STT, Claude shouldn't re-process
+  const hasVoiceAtt = config.voice?.enabled && msg.attachments.some(a => isVoiceAttachment(a.contentType))
   const attMeta =
-    msg.attachments.length > 0 && !voiceTranscribed
+    msg.attachments.length > 0 && !hasVoiceAtt
       ? {
           attachment_count: String(msg.attachments.length),
           attachments: msg.attachments
