@@ -1384,13 +1384,13 @@ if (process.env.CLAUDE2BOT_NO_CONNECT) {
 
   // Greeting — inject once, then bind forwarder when transcript appears
   const greetingDone = path.join(DATA_DIR, '.greeting-sent')
-  const sessionId = discoverSessionBoundTranscript()?.sessionId || ''
-  const lastGreeting = tryRead(greetingDone)
-  if (lastGreeting === sessionId) {
-    // Already greeted this session
+  const today = new Date().toISOString().slice(0, 10)
+  const lastGreetDate = tryRead(greetingDone)
+  if (lastGreetDate === today) {
+    // Already greeted today
   } else {
   void (async () => {
-    fs.writeFileSync(greetingDone, sessionId)
+    fs.writeFileSync(greetingDone, today)
     const mainLabel = config.channelsConfig?.main || 'general'
     const greetChannel = config.channelsConfig?.channels?.[mainLabel]?.id || ''
     if (!greetChannel) return
