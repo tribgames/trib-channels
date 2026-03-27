@@ -79,7 +79,7 @@ function Build-Menu {
     $statusItem = $menu.Items.Add($statusText)
     $statusItem.Enabled = $false
 
-    $menu.Items.Add("-")
+    $menu.Items.Add("-") | Out-Null
 
     # Launch
     $launchItem = $menu.Items.Add("Launch")
@@ -98,7 +98,7 @@ function Build-Menu {
         } -ArgumentList $LauncherScript
     })
 
-    $menu.Items.Add("-")
+    $menu.Items.Add("-") | Out-Null
 
     # View Mode
     $viewItem = $menu.Items.Add("View Mode")
@@ -110,13 +110,13 @@ function Build-Menu {
     $hideItem.Checked = ($displayMode -eq "hide")
     $hideItem.Add_Click({ Run-Launcher @("display", "hide") })
 
-    $menu.Items.Add("-")
+    $menu.Items.Add("-") | Out-Null
 
     # Settings submenu
     $settingsItem = $menu.Items.Add("Settings")
     $settingsItem.Add_Click({ Show-Settings })
 
-    $menu.Items.Add("-")
+    $menu.Items.Add("-") | Out-Null
 
     # Quit
     $quitItem = $menu.Items.Add("Quit")
@@ -155,7 +155,7 @@ function Show-Settings {
     $wsLabel.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
     $wsLabel.Location = New-Object System.Drawing.Point($labelX, $y)
     $wsLabel.AutoSize = $true
-    $form.Controls.Add($wsLabel)
+    [void]$form.Controls.Add($wsLabel)
 
     $wsBtn = New-Object System.Windows.Forms.Button
     $wsBtn.Text = "Change..."
@@ -172,7 +172,7 @@ function Show-Settings {
             $form.Close()
         }
     })
-    $form.Controls.Add($wsBtn)
+    [void]$form.Controls.Add($wsBtn)
 
     $y += 22
     $wsPath = if ($config.workspacePath) { $config.workspacePath } elseif ($state.workspacePath) { $state.workspacePath } else { "(not set)" }
@@ -181,7 +181,7 @@ function Show-Settings {
     $wsPathLabel.ForeColor = [System.Drawing.Color]::Gray
     $wsPathLabel.Location = New-Object System.Drawing.Point($labelX, $y)
     $wsPathLabel.Size = New-Object System.Drawing.Size(340, 18)
-    $form.Controls.Add($wsPathLabel)
+    [void]$form.Controls.Add($wsPathLabel)
 
     $y += 30
 
@@ -190,7 +190,7 @@ function Show-Settings {
     $atLabel.Text = "Autotalk"
     $atLabel.Location = New-Object System.Drawing.Point($labelX, ($y + 3))
     $atLabel.AutoSize = $true
-    $form.Controls.Add($atLabel)
+    [void]$form.Controls.Add($atLabel)
 
     $atCombo = New-Object System.Windows.Forms.ComboBox
     $atCombo.Items.AddRange(@("OFF", "3/day", "5/day", "7/day", "10/day", "15/day"))
@@ -212,7 +212,7 @@ function Show-Settings {
         }
         Write-Json $BotConfigPath $bot
     })
-    $form.Controls.Add($atCombo)
+    [void]$form.Controls.Add($atCombo)
 
     $y += 32
 
@@ -221,7 +221,7 @@ function Show-Settings {
     $qLabel.Text = "Quiet Hours"
     $qLabel.Location = New-Object System.Drawing.Point($labelX, ($y + 3))
     $qLabel.AutoSize = $true
-    $form.Controls.Add($qLabel)
+    [void]$form.Controls.Add($qLabel)
 
     $qCombo = New-Object System.Windows.Forms.ComboBox
     $qCombo.Items.AddRange(@("OFF", "ON"))
@@ -230,7 +230,7 @@ function Show-Settings {
     $qCombo.Size = New-Object System.Drawing.Size($controlW, 24)
     $quietOn = $botConfig.quiet.schedule -and $botConfig.quiet.schedule -ne ""
     $qCombo.SelectedIndex = if ($quietOn) { 1 } else { 0 }
-    $form.Controls.Add($qCombo)
+    [void]$form.Controls.Add($qCombo)
 
     $y += 30
 
@@ -239,7 +239,7 @@ function Show-Settings {
     $qfLabel.Text = "Quiet From"
     $qfLabel.Location = New-Object System.Drawing.Point($labelX, ($y + 3))
     $qfLabel.AutoSize = $true
-    $form.Controls.Add($qfLabel)
+    [void]$form.Controls.Add($qfLabel)
 
     $qfText = New-Object System.Windows.Forms.TextBox
     $qfText.Text = if ($botConfig.quiet.schedule) { ($botConfig.quiet.schedule -split "-")[0] } else { "22:00" }
@@ -247,7 +247,7 @@ function Show-Settings {
     $qfText.Size = New-Object System.Drawing.Size($controlW, 24)
     $qfText.TextAlign = "Center"
     $qfText.Enabled = $quietOn
-    $form.Controls.Add($qfText)
+    [void]$form.Controls.Add($qfText)
 
     $y += 30
 
@@ -256,7 +256,7 @@ function Show-Settings {
     $qtLabel.Text = "Quiet To"
     $qtLabel.Location = New-Object System.Drawing.Point($labelX, ($y + 3))
     $qtLabel.AutoSize = $true
-    $form.Controls.Add($qtLabel)
+    [void]$form.Controls.Add($qtLabel)
 
     $qtText = New-Object System.Windows.Forms.TextBox
     $qtText.Text = if ($botConfig.quiet.schedule) { ($botConfig.quiet.schedule -split "-")[1] } else { "08:00" }
@@ -264,7 +264,7 @@ function Show-Settings {
     $qtText.Size = New-Object System.Drawing.Size($controlW, 24)
     $qtText.TextAlign = "Center"
     $qtText.Enabled = $quietOn
-    $form.Controls.Add($qtText)
+    [void]$form.Controls.Add($qtText)
 
     $qCombo.Add_SelectedIndexChanged({
         $on = $qCombo.SelectedIndex -eq 1
@@ -288,7 +288,7 @@ function Show-Settings {
     $slLabel.Text = "Sleeping Mode"
     $slLabel.Location = New-Object System.Drawing.Point($labelX, ($y + 3))
     $slLabel.AutoSize = $true
-    $form.Controls.Add($slLabel)
+    [void]$form.Controls.Add($slLabel)
 
     $slCombo = New-Object System.Windows.Forms.ComboBox
     $slCombo.Items.AddRange(@("OFF", "ON"))
@@ -302,7 +302,7 @@ function Show-Settings {
         $c.sleepEnabled = ($slCombo.SelectedIndex -eq 1)
         Write-Json $ConfigPath $c
     })
-    $form.Controls.Add($slCombo)
+    [void]$form.Controls.Add($slCombo)
 
     $y += 30
 
@@ -311,7 +311,7 @@ function Show-Settings {
     $stLabel.Text = "Sleep Time"
     $stLabel.Location = New-Object System.Drawing.Point($labelX, ($y + 3))
     $stLabel.AutoSize = $true
-    $form.Controls.Add($stLabel)
+    [void]$form.Controls.Add($stLabel)
 
     $stText = New-Object System.Windows.Forms.TextBox
     $stText.Text = if ($config.sleepTime) { $config.sleepTime } else { "03:00" }
@@ -324,7 +324,7 @@ function Show-Settings {
         $c.sleepTime = $stText.Text
         Write-Json $ConfigPath $c
     })
-    $form.Controls.Add($stText)
+    [void]$form.Controls.Add($stText)
 
     $slCombo.Add_SelectedIndexChanged({
         $stText.Enabled = ($slCombo.SelectedIndex -eq 1)
@@ -338,7 +338,7 @@ function Show-Settings {
     $updateBtn.Location = New-Object System.Drawing.Point($controlX, $y)
     $updateBtn.Size = New-Object System.Drawing.Size($controlW, 26)
     $updateBtn.Add_Click({ Run-Launcher @("update"); $form.Close() })
-    $form.Controls.Add($updateBtn)
+    [void]$form.Controls.Add($updateBtn)
 
     $form.ShowDialog()
 }
