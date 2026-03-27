@@ -71,13 +71,15 @@ export class VoiceSession {
       adapterCreator: this.adapterCreator,
       selfDeaf: false,
       selfMute: false,
-    })
+      daveEncryption: false,
+    } as any)
 
     this.player = createAudioPlayer()
     this.connection.subscribe(this.player)
 
-    await entersState(this.connection, VoiceConnectionStatus.Ready, 10_000)
-    vlog(` joined ${this.channelId}\n`)
+    await entersState(this.connection, VoiceConnectionStatus.Ready, 30_000)
+
+    vlog(` joined ${this.channelId} (daveEncryption: false)\n`)
 
     this.startListening()
   }

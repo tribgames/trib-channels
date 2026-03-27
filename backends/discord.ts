@@ -258,7 +258,9 @@ export class DiscordBackend implements ChannelBackend {
     this.client.on('voiceStateUpdate', (oldState, newState) => {
       const msg = `[${new Date().toISOString()}] voiceStateUpdate — user=${newState.member?.user.tag} old=${oldState.channelId} new=${newState.channelId}\n`
       try { process.stderr.write(msg) } catch {}
-      try { require('fs').appendFileSync('/tmp/claude2bot-voice/discord-voice.log', msg) } catch {}
+      const vdir = require('path').join(process.env.CLAUDE_PLUGIN_DATA ?? '/tmp', 'voice-debug')
+      try { require('fs').mkdirSync(vdir, { recursive: true }) } catch {}
+      try { require('fs').appendFileSync(require('path').join(vdir, 'voice.log'), msg) } catch {}
       if (newState.member?.user.bot) return
       const access = this.readAccessFile()
       const userId = newState.member?.id ?? oldState.member?.id ?? ''
