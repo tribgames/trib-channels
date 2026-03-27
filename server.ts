@@ -1035,6 +1035,18 @@ backend.onMessage = (msg) => {
   if (transcriptPath) {
     applyTranscriptBinding(route.targetChatId, transcriptPath)
   } else {
+    // Fallback: find most recent transcript file for this project
+    try {
+      const projectDir = path.join(require('os').homedir(), '.claude', 'projects', process.cwd().replace(/\//g, '-'))
+      const files = fs.readdirSync(projectDir)
+        .filter((f: string) => f.endsWith('.jsonl') && !f.startsWith('agent-'))
+        .map((f: string) => ({ path: path.join(projectDir, f), mtime: fs.statSync(path.join(projectDir, f)).mtimeMs }))
+        .sort((a: any, b: any) => b.mtime - a.mtime)
+      if (files.length > 0) {
+        applyTranscriptBinding(route.targetChatId, files[0].path)
+        process.stderr.write(`claude2bot: fallback transcript bind: ${files[0].path}\n`)
+      }
+    } catch {}
     refreshActiveInstance(INSTANCE_ID, { channelId: route.targetChatId })
   }
 
