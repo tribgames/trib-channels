@@ -8,8 +8,33 @@ $InstallDir = Join-Path $env:LOCALAPPDATA "Claude2Bot"
 Write-Host "=== Claude2Bot Installer ===" -ForegroundColor Cyan
 Write-Host ""
 
-# --- 1. Tray App ---
-Write-Host "[1/3] Downloading tray app..."
+# --- 1. Dependencies ---
+Write-Host "[1/4] Checking dependencies..."
+
+# Node.js
+if (Get-Command node -ErrorAction SilentlyContinue) {
+    Write-Host "  OK Node.js $(node -v)" -ForegroundColor Green
+} elseif (Get-Command winget -ErrorAction SilentlyContinue) {
+    Write-Host "  Installing Node.js..."
+    winget install --id OpenJS.NodeJS.LTS -e --accept-package-agreements --accept-source-agreements
+    Write-Host "  OK Node.js installed" -ForegroundColor Green
+} else {
+    Write-Host "  WARN Node.js not found. Install from https://nodejs.org/" -ForegroundColor Yellow
+}
+
+# WezTerm
+if (Get-Command wezterm -ErrorAction SilentlyContinue) {
+    Write-Host "  OK WezTerm" -ForegroundColor Green
+} elseif (Get-Command winget -ErrorAction SilentlyContinue) {
+    Write-Host "  Installing WezTerm..."
+    winget install wez.wezterm -e --accept-package-agreements --accept-source-agreements
+    Write-Host "  OK WezTerm installed" -ForegroundColor Green
+} else {
+    Write-Host "  WARN WezTerm not found. Install from https://wezfurlong.org/wezterm/" -ForegroundColor Yellow
+}
+
+# --- 2. Tray App ---
+Write-Host "[2/4] Downloading tray app..."
 
 $Release = Invoke-RestMethod "https://api.github.com/repos/$Repo/releases/latest"
 $Asset = $Release.assets | Where-Object { $_.name -like "*Claude2BotLauncher-windows*" } | Select-Object -First 1
@@ -36,8 +61,8 @@ if ($Asset) {
     Write-Host "  WARN Tray app not found in release, skipping..." -ForegroundColor Yellow
 }
 
-# --- 2. Register Marketplace + Install Plugin ---
-Write-Host "[2/3] Installing Claude Code plugin..."
+# --- 3. Register Marketplace + Install Plugin ---
+Write-Host "[3/4] Installing Claude Code plugin..."
 
 $ClaudeCli = Get-Command claude -ErrorAction SilentlyContinue
 if ($ClaudeCli) {
@@ -60,8 +85,8 @@ if ($ClaudeCli) {
     Write-Host "    claude plugin install claude2bot@claude2bot"
 }
 
-# --- 3. Setup Config ---
-Write-Host "[3/3] Checking configuration..."
+# --- 4. Setup Config ---
+Write-Host "[4/4] Checking configuration..."
 
 $ClaudeHome = Join-Path $env:USERPROFILE ".claude"
 $ConfigDir = Join-Path $ClaudeHome "plugins\data\claude2bot-claude2bot"

@@ -13,8 +13,36 @@ CONFIG_FILE="$CONFIG_DIR/config.json"
 echo "=== Claude2Bot Installer ==="
 echo ""
 
-# ─── 1. Tray App ───
-echo "[1/3] Downloading tray app..."
+# ─── 1. Dependencies ───
+echo "[1/4] Checking dependencies..."
+
+# Node.js
+if command -v node &>/dev/null; then
+  echo "  ✓ Node.js $(node -v)"
+else
+  if command -v brew &>/dev/null; then
+    echo "  Installing Node.js..."
+    brew install node
+  else
+    echo "  ⚠ Node.js not found. Install from https://nodejs.org/"
+  fi
+fi
+
+# WezTerm
+if command -v wezterm &>/dev/null || [ -d "/Applications/WezTerm.app" ]; then
+  echo "  ✓ WezTerm"
+else
+  if command -v brew &>/dev/null; then
+    echo "  Installing WezTerm..."
+    brew install --cask wezterm
+    echo "  ✓ WezTerm installed"
+  else
+    echo "  ⚠ WezTerm not found. Install from https://wezfurlong.org/wezterm/"
+  fi
+fi
+
+# ─── 2. Tray App ───
+echo "[2/4] Downloading tray app..."
 
 RELEASE_JSON=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest")
 DOWNLOAD_URL=$(echo "$RELEASE_JSON" \
@@ -34,8 +62,8 @@ else
   echo "  ⚠ Tray app not found in release, skipping..."
 fi
 
-# ─── 2. Install Plugin ───
-echo "[2/3] Installing Claude Code plugin..."
+# ─── 3. Install Plugin ───
+echo "[3/4] Installing Claude Code plugin..."
 
 if command -v claude &>/dev/null; then
   claude plugin marketplace add claude2bot/claude2bot 2>/dev/null && \
@@ -51,8 +79,8 @@ else
   echo "    claude plugin install claude2bot@claude2bot"
 fi
 
-# ─── 3. Setup Config ───
-echo "[3/3] Checking configuration..."
+# ─── 4. Setup Config ───
+echo "[4/4] Checking configuration..."
 
 if [ ! -f "$CONFIG_FILE" ]; then
   mkdir -p "$CONFIG_DIR"
