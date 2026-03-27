@@ -25,12 +25,12 @@ DOWNLOAD_URL=$(echo "$RELEASE_JSON" \
   | cut -d '"' -f 4)
 
 if [ -n "$DOWNLOAD_URL" ]; then
-  TMPDIR=$(mktemp -d)
-  curl -fsSL "$DOWNLOAD_URL" -o "$TMPDIR/launcher.zip"
-  unzip -q "$TMPDIR/launcher.zip" -d "$TMPDIR"
+  WORK_DIR=$(mktemp -d)
+  curl -fsSL "$DOWNLOAD_URL" -o "$WORK_DIR/launcher.zip"
+  unzip -q "$WORK_DIR/launcher.zip" -d "$WORK_DIR"
   rm -rf "$APP_INSTALL_DIR/$APP_NAME"
-  mv "$TMPDIR/$APP_NAME" "$APP_INSTALL_DIR/$APP_NAME"
-  rm -rf "$TMPDIR"
+  mv "$WORK_DIR/$APP_NAME" "$APP_INSTALL_DIR/$APP_NAME"
+  rm -rf "$WORK_DIR"
   echo "  ✓ Tray app installed to $APP_INSTALL_DIR/$APP_NAME"
 else
   echo "  ⚠ Tray app not found in release, skipping..."
