@@ -860,9 +860,28 @@ function launchClaude(workspacePath, displayMode) {
 
 // ── Sleep Cycle ─────────────────────────────────────────────────────
 
+function cleanConversationText(text) {
+  return text
+    .replace(/```[\s\S]*?```/g, '')              // code blocks
+    .replace(/^[ \t]*\|.*\|[ \t]*$/gm, '')       // table rows
+    .replace(/`([^`]+)`/g, '$1')                  // inline code → plain
+    .replace(/\*\*/g, '')                         // bold
+    .replace(/^#{1,4}\s+/gm, '')                  // headers
+    .replace(/^>\s?/gm, '')                       // blockquotes
+    .replace(/^[-*]\s+/gm, '')                    // bullet prefixes
+    .replace(/https?:\/\/\S+/g, '')               // URLs
+    .replace(/<channel[^>]*>\n?([\s\S]*?)\n?<\/channel>/g, '$1')  // channel tags
+    .replace(/[\u{1F300}-\u{1FAD6}\u{2600}-\u{27BF}]/gu, '')     // emoji
+    .replace(/[ \t]+/g, ' ')                      // collapse spaces
+    .replace(/\n{2,}/g, '\n')                     // collapse blank lines
+    .replace(/^\s+|\s+$/gm, '')                   // trim lines
+    .trim()
+}
+
 function extractPingPong(transcriptPaths) {
   const paths = Array.isArray(transcriptPaths) ? transcriptPaths : [transcriptPaths]
   const results = []
+  let lastKey = ''
   for (const tp of paths) {
     try {
       const lines = readFileSync(tp, 'utf8').split('\n').filter(Boolean)
@@ -884,27 +903,38 @@ function extractPingPong(transcriptPaths) {
           if (!text.trim()) continue
           if (text.includes('<system-reminder>') || text.includes('<schedule-context>')) continue
           if (text.includes('<teammate-message')) continue
-          results.push(`${role}: ${text.trim()}`)
+          if (text.includes('[Request interrupted by user]')) continue
+          text = cleanConversationText(text)
+          if (!text) continue
+          // dedup consecutive identical starts
+          const key = text.slice(0, 50)
+          if (key === lastKey) continue
+          lastKey = key
+          const prefix = role === 'user' ? 'u' : 'a'
+          results.push(`${prefix}: ${text}`)
         } catch { /* skip malformed lines */ }
       }
     } catch { /* skip unreadable files */ }
   }
-  return results.join('\n\n')
+  return results.join('\n')
 }
 
-function findTranscriptsSince(workspacePath, sinceTimestamp) {
+function groupTranscriptsByDate(workspacePath, sinceTimestamp) {
   const projectKey = workspacePath.replace(/[\\/]/g, '-')
   const projectDir = join(homedir(), '.claude', 'projects', projectKey)
+  const dateMap = {}
   try {
-    return readdirSync(projectDir)
+    const files = readdirSync(projectDir)
       .filter(f => f.endsWith('.jsonl') && !f.startsWith('agent-'))
       .map(f => ({ path: join(projectDir, f), mtime: statSync(join(projectDir, f)).mtimeMs }))
       .filter(f => f.mtime >= sinceTimestamp)
-      .sort((a, b) => a.mtime - b.mtime)
-      .map(f => f.path)
-  } catch {
-    return []
-  }
+    for (const f of files) {
+      const date = new Date(f.mtime).toISOString().slice(0, 10)
+      if (!dateMap[date]) dateMap[date] = []
+      dateMap[date].push(f.path)
+    }
+  } catch {}
+  return dateMap
 }
 
 
@@ -997,24 +1027,28 @@ function sleepCycle(workspacePath) {
   // 2. Stop current session
   stopLauncher()
 
-  // 2. Collect transcripts since last sleep
-  const transcripts = findTranscriptsSince(ws, lastSleepAt)
-  const promptPath = join(resourceDir(), 'defaults', 'sleep-prompt.md')
-  const sleepPrompt = existsSync(promptPath) ? readFileSync(promptPath, 'utf8') : 'Summarize the conversation.'
-
-  // Daily: 최대 7개 (1주치)
+  // 2. Collect transcripts grouped by date, generate missing dailies
+  const MAX_DAYS = 7
+  const sinceTs = isFirstRun ? (now - MAX_DAYS * 24 * 60 * 60 * 1000) : lastSleepAt
+  const dateGroups = groupTranscriptsByDate(ws, sinceTs)
   const dailyDir = join(HISTORY_DIR, 'daily')
-  const existingDailies = existsSync(dailyDir) ? readdirSync(dailyDir).filter(f => f.endsWith('.md')).length : 0
+  const dates = Object.keys(dateGroups).sort()
 
-  if (existingDailies >= 7) {
-    process.stderr.write(`[sleep-cycle] Daily limit reached (${existingDailies}/7). Skipping daily generation.\n`)
-  } else if (transcripts.length > 0) {
-    const pingpong = extractPingPong(transcripts)
-    if (pingpong) {
-      runSleepPrompt(sleepPrompt, { date: today, ws })
-      process.stderr.write(`[sleep-cycle] Daily ${today} generated. (${existingDailies + 1}/7)\n`)
-    }
-  } else {
+  let generated = 0
+  for (const date of dates) {
+    if (generated >= MAX_DAYS) break
+    const dailyFile = join(dailyDir, `${date}.md`)
+    if (existsSync(dailyFile)) continue  // already exists, skip
+
+    const pingpong = extractPingPong(dateGroups[date])
+    if (!pingpong) continue
+
+    runSleepPrompt(pingpong, { date, ws })
+    generated++
+    process.stderr.write(`[sleep-cycle] Daily ${date} generated. (${generated}/${dates.length})\n`)
+  }
+
+  if (generated === 0 && dates.length === 0) {
     process.stderr.write('[sleep-cycle] No transcripts since last sleep.\n')
   }
 
@@ -1071,22 +1105,22 @@ function sleepCycle(workspacePath) {
   process.stderr.write('[sleep-cycle] New session launched.\n')
 }
 
-function runSleepPrompt(template, { date, ws }) {
-  const projectKey = ws.replace(/[\\/]/g, '-')
-  const transcriptDir = join(homedir(), '.claude', 'projects', projectKey)
+function runSleepPrompt(pingpong, { date, ws }) {
+  const promptPath = join(resourceDir(), 'defaults', 'sleep-prompt.md')
+  const template = existsSync(promptPath) ? readFileSync(promptPath, 'utf8') : 'Summarize the conversation below.'
   const prompt = template
     .replace('{{DATE}}', date)
-    .replace('{{TRANSCRIPT_DIR}}', transcriptDir)
     .replace('{{HISTORY_DIR}}', HISTORY_DIR)
+  const fullInput = prompt + '\n\n---\n\n' + pingpong
   try {
     const { status } = spawnSync('claude', ['-p'], {
-      cwd: ws, input: prompt,
+      cwd: ws, input: fullInput,
       stdio: ['pipe', 'inherit', 'inherit'],
-      env: process.env, timeout: 300000,
+      env: process.env, timeout: 600000,
     })
     if (status !== 0) throw new Error(`exit code ${status}`)
   } catch (e) {
-    process.stderr.write(`[sleep-cycle] claude -p failed: ${e.message}\n`)
+    process.stderr.write(`[sleep-cycle] claude -p failed for ${date}: ${e.message}\n`)
   }
 }
 
@@ -1179,7 +1213,6 @@ function getWeekNumber(date) {
 function summarizeOnly(workspacePath) {
   const ws = workspacePath || getConfiguredWorkspace()
   const now = Date.now()
-  const today = new Date().toISOString().slice(0, 10)
   const config = readLauncherConfig() ?? {}
   const lastSleepAt = config.lastSleepAt ?? (now - 24 * 60 * 60 * 1000)
 
@@ -1187,108 +1220,29 @@ function summarizeOnly(workspacePath) {
 
   mkdirSync(join(HISTORY_DIR, 'daily'), { recursive: true })
 
-  const transcripts = findTranscriptsSince(ws, lastSleepAt)
-  const promptPath = join(resourceDir(), 'defaults', 'sleep-prompt.md')
-  const sleepPrompt = existsSync(promptPath) ? readFileSync(promptPath, 'utf8') : 'Summarize the conversation.'
+  const MAX_DAYS = 7
+  const sinceTs = now - MAX_DAYS * 24 * 60 * 60 * 1000
+  const dateGroups = groupTranscriptsByDate(ws, Math.max(sinceTs, lastSleepAt))
+  const dailyDir = join(HISTORY_DIR, 'daily')
+  const dates = Object.keys(dateGroups).sort()
 
-  if (transcripts.length > 0) {
-    const pingpong = extractPingPong(transcripts)
-    if (pingpong) {
-      runSleepPrompt(sleepPrompt, { date: today, ws })
-      process.stderr.write(`[summarize] Done.\n`)
-    }
-  } else {
-    process.stderr.write('[summarize] No transcripts found.\n')
+  let generated = 0
+  for (const date of dates) {
+    const dailyFile = join(dailyDir, `${date}.md`)
+    if (existsSync(dailyFile)) continue
+    const pingpong = extractPingPong(dateGroups[date])
+    if (!pingpong) continue
+    runSleepPrompt(pingpong, { date, ws })
+    generated++
+    process.stderr.write(`[summarize] Daily ${date} generated.\n`)
+  }
+
+  if (generated === 0) {
+    process.stderr.write('[summarize] No new dailies to generate.\n')
   }
 
   buildContextFile()
   process.stderr.write('[summarize] context.md updated.\n')
-}
-
-function handleConfig(key, value) {
-  const BOT_FILE = join(PLUGIN_DATA_DIR, 'bot.json')
-
-  function readBot() {
-    try { return JSON.parse(readFileSync(BOT_FILE, 'utf8')) } catch { return {} }
-  }
-  function writeBot(bot) {
-    writeFileSync(BOT_FILE, JSON.stringify(bot, null, 2) + '\n')
-  }
-
-  if (!key) {
-    // Show all config
-    const config = readLauncherConfig()
-    const bot = readBot()
-    const lines = [
-      `workspace: ${config.workspacePath ?? '(not set)'}`,
-      `display: ${config.displayMode ?? 'view'}`,
-      `autotalk: ${bot.autotalk?.enabled ? `on (freq ${bot.autotalk.freq ?? 3})` : 'off'}`,
-      `quiet: ${bot.quiet?.schedule || 'off'}`,
-      `sleeping: ${config.sleepEnabled !== false ? 'on' : 'off'}`,
-      `sleeping-time: ${config.sleepTime ?? '03:00'}`,
-    ]
-    process.stdout.write(lines.join('\n') + '\n')
-    return
-  }
-
-  switch (key) {
-    case 'autotalk': {
-      const bot = readBot()
-      if (!value) {
-        process.stdout.write(`${bot.autotalk?.enabled ? `on (freq ${bot.autotalk.freq ?? 3})` : 'off'}\n`)
-        return
-      }
-      if (!bot.autotalk) bot.autotalk = {}
-      if (value === 'off' || value === '0') {
-        bot.autotalk.enabled = false
-      } else {
-        bot.autotalk.enabled = true
-        const freqMap = { 'very-low': 1, low: 2, medium: 3, high: 4, 'very-high': 5 }
-        const freq = freqMap[value.toLowerCase()] ?? parseInt(value, 10)
-        if (freq >= 1 && freq <= 5) bot.autotalk.freq = freq
-      }
-      writeBot(bot)
-      process.stdout.write(`autotalk: ${bot.autotalk.enabled ? `on (freq ${bot.autotalk.freq})` : 'off'}\n`)
-      return
-    }
-    case 'quiet': {
-      const bot = readBot()
-      if (!value) {
-        process.stdout.write(`${bot.quiet?.schedule || 'off'}\n`)
-        return
-      }
-      if (!bot.quiet) bot.quiet = {}
-      bot.quiet.schedule = value === 'off' ? '' : value
-      writeBot(bot)
-      process.stdout.write(`quiet: ${bot.quiet.schedule || 'off'}\n`)
-      return
-    }
-    case 'sleeping': {
-      const config = readLauncherConfig()
-      if (!value) {
-        process.stdout.write(`${config.sleepEnabled !== false ? 'on' : 'off'}\n`)
-        return
-      }
-      config.sleepEnabled = value !== 'off' && value !== '0'
-      writeLauncherConfig(config)
-      process.stdout.write(`sleeping: ${config.sleepEnabled ? 'on' : 'off'}\n`)
-      return
-    }
-    case 'sleeping-time': {
-      const config = readLauncherConfig()
-      if (!value) {
-        process.stdout.write(`${config.sleepTime ?? '03:00'}\n`)
-        return
-      }
-      config.sleepTime = value
-      writeLauncherConfig(config)
-      process.stdout.write(`sleeping-time: ${value}\n`)
-      return
-    }
-    default:
-      process.stderr.write(`Unknown config key: ${key}\nAvailable: autotalk, quiet, sleeping, sleeping-time\n`)
-      process.exitCode = 1
-  }
 }
 
 function stopLauncher() {
@@ -1561,9 +1515,6 @@ async function main() {
       break
     case 'summarize':
       summarizeOnly(cliWorkspace)
-      break
-    case 'config':
-      handleConfig(USER_ARGS[1], USER_ARGS[2])
       break
     case 'doctor': {
       const workspacePath = cliWorkspace ? resolve(cliWorkspace) : getConfiguredWorkspace()
