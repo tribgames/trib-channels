@@ -1,6 +1,6 @@
 ---
-description: View and configure claude2bot settings — channels, access, profile, voice, quiet hours, autotalk.
-args: "[status|channels|access|profile|voice|quiet|autotalk] [detail]"
+description: View and configure claude2bot settings — channels, access, profile, voice, quiet hours, autotalk, sleeping mode.
+args: "[status|channels|access|profile|voice|quiet|autotalk|sleeping] [detail]"
 allowed-tools:
   - AskUserQuestion
   - Read
@@ -104,7 +104,7 @@ To **set holidays**: set `quiet.holidays` to ISO country code (e.g., `"KR"`). Se
 
 To **set timezone**: set `quiet.timezone` to IANA timezone (e.g., `"Asia/Seoul"`). Set to `null` or delete the key to remove.
 
-To **set proactive DND**: set `proactive.dndStart` and `proactive.dndEnd` in `${CLAUDE_PLUGIN_DATA}/config.json` to `"HH:MM"` format (e.g., `"23:00"`, `"07:00"`). Set to `null` or delete the keys to remove.
+Proactive DND has been unified into `quiet.schedule`. No separate proactive DND settings needed.
 
 ### autotalk
 Manage autotalk settings in `${CLAUDE_PLUGIN_DATA}/bot.json`.
@@ -114,3 +114,19 @@ If no detail is given, display current autotalk state (enabled, frequency).
 To **toggle autotalk**: flip `autotalk.enabled` in bot.json.
 
 To **set frequency**: set `autotalk.freq` to 1-5 (1=~1/day, 5=~10/day) in bot.json.
+
+### sleeping
+Manage Sleeping Mode in `~/.claude2bot-launcher.json`.
+
+If no detail is given, display current sleeping state (enabled, time, lastSleepAt).
+
+To **toggle**: set `sleepEnabled` to `true` or `false`.
+
+To **set time**: set `sleepTime` to `"HH:MM"` (e.g., `"03:00"`).
+
+To **run now**: inform user to use `/claude2bot sleeping action:run` or CLI `launcher sleep-cycle`.
+
+Sleeping Mode daily summarizes conversations, updates identity/ongoing/interests/lifetime, and restarts the session. Memory files are at `${CLAUDE_PLUGIN_DATA}/history/`.
+
+### quiet (updated)
+Note: proactive DND (`proactive.dndStart/dndEnd`) has been removed. All quiet hours now use `quiet.schedule` in bot.json only.
