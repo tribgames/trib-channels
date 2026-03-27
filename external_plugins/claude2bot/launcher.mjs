@@ -1011,7 +1011,7 @@ function sleepCycle(workspacePath) {
   } else if (transcripts.length > 0) {
     const pingpong = extractPingPong(transcripts)
     if (pingpong) {
-      runSleepPrompt(sleepPrompt, { date: today, pingpong, ws, firstRun: isFirstRun })
+      runSleepPrompt(sleepPrompt, { date: today, ws })
       process.stderr.write(`[sleep-cycle] Daily ${today} generated. (${existingDailies + 1}/7)\n`)
     }
   } else {
@@ -1071,25 +1071,21 @@ function sleepCycle(workspacePath) {
   process.stderr.write('[sleep-cycle] New session launched.\n')
 }
 
-function runSleepPrompt(template, { date, pingpong, ws, firstRun = false }) {
-  const existing = {
-    lifetime: existsSync(join(HISTORY_DIR, 'lifetime.md')) ? readFileSync(join(HISTORY_DIR, 'lifetime.md'), 'utf8') : '',
-    identity: existsSync(join(HISTORY_DIR, 'identity.md')) ? readFileSync(join(HISTORY_DIR, 'identity.md'), 'utf8') : '',
-    ongoing: existsSync(join(HISTORY_DIR, 'ongoing.md')) ? readFileSync(join(HISTORY_DIR, 'ongoing.md'), 'utf8') : '',
-    interests: existsSync(join(HISTORY_DIR, 'interests.json')) ? readFileSync(join(HISTORY_DIR, 'interests.json'), 'utf8') : '{}',
-  }
+function runSleepPrompt(template, { date, ws }) {
+  const projectKey = ws.replace(/[\\/]/g, '-')
+  const transcriptDir = join(homedir(), '.claude', 'projects', projectKey)
   const prompt = template
     .replace('{{DATE}}', date)
-    .replace('{{PINGPONG}}', pingpong.slice(firstRun ? -200000 : -50000))
-    .replace('{{LIFETIME}}', existing.lifetime)
-    .replace('{{IDENTITY}}', existing.identity)
-    .replace('{{ONGOING}}', existing.ongoing)
-    .replace('{{INTERESTS}}', existing.interests)
+    .replace('{{PINGPONG}}', `[Read .jsonl files from: ${transcriptDir}]\nAnalyze all .jsonl transcript files modified today in the directory above. Each file is a JSON Lines session log with "type":"human"/"assistant" messages. Read them using the Read tool and extract the conversation content.`)
+    .replace('{{LIFETIME}}', `[Read if exists: ${join(HISTORY_DIR, 'lifetime.md')}]`)
+    .replace('{{IDENTITY}}', `[Read if exists: ${join(HISTORY_DIR, 'identity.md')}]`)
+    .replace('{{ONGOING}}', `[Read if exists: ${join(HISTORY_DIR, 'ongoing.md')}]`)
+    .replace('{{INTERESTS}}', `[Read if exists: ${join(HISTORY_DIR, 'interests.json')}]`)
     .replace('{{HISTORY_DIR}}', HISTORY_DIR)
   try {
     execFileSync('claude', ['-p', prompt], {
       cwd: ws,
-      stdio: 'inherit', timeout: 180000,
+      stdio: 'inherit', timeout: 300000,
       env: process.env,
     })
   } catch (e) {
@@ -1201,7 +1197,7 @@ function summarizeOnly(workspacePath) {
   if (transcripts.length > 0) {
     const pingpong = extractPingPong(transcripts)
     if (pingpong) {
-      runSleepPrompt(sleepPrompt, { date: today, pingpong, ws })
+      runSleepPrompt(sleepPrompt, { date: today, ws })
       process.stderr.write(`[summarize] Done.\n`)
     }
   } else {
