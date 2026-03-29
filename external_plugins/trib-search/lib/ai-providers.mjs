@@ -112,22 +112,18 @@ function providerHome(provider) {
 }
 
 function buildProviderEnv(provider) {
-  if (provider === 'claude') {
-    return {
-      ...process.env,
-      CLAUDE2BOT_NO_CONNECT: '1',       // prevent killing main claude2bot session
-      CLAUDE_CODE_DISABLE_PLUGINS: '1',  // prevent recursive plugin loading
-    }
+  // All child processes get spawn markers to prevent recursive MCP loading
+  const spawnGuard = {
+    CLAUDE2BOT_NO_CONNECT: '1',
+    TRIB_SEARCH_SPAWNED: '1',
   }
-  if (provider === 'codex') {
-    return { ...process.env }
+
+  if (provider === 'claude' || provider === 'codex') {
+    return { ...process.env, ...spawnGuard }
   }
 
   const home = providerHome(provider)
-  return {
-    ...process.env,
-    HOME: home,
-  }
+  return { ...process.env, ...spawnGuard, HOME: home }
 }
 
 function buildProviderCwd(provider, env) {
@@ -305,6 +301,7 @@ export async function runAiSearch({
         '&&',
         'claude',
         '--print',
+        '--bare',
         ...(model ? ['--model', shellEscape(model)] : []),
         '--',
         shellEscape(prompt),
