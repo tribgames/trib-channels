@@ -137,7 +137,7 @@ function looksLowSignal(text) {
   const minCompactLen = hasKorean ? 4 : 8
   if (compact.length < minCompactLen) return true
   const words = clean.split(/\s+/).filter(Boolean)
-  if (words.length < 2 && compact.length < (hasKorean ? 8 : 16)) return true
+  if (words.length < 2 && compact.length < (hasKorean ? 4 : 16)) return true
   const symbolCount = (clean.match(/[^\p{L}\p{N}\s]/gu) ?? []).length
   if (symbolCount > clean.length * 0.45) return true
   return false
@@ -2798,8 +2798,6 @@ export class MemoryStore {
     // only apply minimal filtering for strongest-signal intents
     if (intent.primary === 'preference') {
       relevant = relevant.filter(item => item.type === 'fact' || item.type === 'signal')
-    } else if (intent.primary === 'task') {
-      relevant = relevant.filter(item => item.type === 'task' || (item.type === 'fact' && item.subtype === 'decision'))
     }
     relevant = relevant.slice(0, Math.max(3, limit - 1))
 
