@@ -10,6 +10,33 @@ import {
 import { dirname, join, resolve } from 'path'
 import { createHash } from 'crypto'
 import { embedText, getEmbeddingModelId, warmupEmbeddingProvider } from './embedding-provider.mjs'
+let sqliteVec = null
+try { sqliteVec = await import('sqlite-vec') } catch { /* sqlite-vec not available */ }
+
+function vecToHex(vector) {
+  return Buffer.from(new Float32Array(vector).buffer).toString('hex')
+}
+
+function parseTemporalHint(query) {
+  const now = new Date()
+  const kst = new Date(now.getTime() + 9 * 60 * 60 * 1000)
+  const today = kst.toISOString().slice(0, 10)
+  const daysAgo = (n) => new Date(kst.getTime() - n * 86400000).toISOString().slice(0, 10)
+  if (/어제|yesterday/i.test(query)) return { start: daysAgo(1), end: daysAgo(1) }
+  if (/그저께|그제|그그저께/i.test(query)) return { start: daysAgo(2), end: daysAgo(2) }
+  if (/지난\s*주|last\s*week/i.test(query)) return { start: daysAgo(7), end: daysAgo(1) }
+  if (/이번\s*주|this\s*week/i.test(query)) return { start: daysAgo(kst.getDay() || 7), end: today }
+  if (/오늘|today/i.test(query)) return { start: today, end: today }
+  if (/최근|recently/i.test(query)) return { start: daysAgo(3), end: today }
+  const dateMatch = query.match(/(\d{1,2})월\s*(\d{1,2})일/)
+  if (dateMatch) {
+    const m = String(dateMatch[1]).padStart(2, '0')
+    const d = String(dateMatch[2]).padStart(2, '0')
+    const date = `${kst.getFullYear()}-${m}-${d}`
+    return { start: date, end: date }
+  }
+  return null
+}
 
 const stores = new Map()
 const INTENT_PROTOTYPES = {
@@ -490,9 +517,22 @@ export class MemoryStore {
     this.historyDir = join(dataDir, 'history')
     this.dbPath = join(dataDir, 'memory.sqlite')
     ensureDir(dirname(this.dbPath))
-    this.db = new DatabaseSync(this.dbPath)
+    this.db = new DatabaseSync(this.dbPath, { allowExtension: true })
+    this.vecEnabled = false
+    this._loadVecExtension()
     this.init()
     this.rebuildDerivedIndexes()
+  }
+
+  _loadVecExtension() {
+    if (!sqliteVec) return
+    try {
+      sqliteVec.load(this.db)
+      this.vecEnabled = true
+      this.db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS vec_memory USING vec0(embedding float[384])`)
+    } catch (e) {
+      process.stderr.write(`[memory] sqlite-vec load failed: ${e.message}\n`)
+    }
   }
 
   init() {
@@ -669,6 +709,43 @@ export class MemoryStore {
       CREATE TABLE IF NOT EXISTS memory_meta (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS entities (
+        id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL,
+        entity_type TEXT NOT NULL DEFAULT 'thing',
+        description TEXT,
+        first_seen TEXT,
+        last_seen TEXT,
+        source_episode_id INTEGER,
+        UNIQUE(name, entity_type)
+      );
+
+      CREATE TABLE IF NOT EXISTS relations (
+        id INTEGER PRIMARY KEY,
+        source_entity_id INTEGER NOT NULL REFERENCES entities(id),
+        target_entity_id INTEGER NOT NULL REFERENCES entities(id),
+        relation_type TEXT NOT NULL,
+        description TEXT,
+        confidence REAL DEFAULT 0.7,
+        first_seen TEXT,
+        last_seen TEXT,
+        status TEXT NOT NULL DEFAULT 'active',
+        source_episode_id INTEGER,
+        UNIQUE(source_entity_id, target_entity_id, relation_type)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_relations_source ON relations(source_entity_id);
+      CREATE INDEX IF NOT EXISTS idx_relations_target ON relations(target_entity_id);
+
+      CREATE TABLE IF NOT EXISTS pending_embeds (
+        id INTEGER PRIMARY KEY,
+        entity_type TEXT NOT NULL,
+        entity_id INTEGER NOT NULL,
+        content TEXT NOT NULL,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        UNIQUE(entity_type, entity_id)
       );
 
       CREATE TABLE IF NOT EXISTS memory_vectors (
@@ -1071,14 +1148,38 @@ export class MemoryStore {
     const contentHash = hashEmbeddingInput(content)
     const existing = this.getVectorStmt.get('episode', episodeId, model)
     if (existing?.content_hash === contentHash) return
-    // Queue to avoid concurrent SQLite writes
+    // Persist to DB queue for crash recovery
+    try {
+      this.db.prepare('INSERT OR IGNORE INTO pending_embeds (entity_type, entity_id, content) VALUES (?, ?, ?)').run('episode', episodeId, content.slice(0, 320))
+    } catch {}
+    // Process asynchronously
     const task = async () => {
       const vector = await embedText(content.slice(0, 320))
       if (!Array.isArray(vector) || vector.length === 0) return
       this.upsertVectorStmt.run('episode', episodeId, model, vector.length, JSON.stringify(vector), contentHash)
+      this._syncToVecTable('episode', episodeId, vector)
+      try { this.db.prepare('DELETE FROM pending_embeds WHERE entity_type = ? AND entity_id = ?').run('episode', episodeId) } catch {}
     }
     if (!this._embedQueue) this._embedQueue = Promise.resolve()
     this._embedQueue = this._embedQueue.then(task).catch(() => {})
+  }
+
+  async processPendingEmbeds() {
+    const pending = this.db.prepare('SELECT entity_type, entity_id, content FROM pending_embeds ORDER BY id LIMIT 50').all()
+    if (pending.length === 0) return 0
+    const model = getEmbeddingModelId()
+    let processed = 0
+    for (const item of pending) {
+      const vector = await embedText(item.content.slice(0, 320))
+      if (!Array.isArray(vector) || vector.length === 0) continue
+      const contentHash = hashEmbeddingInput(item.content)
+      this.upsertVectorStmt.run(item.entity_type, item.entity_id, model, vector.length, JSON.stringify(vector), contentHash)
+      this._syncToVecTable(item.entity_type, item.entity_id, vector)
+      this.db.prepare('DELETE FROM pending_embeds WHERE entity_type = ? AND entity_id = ?').run(item.entity_type, item.entity_id)
+      processed += 1
+    }
+    if (processed > 0) process.stderr.write(`[memory] recovered ${processed} pending embeds\n`)
+    return processed
   }
 
   ingestTranscriptFile(transcriptPath) {
@@ -1486,6 +1587,30 @@ export class MemoryStore {
       }
       if (slot) {
         this.staleFactSlotStmt.run(slot, text)
+      } else if (row?.id) {
+        // Contradiction detection for slot-less facts:
+        // If a new fact is semantically similar (cosine > 0.75) but textually different
+        // from an existing active fact of the same type, supersede the old one
+        try {
+          const newVector = await embedText(text)
+          if (Array.isArray(newVector) && newVector.length > 0) {
+            const sameFacts = this.db.prepare(`
+              SELECT f.id, f.text, mv.vector_json
+              FROM facts f
+              JOIN memory_vectors mv ON mv.entity_type = 'fact' AND mv.entity_id = f.id AND mv.model = ?
+              WHERE f.fact_type = ? AND f.status = 'active' AND f.id != ?
+            `).all(getEmbeddingModelId(), factType, row.id)
+            for (const old of sameFacts) {
+              try {
+                const oldVector = JSON.parse(old.vector_json)
+                const sim = cosineSimilarity(newVector, oldVector)
+                if (sim > 0.75 && old.text !== text) {
+                  this.db.prepare(`UPDATE facts SET status = 'superseded' WHERE id = ?`).run(old.id)
+                }
+              } catch {}
+            }
+          }
+        } catch {}
       }
       const profileKey = profileKeyForFact(factType, text, slot)
       if (profileKey) {
@@ -1962,9 +2087,53 @@ export class MemoryStore {
         JSON.stringify(vector),
         contentHash,
       )
+      this._syncToVecTable(item.entityType, item.entityId, vector)
       updated += 1
     }
+    this._pruneOldEpisodeVectors()
     return updated
+  }
+
+  _syncToVecTable(entityType, entityId, vector) {
+    if (!this.vecEnabled) return
+    const rowid = this._vecRowId(entityType, entityId)
+    try {
+      const hex = vecToHex(vector)
+      this.db.exec(`INSERT OR REPLACE INTO vec_memory(rowid, embedding) VALUES (${rowid}, X'${hex}')`)
+    } catch { /* ignore */ }
+  }
+
+  _vecRowId(entityType, entityId) {
+    // Pack entity type + id into a single integer rowid
+    const typePrefix = { fact: 1, task: 2, signal: 3, summary: 4, episode: 5 }
+    return (typePrefix[entityType] ?? 9) * 10000000 + Number(entityId)
+  }
+
+  _vecRowToEntity(rowid) {
+    const typeMap = { 1: 'fact', 2: 'task', 3: 'signal', 4: 'summary', 5: 'episode' }
+    const typeNum = Math.floor(rowid / 10000000)
+    return { entityType: typeMap[typeNum] ?? 'unknown', entityId: rowid % 10000000 }
+  }
+
+  _pruneOldEpisodeVectors() {
+    // TTL: remove episode vectors older than 30 days
+    try {
+      const cutoff = this.db.prepare(`
+        SELECT id FROM episodes
+        WHERE ts < datetime('now', '-30 days')
+          AND id IN (SELECT entity_id FROM memory_vectors WHERE entity_type = 'episode')
+      `).all()
+      for (const { id } of cutoff) {
+        this.db.prepare('DELETE FROM memory_vectors WHERE entity_type = ? AND entity_id = ?').run('episode', id)
+        if (this.vecEnabled) {
+          const rowid = this._vecRowId('episode', id)
+          try { this.db.exec(`DELETE FROM vec_memory WHERE rowid = ${rowid}`) } catch {}
+        }
+      }
+      if (cutoff.length > 0) {
+        process.stderr.write(`[memory] pruned ${cutoff.length} old episode vectors\n`)
+      }
+    } catch { /* ignore */ }
   }
 
   async classifyQueryIntent(query, queryVector = null) {
@@ -2161,9 +2330,39 @@ export class MemoryStore {
       channelId: options.channelId,
       userId: options.userId,
     })
+    const temporal = parseTemporalHint(clean)
     const dense = await this.searchRelevantDense(clean, limit * 2, queryVector, focusVector)
     const seeded = await this.getSeedResultsForIntent(intent.primary, clean, queryVector, Math.min(4, limit))
     const sparse = [...seeded, ...this.searchRelevantSparse(clean, limit * 2)]
+
+    // Temporal search: add date-matching summaries and episodes directly
+    if (temporal) {
+      try {
+        const temporalSummaries = this.db.prepare(`
+          SELECT 'summary' AS type, level AS subtype, period_key AS ref, content,
+                 -2.0 AS score, updated_at, id AS entity_id, retrieval_count
+          FROM summaries
+          WHERE period_key >= ? AND period_key <= ? AND level = 'daily'
+        `).all(temporal.start, temporal.end)
+        sparse.push(...temporalSummaries)
+      } catch {}
+      try {
+        const temporalEpisodes = this.db.prepare(`
+          SELECT 'episode' AS type, role AS subtype, CAST(id AS TEXT) AS ref, content,
+                 -1.5 AS score, created_at AS updated_at, id AS entity_id, 0 AS retrieval_count
+          FROM episodes
+          WHERE day_key >= ? AND day_key <= ?
+            AND role = 'user'
+            AND kind NOT IN ('schedule-inject', 'event-inject')
+            AND content NOT LIKE 'You are consolidating%'
+            AND LENGTH(content) >= 10
+          ORDER BY ts DESC
+          LIMIT 6
+        `).all(temporal.start, temporal.end)
+        sparse.push(...temporalEpisodes)
+      } catch {}
+    }
+
     return this.combineRetrievalResults(clean, sparse, dense, limit, intent)
   }
 
@@ -2334,6 +2533,40 @@ export class MemoryStore {
     const vector = queryVector ?? await embedText(clean)
     if (!Array.isArray(vector) || vector.length === 0) return []
 
+    // sqlite-vec KNN path
+    if (this.vecEnabled) {
+      try {
+        const hex = vecToHex(vector)
+        const knnRows = this.db.prepare(`
+          SELECT rowid, distance FROM vec_memory WHERE embedding MATCH X'${hex}' ORDER BY distance LIMIT ?
+        `).all(limit * 3)
+
+        const results = []
+        for (const knn of knnRows) {
+          const { entityType, entityId } = this._vecRowToEntity(knn.rowid)
+          const meta = this._getEntityMeta(entityType, entityId, model)
+          if (!meta) continue
+          const similarity = 1 - knn.distance  // L2 distance → approximate similarity
+          const focusSimilarity = Array.isArray(focusVector) ? (() => {
+            try {
+              const rv = JSON.parse(meta.vector_json)
+              return rv.length === focusVector.length ? cosineSimilarity(focusVector, rv) : 0
+            } catch { return 0 }
+          })() : 0
+          results.push({
+            ...meta,
+            ref: String(entityId),
+            score: -similarity,
+            focus_similarity: focusSimilarity,
+          })
+        }
+        return results.sort((a, b) => Number(a.score) - Number(b.score)).slice(0, limit)
+      } catch (e) {
+        process.stderr.write(`[memory] vec KNN failed, falling back: ${e.message}\n`)
+      }
+    }
+
+    // Fallback: JS cosine scan
     const rows = [
       ...this.listDenseFactRowsStmt.all(model),
       ...this.listDenseTaskRowsStmt.all(model),
@@ -2364,6 +2597,20 @@ export class MemoryStore {
       .filter(Boolean)
       .sort((a, b) => Number(a.score) - Number(b.score))
       .slice(0, limit)
+  }
+
+  _getEntityMeta(entityType, entityId, model) {
+    const stmtMap = {
+      fact: this.listDenseFactRowsStmt,
+      task: this.listDenseTaskRowsStmt,
+      signal: this.listDenseSignalRowsStmt,
+      summary: this.listDenseSummaryRowsStmt,
+      episode: this.listDenseEpisodeRowsStmt,
+    }
+    const stmt = stmtMap[entityType]
+    if (!stmt) return null
+    const rows = stmt.all(model)
+    return rows.find(r => Number(r.entity_id) === entityId) ?? null
   }
 
   combineRetrievalResults(query, sparseResults, denseResults, limit = 8, intent = null) {
@@ -2672,7 +2919,7 @@ export class MemoryStore {
         // preference intent: all core memory relevant
         if (primaryIntent === 'preference') return true
         // others: require keyword overlap or semantic relevance
-        return Number(item.overlapCount) > 0 || Number(item.rankScore) > 3
+        return Number(item.overlapCount) > 0 || Number(item.rankScore) > 4.5
       })
       .sort((a, b) => Number(b.rankScore) - Number(a.rankScore))
       .slice(0, limit)
