@@ -1057,8 +1057,28 @@ export class MemoryStore {
       if (score > 0) {
         this.insertCandidateStmt.run(finalEpisodeId, ts, dayKey, entry.role, clean, score)
       }
+
+      // Inline embedding: immediately make this episode searchable via dense search
+      if (shouldCandidate && clean.length >= 10 && clean.length <= 500 && !looksLowSignal(clean)) {
+        this._embedEpisodeAsync(finalEpisodeId, clean)
+      }
     }
     return finalEpisodeId ?? null
+  }
+
+  _embedEpisodeAsync(episodeId, content) {
+    const model = getEmbeddingModelId()
+    const contentHash = hashEmbeddingInput(content)
+    const existing = this.getVectorStmt.get('episode', episodeId, model)
+    if (existing?.content_hash === contentHash) return
+    // Queue to avoid concurrent SQLite writes
+    const task = async () => {
+      const vector = await embedText(content.slice(0, 320))
+      if (!Array.isArray(vector) || vector.length === 0) return
+      this.upsertVectorStmt.run('episode', episodeId, model, vector.length, JSON.stringify(vector), contentHash)
+    }
+    if (!this._embedQueue) this._embedQueue = Promise.resolve()
+    this._embedQueue = this._embedQueue.then(task).catch(() => {})
   }
 
   ingestTranscriptFile(transcriptPath) {
@@ -1893,7 +1913,7 @@ export class MemoryStore {
       FROM episodes
       WHERE role = 'user'
         AND kind NOT IN ('schedule-inject', 'event-inject')
-        AND LENGTH(content) BETWEEN 20 AND 500
+        AND LENGTH(content) BETWEEN 10 AND 500
         AND content NOT LIKE 'You are consolidating%'
         AND content NOT LIKE 'You are improving%'
         AND content NOT LIKE 'Answer using live%'
@@ -2252,7 +2272,7 @@ export class MemoryStore {
           AND e.content NOT LIKE 'Say only%'
           AND e.content NOT LIKE 'Compress these summaries%'
           AND e.content NOT LIKE 'Summarize the conversation%'
-          AND LENGTH(e.content) BETWEEN 10 AND 500
+          AND LENGTH(e.content) >= 10
         ORDER BY score
         LIMIT ?
       `).all(ftsQuery, Math.min(limit, 6))
