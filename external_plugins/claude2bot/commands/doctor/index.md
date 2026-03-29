@@ -30,7 +30,7 @@ Run diagnostic checks and report issues with actionable fixes.
 - Fix: "Check your token and network connectivity"
 
 ### 4. Access Control
-- Does access.json exist?
+- Does `config.json` include an `access` section?
 - Are there any allowed users or group channels?
 - Fix: "Open /claude2bot setup and review Channels & Access"
 
@@ -52,8 +52,7 @@ Run diagnostic checks and report issues with actionable fixes.
 - Do all channel IDs look valid?
 - Fix: "Run /claude2bot setup to configure channels"
 
-### 8. Voice (if enabled)
-- Is `voice.enabled` true in config.json?
+### 8. Voice transcription
 - Is `whisper` (or `whisper.cpp`) available in PATH?
 - Is `ffmpeg` available in PATH?
 - Fix: "Install whisper and ffmpeg for voice transcription"

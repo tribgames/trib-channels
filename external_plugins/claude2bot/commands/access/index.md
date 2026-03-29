@@ -11,9 +11,9 @@ allowed-tools:
 
 Manage who can communicate with the bot through the messaging channel.
 
-Read the current access.json from the backend state directory.
+Read the current access configuration from `${CLAUDE_PLUGIN_DATA}/config.json`.
 
-## access.json Structure
+## access Structure
 ```json
 {
   "dmPolicy": "pairing",
@@ -37,12 +37,12 @@ Display current access configuration:
 - Pending pairing requests
 
 ### pair [code]
-Approve a pending pairing request. Look up the code in `access.json` pending entries:
+Approve a pending pairing request. Look up the code in `config.json > access > pending`:
 1. Find the pending entry matching the code
 2. Add the sender to the top-level `allowFrom` array
 3. Remove from pending
 4. Write an approval marker file to `approved/{senderId}` with the DM channel ID
-5. Save access.json
+5. Save config.json
 
 ### allow [userId]
 Add a user ID directly to the top-level `allowFrom` array.
@@ -59,4 +59,4 @@ Add or update a per-channel access policy (keyed by channel ID):
 - `allowFrom`: comma-separated user IDs, or empty for all
 
 ## File Location
-Access file: `{stateDir}/access.json` (stateDir from config.json discord.stateDir)
+Access config: `${CLAUDE_PLUGIN_DATA}/config.json` → `access`

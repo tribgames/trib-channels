@@ -13,8 +13,19 @@ import { join } from 'path'
 import { DATA_DIR, loadConfig, loadBotConfig, saveBotConfig, loadProfileConfig, saveProfileConfig } from './config.js'
 import type { PluginConfig, TimedSchedule } from '../backends/types.js'
 import type { Scheduler } from './scheduler.js'
-import { launcherStateConnected, readLauncherConfig, readLauncherState } from './launcher-state.js'
-import { controlLauncher } from './launcher-control.js'
+// Launcher state/control — legacy, will be removed when commands are migrated
+let launcherStateConnected: any = () => false
+let readLauncherConfig: any = () => null
+let readLauncherState: any = () => null
+let controlLauncher: any = () => ({ ok: false, message: 'launcher removed' })
+try {
+  const ls = await import('./launcher-state.js')
+  launcherStateConnected = ls.launcherStateConnected
+  readLauncherConfig = ls.readLauncherConfig
+  readLauncherState = ls.readLauncherState
+  const lc = await import('./launcher-control.js')
+  controlLauncher = lc.controlLauncher
+} catch { /* launcher files removed — legacy commands will return graceful errors */ }
 import { t } from './i18n.js'
 
 // ── Types ────────────────────────────────────────────────────────────
@@ -150,18 +161,23 @@ export async function handleBotCommand(
     case 'help':
       return {
         embeds: [{
-          title: 'Bot Commands',
+          title: 'claude2bot Commands',
           description: [
-            '`/bot status` — Dashboard',
-            '`/bot autotalk [on/off/1-5]` — Proactive chat',
-            '`/bot quiet [HH:MM-HH:MM/off]` — Quiet hours',
-            '`/bot sleeping [on/off]` — Sleeping mode',
-            '`/bot sleeping time HH:MM` — Sleep time',
-            '`/bot sleeping run` — Run now',
-            '`/bot display [view/hide]` — Terminal mode',
-            '`/bot schedule` — Schedule management',
-            '`/bot profile` — Edit profile',
-            '`/bot launcher` — Launcher status',
+            '**Simple**',
+            '`/bot status`',
+            '`/bot profile`',
+            '`/bot launcher`',
+            '`/bot schedule list`',
+            '',
+            '**Parameterized**',
+            '`/bot autotalk on|off|freq=1-5`',
+            '`/bot quiet schedule HH:MM-HH:MM`',
+            '`/bot sleeping on|off|run|time HH:MM`',
+            '`/bot display view|hide`',
+            '`/bot schedule add ...`',
+            '',
+            '**Guided setup**',
+            'Use `/claude2bot setup` for first-run onboarding and tray setup.',
           ].join('\n'),
           color: 0x5865F2,
         }],
@@ -351,6 +367,16 @@ function activityAdd(parsed: ParsedCommand, ctx: CommandContext): CommandResult 
   }
 
   config.channelsConfig.channels[name] = { id, mode }
+  if (!config.access) {
+    config.access = {
+      dmPolicy: 'pairing',
+      allowFrom: [],
+      channels: {},
+    }
+  }
+  if (!config.access.channels[id]) {
+    config.access.channels[id] = { requireMention: true, allowFrom: [] }
+  }
   savePluginConfig(config)
   refreshRuntime(ctx)
 
@@ -366,7 +392,11 @@ function activityRemove(parsed: ParsedCommand, ctx: CommandContext): CommandResu
     return { text: t('activity.not_found', ctx.lang, { name }) }
   }
 
+  const removedId = config.channelsConfig.channels[name].id
   delete config.channelsConfig.channels[name]
+  if (removedId && config.access?.channels?.[removedId]) {
+    delete config.access.channels[removedId]
+  }
   savePluginConfig(config)
   refreshRuntime(ctx)
 

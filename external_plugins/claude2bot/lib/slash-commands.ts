@@ -549,14 +549,11 @@ async function handleDoctor(
   lines.push(`**Token** ${hasToken ? '\u{2705}' : '\u{274c} Missing'}`)
   if (!hasToken) allPass = false
 
-  const stateDir = ctx.config.discord?.stateDir ?? join(DATA_DIR, 'discord')
-  const accessPath = join(stateDir, 'access.json')
-  if (existsSync(accessPath)) {
-    try {
-      const access = JSON.parse(readFileSync(accessPath, 'utf8'))
-      lines.push(`**Access** \u{2705} ${(access.allowFrom ?? []).length} users, ${Object.keys(access.channels ?? {}).length} channels`)
-    } catch { lines.push('**Access** \u{274c} Parse failed'); allPass = false }
-  } else { lines.push('**Access** \u{26a0}\u{fe0f} Not configured') }
+  if (ctx.config.access) {
+    lines.push(`**Access** \u{2705} ${(ctx.config.access.allowFrom ?? []).length} users, ${Object.keys(ctx.config.access.channels ?? {}).length} channels`)
+  } else {
+    lines.push('**Access** \u{26a0}\u{fe0f} Not configured')
+  }
 
   const statuses = ctx.scheduler.getStatus()
   const promptsDir = ctx.config.promptsDir ?? join(DATA_DIR, 'prompts')
@@ -575,10 +572,56 @@ async function handleDoctor(
   lines.push(`**Runtime** ${mode}`)
   lines.push(`**Session Control** ${sessionControl ? '\u{2705}' : '\u{26a0}\u{fe0f}'} ${runtimeModeHint(ctx.runtimeMode)}`)
   lines.push(`**Interactive Commands** ${interactiveCommands ? '\u{2705} Enabled' : '\u{26a0}\u{fe0f} Hidden'}`)
-  lines.push(`**Voice** ${ctx.config.voice?.enabled ? '\u{2705} Enabled' : 'Disabled'}`)
+  lines.push('**Voice** \u2705 Auto server transcription')
   lines.push(`**Process** PID ${process.pid}, uptime ${Math.floor(process.uptime() / 60)}m`)
 
   await interaction.reply({ embeds: [{ description: lines.join('\n'), color: allPass ? 0x57F287 : 0xFEE75C }], flags: 64 })
+}
+
+async function handleSetupOverview(
+  interaction: ChatInputCommandInteraction,
+  ctx: SlashCommandContext,
+): Promise<void> {
+  const tokenReady = Boolean(ctx.config.discord?.token)
+  const channelCount = Object.keys(ctx.config.channelsConfig?.channels ?? {}).length
+  const accessCount = Object.keys(ctx.config.access?.channels ?? {}).length
+  const lines = [
+    `**Setup Ready** ${tokenReady && channelCount > 0 ? '\u2705' : '\u26a0\uFE0F'}`,
+    `**Token** ${tokenReady ? '\u2705' : '\u274c Missing'}`,
+    `**Channels** ${channelCount > 0 ? `\u2705 ${channelCount}` : '\u274c Missing'}`,
+    `**Access** ${accessCount > 0 ? `\u2705 ${accessCount}` : '\u274c Missing'}`,
+    '',
+    '**First Run**',
+    '1. Open the tray app setup or Discord Developer Portal',
+    '2. Create a bot and copy Bot Token + Client ID',
+    '3. Invite the bot to your server',
+    '4. Paste main/sub channel links or IDs into config',
+    '',
+    '**Simple Commands**',
+    '`/claude2bot doctor`',
+    '`/claude2bot profile`',
+    '`/claude2bot summarize`',
+    '',
+    '**Parameterized Commands**',
+    '`/claude2bot autotalk level:<1-5|OFF>`',
+    '`/claude2bot quiet schedule:<HH:MM-HH:MM>`',
+    '`/claude2bot sleeping action:<on|off|run|time>`',
+    '`/claude2bot schedule action:<list|add|remove|test>`',
+    '',
+    '**Optional Add-ons**',
+    'Launcher/tray: auto restart and background management',
+    'ngrok: webhook exposure',
+    'whisper CLI: voice transcription',
+  ]
+
+  await interaction.reply({
+    embeds: [{
+      title: 'claude2bot Setup',
+      description: lines.join('\n'),
+      color: EMBED_COLOR,
+    }],
+    flags: 64,
+  })
 }
 
 // ── /claude2bot handlers ─────────────────────────────────────────────
@@ -629,7 +672,7 @@ async function handleClaude2BotCommand(
 
   switch (sub) {
     case 'setup':
-      return handleBotCommandArgs(interaction, ctx, ['status'])
+      return handleSetupOverview(interaction, ctx)
     case 'schedule': {
       const action = interaction.options.getString('action') ?? 'list'
       const name = interaction.options.getString('name')
@@ -678,10 +721,8 @@ async function handleClaude2BotCommand(
           flags: 64,
         })
       } else {
-        const { readLauncherState } = await import('./launcher-state.js')
-        const state = readLauncherState()
         await interaction.reply({
-          embeds: [{ title: 'Workspace', description: state?.workspacePath ?? '(not set)', color: 0x5865F2 }],
+          embeds: [{ title: 'Workspace', description: process.cwd(), color: 0x5865F2 }],
           flags: 64,
         })
       }

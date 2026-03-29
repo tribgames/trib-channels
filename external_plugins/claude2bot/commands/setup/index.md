@@ -18,12 +18,12 @@ Manage post-install configuration. Parse the command arguments to determine the 
 | config.json | `${CLAUDE_PLUGIN_DATA}/config.json` |
 | bot.json | `${CLAUDE_PLUGIN_DATA}/bot.json` |
 | profile.json | `${CLAUDE_PLUGIN_DATA}/profile.json` |
-| access.json | `${CLAUDE_PLUGIN_DATA}/discord/access.json` |
+| access policy | `${CLAUDE_PLUGIN_DATA}/config.json` → `access` |
 
 ## Actions
 
 ### status (default)
-Read all four config files and display a compact summary of current settings: channels (main + count), access (DM policy + user count), profile (name, role, lang, tone), voice (enabled/disabled), quiet hours, and autotalk state.
+Read config.json, bot.json, and profile.json and display a compact summary of current settings: channels (main + count), access (DM policy + user count), profile (name, role, lang, tone), voice (enabled/disabled), quiet hours, and autotalk state.
 
 ### channels
 Manage `channelsConfig` in config.json.
@@ -33,11 +33,11 @@ If no detail is given, display current channels and return.
 To **add** a channel:
 1. Ask for label (kebab-case), channel ID, mode (`interactive` or `monitor`) using AskUserQuestion
 2. Add to `channelsConfig.channels` in `${CLAUDE_PLUGIN_DATA}/config.json`
-3. Also add `channels.{id}` entry in `${CLAUDE_PLUGIN_DATA}/discord/access.json` with `{ "requireMention": true, "allowFrom": [] }`
+3. Also add `access.channels.{id}` entry in `${CLAUDE_PLUGIN_DATA}/config.json` with `{ "requireMention": true, "allowFrom": [] }`
 
 To **remove** a channel:
 1. Delete from `channelsConfig.channels` in config.json
-2. Remove corresponding channel ID entry from access.json
+2. Remove corresponding channel ID entry from `access.channels`
 
 To **set main**:
 - Update `channelsConfig.main` in config.json to the given label.
@@ -46,7 +46,7 @@ To **change mode**:
 - Update the channel's `mode` field in config.json.
 
 ### access
-Manage `${CLAUDE_PLUGIN_DATA}/discord/access.json`.
+Manage `access` section in `${CLAUDE_PLUGIN_DATA}/config.json`.
 
 If no detail is given, display current DM policy, allowed users, and per-channel policies.
 
@@ -81,9 +81,9 @@ Fields:
 ### voice
 Manage `voice` section in `${CLAUDE_PLUGIN_DATA}/config.json`.
 
-If no detail is given, display current voice settings (enabled, command, model, language).
+Voice transcription is automatic for voice attachments. This section only manages whisper command, model, and language overrides.
 
-To **toggle**: flip `voice.enabled`. Create `voice` object if missing.
+If no detail is given, display current voice settings (command, model, language).
 
 To **set command**: set `voice.command` to the whisper binary path. Use `"auto"` to clear.
 

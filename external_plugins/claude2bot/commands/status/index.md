@@ -41,14 +41,14 @@ Proactive (freq=3, feedback=on):
 ```
 
 ### Access Control
-Summarize the current access policy:
+Summarize the current access policy from `config.json > access`:
 - DM policy (pairing/allowlist/disabled)
 - Number of allowed users
 - Number of registered channel policies
 - Pending pairing requests
 
 ### Voice
-- Voice transcription: enabled/disabled
+- Voice transcription: automatic when whisper + model are available
 
 ### Config
 - Config file location
