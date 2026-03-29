@@ -14,7 +14,9 @@ let sqliteVec = null
 try { sqliteVec = await import('sqlite-vec') } catch { /* sqlite-vec not available */ }
 
 function vecToHex(vector) {
-  return Buffer.from(new Float32Array(vector).buffer).toString('hex')
+  const hex = Buffer.from(new Float32Array(vector).buffer).toString('hex')
+  if (!/^[0-9a-f]+$/.test(hex)) throw new Error('invalid hex from vector')
+  return hex
 }
 
 function parseTemporalHint(query) {
@@ -1589,11 +1591,11 @@ export class MemoryStore {
         this.staleFactSlotStmt.run(slot, text)
       } else if (row?.id) {
         // Contradiction detection for slot-less facts:
-        // If a new fact is semantically similar (cosine > 0.75) but textually different
-        // from an existing active fact of the same type, supersede the old one
+        // Reuse existing vectors (no extra embedText call) to find similar facts and supersede
         try {
-          const newVector = await embedText(text)
-          if (Array.isArray(newVector) && newVector.length > 0) {
+          const newVecRow = this.getVectorStmt.get('fact', row.id, getEmbeddingModelId())
+          if (newVecRow?.vector_json) {
+            const newVector = JSON.parse(newVecRow.vector_json)
             const sameFacts = this.db.prepare(`
               SELECT f.id, f.text, mv.vector_json
               FROM facts f
@@ -2335,8 +2337,9 @@ export class MemoryStore {
     const seeded = await this.getSeedResultsForIntent(intent.primary, clean, queryVector, Math.min(4, limit))
     const sparse = [...seeded, ...this.searchRelevantSparse(clean, limit * 2)]
 
-    // Temporal search: add date-matching summaries and episodes directly
+    // Temporal search: add date-matching summaries and episodes (deduplicated)
     if (temporal) {
+      const seen = new Set(sparse.map(r => `${r.type}:${r.entity_id}`))
       try {
         const temporalSummaries = this.db.prepare(`
           SELECT 'summary' AS type, level AS subtype, period_key AS ref, content,
@@ -2344,7 +2347,9 @@ export class MemoryStore {
           FROM summaries
           WHERE period_key >= ? AND period_key <= ? AND level = 'daily'
         `).all(temporal.start, temporal.end)
-        sparse.push(...temporalSummaries)
+        for (const s of temporalSummaries) {
+          if (!seen.has(`summary:${s.entity_id}`)) { sparse.push(s); seen.add(`summary:${s.entity_id}`) }
+        }
       } catch {}
       try {
         const temporalEpisodes = this.db.prepare(`
@@ -2359,7 +2364,9 @@ export class MemoryStore {
           ORDER BY ts DESC
           LIMIT 6
         `).all(temporal.start, temporal.end)
-        sparse.push(...temporalEpisodes)
+        for (const e of temporalEpisodes) {
+          if (!seen.has(`episode:${e.entity_id}`)) { sparse.push(e); seen.add(`episode:${e.entity_id}`) }
+        }
       } catch {}
     }
 
@@ -2600,17 +2607,55 @@ export class MemoryStore {
   }
 
   _getEntityMeta(entityType, entityId, model) {
-    const stmtMap = {
-      fact: this.listDenseFactRowsStmt,
-      task: this.listDenseTaskRowsStmt,
-      signal: this.listDenseSignalRowsStmt,
-      summary: this.listDenseSummaryRowsStmt,
-      episode: this.listDenseEpisodeRowsStmt,
-    }
-    const stmt = stmtMap[entityType]
-    if (!stmt) return null
-    const rows = stmt.all(model)
-    return rows.find(r => Number(r.entity_id) === entityId) ?? null
+    try {
+      if (entityType === 'fact') {
+        return this.db.prepare(`
+          SELECT 'fact' AS type, f.fact_type AS subtype, f.id AS entity_id, f.text AS content,
+                 unixepoch(f.last_seen) AS updated_at, f.retrieval_count AS retrieval_count,
+                 mv.vector_json
+          FROM facts f JOIN memory_vectors mv ON mv.entity_type = 'fact' AND mv.entity_id = f.id AND mv.model = ?
+          WHERE f.id = ? AND f.status = 'active'
+        `).get(model, entityId)
+      }
+      if (entityType === 'task') {
+        return this.db.prepare(`
+          SELECT 'task' AS type, t.stage AS subtype, t.id AS entity_id,
+                 trim(t.title || CASE WHEN t.details != '' THEN ' — ' || t.details ELSE '' END) AS content,
+                 unixepoch(t.last_seen) AS updated_at, t.retrieval_count AS retrieval_count,
+                 mv.vector_json
+          FROM tasks t JOIN memory_vectors mv ON mv.entity_type = 'task' AND mv.entity_id = t.id AND mv.model = ?
+          WHERE t.id = ? AND t.status IN ('active', 'in_progress', 'paused')
+        `).get(model, entityId)
+      }
+      if (entityType === 'signal') {
+        return this.db.prepare(`
+          SELECT 'signal' AS type, s.kind AS subtype, s.id AS entity_id, s.value AS content,
+                 unixepoch(s.last_seen) AS updated_at, s.retrieval_count AS retrieval_count,
+                 mv.vector_json
+          FROM signals s JOIN memory_vectors mv ON mv.entity_type = 'signal' AND mv.entity_id = s.id AND mv.model = ?
+          WHERE s.id = ?
+        `).get(model, entityId)
+      }
+      if (entityType === 'summary') {
+        return this.db.prepare(`
+          SELECT 'summary' AS type, s.level AS subtype, s.id AS entity_id, s.content,
+                 s.updated_at AS updated_at, s.retrieval_count AS retrieval_count,
+                 mv.vector_json
+          FROM summaries s JOIN memory_vectors mv ON mv.entity_type = 'summary' AND mv.entity_id = s.id AND mv.model = ?
+          WHERE s.id = ?
+        `).get(model, entityId)
+      }
+      if (entityType === 'episode') {
+        return this.db.prepare(`
+          SELECT 'episode' AS type, e.role AS subtype, e.id AS entity_id, e.content,
+                 e.created_at AS updated_at, 0 AS retrieval_count,
+                 mv.vector_json
+          FROM episodes e JOIN memory_vectors mv ON mv.entity_type = 'episode' AND mv.entity_id = e.id AND mv.model = ?
+          WHERE e.id = ?
+        `).get(model, entityId)
+      }
+    } catch {}
+    return null
   }
 
   combineRetrievalResults(query, sparseResults, denseResults, limit = 8, intent = null) {
