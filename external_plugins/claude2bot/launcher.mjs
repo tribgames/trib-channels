@@ -1756,6 +1756,8 @@ async function consolidateCandidateDay(dayKey, ws, options = {}) {
       await store.upsertFacts(parsed.facts ?? [], `${dayKey}T23:59:59.000Z`, sourceEpisodeId)
       store.upsertTasks(parsed.tasks ?? [], `${dayKey}T23:59:59.000Z`, sourceEpisodeId)
       store.upsertSignals(parsed.signals ?? [], sourceEpisodeId, `${dayKey}T23:59:59.000Z`)
+      store.upsertEntities(parsed.entities ?? [], `${dayKey}T23:59:59.000Z`, sourceEpisodeId)
+      store.upsertRelations(parsed.relations ?? [], `${dayKey}T23:59:59.000Z`, sourceEpisodeId)
       store.markCandidateIdsConsolidated(candidates.map(item => item.id))
       processed += candidates.length
       mergedFacts += (parsed.facts ?? []).length

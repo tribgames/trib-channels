@@ -1722,6 +1722,66 @@ export class MemoryStore {
     }
   }
 
+  upsertEntities(entities = [], seenAt = null, sourceEpisodeId = null) {
+    for (const entity of entities) {
+      const name = cleanMemoryText(entity?.name)
+      const entityType = String(entity?.type ?? 'thing').toLowerCase().trim()
+      const description = cleanMemoryText(entity?.description ?? '')
+      if (!name || name.length < 2) continue
+      try {
+        this.db.prepare(`
+          INSERT INTO entities (name, entity_type, description, first_seen, last_seen, source_episode_id)
+          VALUES (?, ?, ?, ?, ?, ?)
+          ON CONFLICT(name, entity_type) DO UPDATE SET
+            description = COALESCE(excluded.description, entities.description),
+            last_seen = excluded.last_seen,
+            source_episode_id = COALESCE(excluded.source_episode_id, entities.source_episode_id)
+        `).run(name, entityType, description || null, seenAt, seenAt, sourceEpisodeId)
+      } catch {}
+    }
+  }
+
+  upsertRelations(relations = [], seenAt = null, sourceEpisodeId = null) {
+    for (const rel of relations) {
+      const sourceName = cleanMemoryText(rel?.source)
+      const targetName = cleanMemoryText(rel?.target)
+      const relType = String(rel?.type ?? 'related_to').toLowerCase().trim()
+      const description = cleanMemoryText(rel?.description ?? '')
+      const confidence = Number(rel?.confidence ?? 0.7)
+      if (!sourceName || !targetName || sourceName.length < 2 || targetName.length < 2) continue
+      try {
+        const sourceEntity = this.db.prepare('SELECT id FROM entities WHERE name = ?').get(sourceName)
+        const targetEntity = this.db.prepare('SELECT id FROM entities WHERE name = ?').get(targetName)
+        if (!sourceEntity || !targetEntity) continue
+        this.db.prepare(`
+          INSERT INTO relations (source_entity_id, target_entity_id, relation_type, description, confidence, first_seen, last_seen, source_episode_id)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(source_entity_id, target_entity_id, relation_type) DO UPDATE SET
+            description = COALESCE(excluded.description, relations.description),
+            confidence = MAX(relations.confidence, excluded.confidence),
+            last_seen = excluded.last_seen,
+            source_episode_id = COALESCE(excluded.source_episode_id, relations.source_episode_id)
+        `).run(sourceEntity.id, targetEntity.id, relType, description || null, confidence, seenAt, seenAt, sourceEpisodeId)
+      } catch {}
+    }
+  }
+
+  getEntityGraph(entityName) {
+    const entity = this.db.prepare('SELECT * FROM entities WHERE name = ?').get(entityName)
+    if (!entity) return null
+    const outgoing = this.db.prepare(`
+      SELECT r.relation_type, e.name AS target, e.entity_type AS target_type, r.description, r.confidence
+      FROM relations r JOIN entities e ON e.id = r.target_entity_id
+      WHERE r.source_entity_id = ? AND r.status = 'active'
+    `).all(entity.id)
+    const incoming = this.db.prepare(`
+      SELECT r.relation_type, e.name AS source, e.entity_type AS source_type, r.description, r.confidence
+      FROM relations r JOIN entities e ON e.id = r.source_entity_id
+      WHERE r.target_entity_id = ? AND r.status = 'active'
+    `).all(entity.id)
+    return { entity, outgoing, incoming }
+  }
+
   syncHistoryFromFiles() {
     ensureDir(this.historyDir)
 
