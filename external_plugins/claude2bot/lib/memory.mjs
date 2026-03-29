@@ -9,7 +9,7 @@ import {
 } from 'fs'
 import { dirname, join, resolve } from 'path'
 import { createHash } from 'crypto'
-import { embedText, getEmbeddingModelId, warmupEmbeddingProvider } from './embedding-provider.mjs'
+import { embedText, getEmbeddingModelId, getEmbeddingDims, warmupEmbeddingProvider, configureEmbedding } from './embedding-provider.mjs'
 let sqliteVec = null
 try { sqliteVec = await import('sqlite-vec') } catch { /* sqlite-vec not available */ }
 
@@ -531,10 +531,45 @@ export class MemoryStore {
     try {
       sqliteVec.load(this.db)
       this.vecEnabled = true
-      this.db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS vec_memory USING vec0(embedding float[384])`)
+      const dims = getEmbeddingDims()
+      // Check if vec_memory exists with different dimensions
+      try {
+        const existing = this.db.prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='vec_memory'`).get()
+        if (existing?.sql && !existing.sql.includes(`float[${dims}]`)) {
+          this.db.exec('DROP TABLE vec_memory')
+          process.stderr.write(`[memory] vec_memory dimension changed, recreating with float[${dims}]\n`)
+        }
+      } catch {}
+      this.db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS vec_memory USING vec0(embedding float[${dims}])`)
     } catch (e) {
       process.stderr.write(`[memory] sqlite-vec load failed: ${e.message}\n`)
     }
+  }
+
+  async switchEmbeddingModel(config = {}) {
+    const oldModel = getEmbeddingModelId()
+    configureEmbedding(config)
+    await warmupEmbeddingProvider()
+    const newModel = getEmbeddingModelId()
+    if (oldModel === newModel) return { changed: false }
+
+    process.stderr.write(`[memory] switching embedding model: ${oldModel} → ${newModel}\n`)
+
+    // Clear all vectors (will be regenerated)
+    this.db.prepare('DELETE FROM memory_vectors').run()
+    this.db.prepare('DELETE FROM pending_embeds').run()
+    if (this.vecEnabled) {
+      try {
+        this.db.exec('DROP TABLE IF EXISTS vec_memory')
+        const dims = getEmbeddingDims()
+        this.db.exec(`CREATE VIRTUAL TABLE vec_memory USING vec0(embedding float[${dims}])`)
+      } catch {}
+    }
+
+    // Regenerate all embeddings with new model
+    const updated = await this.ensureEmbeddings({ perTypeLimit: 64 })
+    process.stderr.write(`[memory] re-embedded ${updated} items with ${newModel}\n`)
+    return { changed: true, oldModel, newModel, reembedded: updated }
   }
 
   init() {
