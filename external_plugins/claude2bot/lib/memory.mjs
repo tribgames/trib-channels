@@ -3041,9 +3041,8 @@ export class MemoryStore {
     `).get()?.workstream ?? ''
     const coreMemory = await this.getCoreMemoryItems(clean, intent, queryVector)
     if (coreMemory.length > 0) {
-      lines.push('Core memory:')
       for (const item of coreMemory) {
-        lines.push(`- [${item.type}:${item.subtype}] ${String(item.content).slice(0, 180)}`)
+        lines.push(`- ${String(item.content).slice(0, 180)}`)
       }
     }
 
@@ -3056,10 +3055,9 @@ export class MemoryStore {
         limit: 3,
       })
       if (priorityTasks.length > 0) {
-        lines.push('Priority tasks:')
         for (const task of priorityTasks) {
           const detail = task.details ? ` — ${task.details}` : ''
-          lines.push(`- [${task.status}/${task.stage}/${task.evidence_level}] ${task.title}${detail}`)
+          lines.push(`- ${task.title}${detail} (${task.status})`)
         }
       }
     } else if (intent.primary === 'decision') {
@@ -3072,9 +3070,8 @@ export class MemoryStore {
         LIMIT 3
       `).all()
       if (decisions.length > 0) {
-        lines.push('Key decisions:')
         for (const item of decisions) {
-          lines.push(`- [${item.fact_type}] ${item.text}`)
+          lines.push(`- ${item.text}`)
         }
       }
     }
@@ -3095,12 +3092,15 @@ export class MemoryStore {
 
     if (relevant.length > 0) {
       this.recordRetrieval(relevant)
-      lines.push('Relevant memory:')
       for (const item of relevant) {
         if (item.type === 'task') {
-          lines.push(`- [task:${item.subtype}/${item.evidence_level ?? 'claimed'}] ${String(item.content).slice(0, 180)}`)
+          lines.push(`- ${String(item.content).slice(0, 180)} (${item.subtype})`)
+        } else if (item.type === 'summary') {
+          lines.push(`- ${String(item.content).slice(0, 200)}`)
+        } else if (item.type === 'episode') {
+          lines.push(`- Previously discussed: ${String(item.content).slice(0, 160)}`)
         } else {
-          lines.push(`- [${item.type}:${item.subtype}] ${String(item.content).slice(0, 180)}`)
+          lines.push(`- ${String(item.content).slice(0, 180)}`)
         }
       }
 
@@ -3124,11 +3124,8 @@ export class MemoryStore {
           .filter(item => item.effectiveScore >= 0.45)
           .filter(item => !seenSignals.has(`${item.kind}:${item.value}`))
           .slice(0, 1)
-        if (extraSignals.length > 0) {
-          lines.push('Signal hints:')
-          for (const signal of extraSignals) {
-            lines.push(`- [${signal.kind}] ${signal.value}`)
-          }
+        for (const signal of extraSignals) {
+          lines.push(`- ${signal.value}`)
         }
       }
     } else {
@@ -3148,13 +3145,10 @@ export class MemoryStore {
           last_seen DESC
         LIMIT 4
       `).all()
-      if (facts.length > 0) {
-        lines.push('Memory hints:')
-        for (const fact of facts) {
-          const confidence = decayConfidence(fact.confidence, fact.last_seen)
-          if (confidence < 0.25) continue
-          lines.push(`- [${fact.fact_type}] ${fact.text}`)
-        }
+      for (const fact of facts) {
+        const confidence = decayConfidence(fact.confidence, fact.last_seen)
+        if (confidence < 0.25) continue
+        lines.push(`- ${fact.text}`)
       }
 
       const tasks = this.db.prepare(`
@@ -3166,13 +3160,10 @@ export class MemoryStore {
           last_seen DESC
         LIMIT 3
       `).all()
-      if (tasks.length > 0) {
-        lines.push('Task hints:')
-        for (const task of tasks) {
-          const confidence = decayConfidence(task.confidence, task.last_seen)
-          if (confidence < 0.25) continue
-          lines.push(`- [${task.status}] ${task.title}`)
-        }
+      for (const task of tasks) {
+        const confidence = decayConfidence(task.confidence, task.last_seen)
+        if (confidence < 0.25) continue
+        lines.push(`- ${task.title} (${task.status})`)
       }
 
       const signals = this.db.prepare(`
@@ -3187,11 +3178,8 @@ export class MemoryStore {
           effectiveScore: decaySignalScore(item.score, item.last_seen, item.kind),
         }))
         .filter(item => item.effectiveScore >= 0.45)
-      if (activeSignals.length > 0) {
-        lines.push('Signal hints:')
-        for (const signal of activeSignals) {
-          lines.push(`- [${signal.kind}] ${signal.value}`)
-        }
+      for (const signal of activeSignals) {
+        lines.push(`- ${signal.value}`)
       }
     }
 
