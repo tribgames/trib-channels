@@ -23,20 +23,19 @@ import { crawlSite, getScrapeCapabilities, mapSite, scrapeUrls } from './lib/web
 
 ensureDataDir()
 
+// Unified search schema — query accepts string or array for parallel execution
 const searchArgsSchema = z.object({
-  keywords: z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]),
-  providers: z.array(z.enum(RAW_PROVIDER_IDS)).optional(),
+  query: z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]),
   site: z.string().optional(),
   type: z.enum(['web', 'news', 'images']).optional(),
   maxResults: z.number().int().min(1).max(20).optional(),
 })
 
-const aiSearchArgsSchema = z.object({
+const ghSearchArgsSchema = z.object({
   query: z.string().min(1),
-  provider: z.enum(AI_PROVIDER_IDS).optional(),
-  model: z.string().optional(),
-  site: z.string().optional(),
-  timeoutMs: z.number().int().min(1000).max(300000).optional(),
+  language: z.string().optional(),
+  repo: z.string().optional(),
+  maxResults: z.number().int().min(1).max(20).optional(),
 })
 
 const scrapeArgsSchema = z.object({
@@ -68,10 +67,6 @@ function jsonText(payload) {
   }
 }
 
-function buildInputSchema(schema) {
-  return schema
-}
-
 async function writeStartupSnapshot() {
   const usageState = loadUsageState()
   const rawProviders = getAvailableRawProviders()
@@ -86,6 +81,7 @@ async function writeStartupSnapshot() {
     })
   }
 
+  const config = loadConfig()
   for (const provider of aiProviders) {
     updateProviderState(usageState, provider, {
       available: true,
@@ -119,49 +115,186 @@ async function writeStartupSnapshot() {
   })
 }
 
+// --- Unified search: raw + ai combined with searchMode routing ---
+
+async function runSingleSearch(query, config, usageState, options = {}) {
+  const site = options.site
+  const type = options.type
+  const maxResults = options.maxResults || config.rawMaxResults
+  const searchMode = config.searchMode || 'search-first'
+  const results = { query, searchMode, raw: null, ai: null, errors: [] }
+
+  // x.com always routes to grok x_search
+  if (site === 'x.com') {
+    try {
+      const response = await runAiSearch({
+        query,
+        provider: 'grok',
+        site,
+        model: config.aiModels?.grok || null,
+        timeoutMs: config.aiTimeoutMs,
+      })
+      noteProviderSuccess(usageState, 'grok')
+      results.ai = { provider: 'grok', ...response }
+    } catch (e) {
+      noteProviderFailure(usageState, 'grok', e.message, 60000)
+      results.errors.push({ provider: 'grok', error: e.message })
+    }
+    return results
+  }
+
+  const doRawSearch = async () => {
+    const available = getAvailableRawProviders()
+    const providers = rankProviders(
+      config.rawProviders.filter(p => available.includes(p)),
+      usageState,
+      site,
+    )
+    if (!providers.length) return null
+    try {
+      const response = await runRawSearch({
+        keywords: query,
+        providers,
+        site,
+        type,
+        maxResults,
+        parallel: false,
+      })
+      if (response.mode === 'fallback') {
+        noteProviderSuccess(usageState, response.usedProvider)
+        for (const f of response.failures || []) noteProviderFailure(usageState, f.provider, f.error, 60000)
+        if (site) rememberPreferredRawProviders(usageState, site, [response.usedProvider, ...providers.filter(p => p !== response.usedProvider)])
+      } else {
+        for (const row of response.providerResults) noteProviderSuccess(usageState, row.provider)
+        for (const f of response.failures || []) if (f.provider) noteProviderFailure(usageState, f.provider, f.error, 60000)
+        if (site) rememberPreferredRawProviders(usageState, site, response.providerResults.map(r => r.provider))
+      }
+      return response
+    } catch (e) {
+      results.errors.push({ source: 'raw', error: e.message })
+      return null
+    }
+  }
+
+  const doAiSearch = async () => {
+    const available = await getAvailableAiProviders()
+    const provider = config.aiDefaultProvider
+    if (!available.includes(provider)) {
+      // fallback chain
+      const chain = AI_PROVIDER_IDS.filter(p => available.includes(p))
+      if (!chain.length) return null
+      for (const fallback of chain) {
+        try {
+          const response = await runAiSearch({
+            query,
+            provider: fallback,
+            site,
+            model: config.aiModels?.[fallback] || null,
+            timeoutMs: config.aiTimeoutMs,
+          })
+          noteProviderSuccess(usageState, fallback)
+          return { provider: fallback, ...response }
+        } catch (e) {
+          noteProviderFailure(usageState, fallback, e.message, 60000)
+          results.errors.push({ provider: fallback, error: e.message })
+        }
+      }
+      return null
+    }
+    try {
+      const response = await runAiSearch({
+        query,
+        provider,
+        site,
+        model: config.aiModels?.[provider] || null,
+        timeoutMs: config.aiTimeoutMs,
+      })
+      noteProviderSuccess(usageState, provider)
+      return { provider, ...response }
+    } catch (e) {
+      noteProviderFailure(usageState, provider, e.message, 60000)
+      results.errors.push({ provider, error: e.message })
+      return null
+    }
+  }
+
+  if (searchMode === 'ai-first') {
+    results.ai = await doAiSearch()
+    if (!results.ai) results.raw = await doRawSearch()
+  } else {
+    results.raw = await doRawSearch()
+    if (!results.raw?.results?.length) results.ai = await doAiSearch()
+  }
+
+  return results
+}
+
+// --- GitHub code search ---
+
+async function runGhSearch(query, options = {}) {
+  const { spawn } = await import('child_process')
+  const args = ['api', 'search/code', '-q', query]
+  if (options.language) args.push('--jq', `.items | map(select(.language == "${options.language}"))`)
+  if (options.repo) args[3] = `${query} repo:${options.repo}`
+  const limit = options.maxResults || 10
+  args.push('--jq', `.items[:${limit}] | map({repo: .repository.full_name, path: .path, url: .html_url, score: .score})`)
+
+  return new Promise((resolve, reject) => {
+    const child = spawn('gh', args, { stdio: ['ignore', 'pipe', 'pipe'] })
+    let stdout = ''
+    let stderr = ''
+    const timer = setTimeout(() => { child.kill(); reject(new Error('gh search timed out')) }, 30000)
+    child.stdout.on('data', d => { stdout += d })
+    child.stderr.on('data', d => { stderr += d })
+    child.on('error', e => { clearTimeout(timer); reject(e) })
+    child.on('exit', code => {
+      clearTimeout(timer)
+      if (code !== 0) return reject(new Error(`gh exited ${code}: ${stderr.trim()}`))
+      try { resolve(JSON.parse(stdout)) } catch { resolve([]) }
+    })
+  })
+}
+
+// --- Tool definitions ---
+
 const toolDefinitions = [
   {
     name: 'search',
-    description: 'Run raw web search. If providers is omitted, configured priority fallback is used. If providers has multiple values, they run in parallel.',
-    inputSchema: buildInputSchema({
+    description: 'Run web search. Single query or array for parallel. Routes through raw search and AI search based on configured searchMode.',
+    inputSchema: {
       type: 'object',
       properties: {
-        keywords: {
+        query: {
           oneOf: [
             { type: 'string' },
             { type: 'array', items: { type: 'string' } },
           ],
         },
-        providers: {
-          type: 'array',
-          items: { type: 'string', enum: RAW_PROVIDER_IDS },
-        },
         site: { type: 'string' },
         type: { type: 'string', enum: ['web', 'news', 'images'] },
         maxResults: { type: 'integer' },
       },
-      required: ['keywords'],
-    }),
+      required: ['query'],
+    },
   },
   {
-    name: 'ai_search',
-    description: 'Run AI search through configured providers. x.com is only supported by grok.',
-    inputSchema: buildInputSchema({
+    name: 'gh_search',
+    description: 'Search GitHub code repositories.',
+    inputSchema: {
       type: 'object',
       properties: {
         query: { type: 'string' },
-        provider: { type: 'string', enum: AI_PROVIDER_IDS },
-        model: { type: 'string' },
-        site: { type: 'string' },
-        timeoutMs: { type: 'integer' },
+        language: { type: 'string' },
+        repo: { type: 'string' },
+        maxResults: { type: 'integer' },
       },
       required: ['query'],
-    }),
+    },
   },
   {
     name: 'scrape',
     description: 'Fetch and extract readable content from known URLs.',
-    inputSchema: buildInputSchema({
+    inputSchema: {
       type: 'object',
       properties: {
         urls: {
@@ -170,12 +303,12 @@ const toolDefinitions = [
         },
       },
       required: ['urls'],
-    }),
+    },
   },
   {
     name: 'map',
     description: 'Discover links from a page.',
-    inputSchema: buildInputSchema({
+    inputSchema: {
       type: 'object',
       properties: {
         url: { type: 'string', format: 'uri' },
@@ -184,12 +317,12 @@ const toolDefinitions = [
         search: { type: 'string' },
       },
       required: ['url'],
-    }),
+    },
   },
   {
     name: 'crawl',
     description: 'Traverse links from a starting URL and collect page summaries.',
-    inputSchema: buildInputSchema({
+    inputSchema: {
       type: 'object',
       properties: {
         url: { type: 'string', format: 'uri' },
@@ -198,7 +331,7 @@ const toolDefinitions = [
         sameDomainOnly: { type: 'boolean' },
       },
       required: ['url'],
-    }),
+    },
   },
 ]
 
@@ -207,7 +340,7 @@ const bundledSettings = loadSettings()
 const server = new Server(
   {
     name: 'trib-search',
-    version: '0.0.6',
+    version: '0.1.0',
   },
   {
     capabilities: {
@@ -229,106 +362,43 @@ server.setRequestHandler(CallToolRequestSchema, async request => {
   switch (request.params.name) {
     case 'search': {
       const args = searchArgsSchema.parse(request.params.arguments || {})
-      const available = getAvailableRawProviders()
-      const parallel = Boolean(args.providers?.length && args.providers.length > 1)
-      const providers = args.providers?.length
-        ? args.providers
-        : rankProviders(
-            config.rawProviders.filter(provider => available.includes(provider)),
-            usageState,
-            args.site,
-          )
+      const queries = Array.isArray(args.query) ? args.query : [args.query]
 
-      if (!providers.length) {
-        return jsonText({
-          error: 'No raw search provider is available. Set SERPER_API_KEY or BRAVE_API_KEY.',
-          availableProviders: available,
+      if (queries.length === 1) {
+        const result = await runSingleSearch(queries[0], config, usageState, {
+          site: args.site,
+          type: args.type,
+          maxResults: args.maxResults,
         })
+        saveUsageState(usageState)
+        return jsonText({ tool: 'search', ...result })
       }
 
-      try {
-        const response = await runRawSearch({
-          ...args,
-          providers,
-          maxResults: args.maxResults || config.rawMaxResults,
-          parallel,
-        })
-
-        if (response.mode === 'fallback') {
-          noteProviderSuccess(usageState, response.usedProvider)
-          for (const failure of response.failures || []) {
-            noteProviderFailure(usageState, failure.provider, failure.error, 60000)
-          }
-          if (args.site) {
-            rememberPreferredRawProviders(usageState, args.site, [response.usedProvider, ...providers.filter(item => item !== response.usedProvider)])
-          }
-        } else {
-          for (const row of response.providerResults) {
-            noteProviderSuccess(usageState, row.provider)
-          }
-          for (const failure of response.failures || []) {
-            if (!failure.provider) continue
-            noteProviderFailure(usageState, failure.provider, failure.error, 60000)
-          }
-          if (args.site) {
-            rememberPreferredRawProviders(usageState, args.site, response.providerResults.map(row => row.provider))
-          }
-        }
-
-        return jsonText({
-          tool: 'search',
-          providers,
-          response,
-        })
-      } catch (error) {
-        for (const provider of providers) {
-          noteProviderFailure(usageState, provider, error instanceof Error ? error.message : String(error), 60000)
-        }
-        return jsonText({
-          tool: 'search',
-          error: error instanceof Error ? error.message : String(error),
-          providers,
-        })
-      }
+      // Parallel execution
+      const results = await Promise.all(
+        queries.map(q => runSingleSearch(q, config, usageState, {
+          site: args.site,
+          type: args.type,
+          maxResults: args.maxResults,
+        })),
+      )
+      saveUsageState(usageState)
+      return jsonText({ tool: 'search', parallel: true, results })
     }
 
-    case 'ai_search': {
-      const args = aiSearchArgsSchema.parse(request.params.arguments || {})
-      const available = await getAvailableAiProviders()
-      const provider = args.site === 'x.com'
-        ? 'grok'
-        : (args.provider || config.aiDefaultProvider)
-      const model = args.model || config.aiModels?.[provider] || null
-
-      if (!available.includes(provider)) {
-        return jsonText({
-          error: `Provider ${provider} is not available.`,
-          availableProviders: available,
-        })
-      }
-
+    case 'gh_search': {
+      const args = ghSearchArgsSchema.parse(request.params.arguments || {})
       try {
-        const response = await runAiSearch({
-          query: args.query,
-          provider,
-          site: args.site,
-          model,
-          timeoutMs: args.timeoutMs || config.aiTimeoutMs,
+        const results = await runGhSearch(args.query, {
+          language: args.language,
+          repo: args.repo,
+          maxResults: args.maxResults,
         })
-        noteProviderSuccess(usageState, provider)
-        return jsonText({
-          tool: 'ai_search',
-          site: args.site || null,
-          provider,
-          model,
-          response,
-        })
+        return jsonText({ tool: 'gh_search', query: args.query, results })
       } catch (error) {
-        noteProviderFailure(usageState, provider, error instanceof Error ? error.message : String(error), 60000)
         return jsonText({
-          tool: 'ai_search',
-          provider,
-          model,
+          tool: 'gh_search',
+          query: args.query,
           error: error instanceof Error ? error.message : String(error),
         })
       }
@@ -341,10 +411,7 @@ server.setRequestHandler(CallToolRequestSchema, async request => {
         lastUsedAt: new Date().toISOString(),
         lastSuccessAt: new Date().toISOString(),
       })
-      return jsonText({
-        tool: 'scrape',
-        pages,
-      })
+      return jsonText({ tool: 'scrape', pages })
     }
 
     case 'map': {
@@ -358,10 +425,7 @@ server.setRequestHandler(CallToolRequestSchema, async request => {
         },
         timeoutMs,
       )
-      return jsonText({
-        tool: 'map',
-        links,
-      })
+      return jsonText({ tool: 'map', links })
     }
 
     case 'crawl': {
@@ -377,10 +441,7 @@ server.setRequestHandler(CallToolRequestSchema, async request => {
         usageState,
       )
       saveUsageState(usageState)
-      return jsonText({
-        tool: 'crawl',
-        pages,
-      })
+      return jsonText({ tool: 'crawl', pages })
     }
 
     default:
