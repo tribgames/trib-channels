@@ -2693,7 +2693,11 @@ export class MemoryStore {
         const sparse = item.sparse_score ?? 0
         const dense = item.dense_score ?? 0
         const ageSeconds = item.updated_at ? Math.max(0, now / 1000 - Number(item.updated_at)) : 0
-        const recencyPenalty = Math.min(0.35, ageSeconds / (60 * 60 * 24 * 30) * 0.05)
+        // Ebbinghaus-inspired decay: rapid initial forgetting, then plateau
+        // R = e^(-t/S) where S scales with retrieval_count (spaced repetition)
+        const ageDays = ageSeconds / 86400
+        const stabilityFactor = 1 + Math.min(5, Number(item.retrieval_count ?? 0)) * 0.8
+        const recencyPenalty = Math.min(0.4, (1 - Math.exp(-ageDays / (stabilityFactor * 15))) * 0.4)
         const contentTokens = tokenizeMemoryText(`${item.subtype ?? ''} ${item.content}`)
         const overlapCount = contentTokens.reduce((count, token) => count + (queryTokens.has(token) ? 1 : 0), 0)
         const retrievalBoost = -Math.min(0.08, Number(item.retrieval_count ?? 0) * 0.01)
@@ -3183,8 +3187,30 @@ export class MemoryStore {
       }
     }
 
+    // Multi-turn context: add recent conversation topics
+    if (lines.length > 0) {
+      try {
+        const recentTopics = this.db.prepare(`
+          SELECT content FROM episodes
+          WHERE role = 'user'
+            AND kind NOT IN ('schedule-inject', 'event-inject')
+            AND content NOT LIKE 'You are consolidating%'
+            AND content NOT LIKE 'You are improving%'
+            AND LENGTH(content) BETWEEN 10 AND 200
+            AND ts >= datetime('now', '-1 day')
+          ORDER BY ts DESC
+          LIMIT 3
+        `).all()
+        if (recentTopics.length > 0) {
+          lines.push('Recent topics: ' + recentTopics.map(r => cleanMemoryText(r.content).slice(0, 40)).join(' / '))
+        }
+      } catch {}
+    }
+
     if (lines.length === 0) return ''
-    return `<memory-context>\n${lines.join('\n')}\n</memory-context>`
+    const ctx = `<memory-context>\n${lines.join('\n')}\n</memory-context>`
+    process.stderr.write(`[memory] recall q="${clean.slice(0, 40)}" intent=${intent.primary} items=${lines.filter(l => l.startsWith('- ')).length}\n`)
+    return ctx
   }
 }
 
