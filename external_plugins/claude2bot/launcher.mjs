@@ -5,6 +5,8 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync,
 import { homedir } from 'os'
 import { dirname, join, resolve } from 'path'
 import readline from 'readline'
+import { cleanMemoryText, getMemoryStore } from './lib/memory.mjs'
+import { embedText } from './lib/embedding-provider.mjs'
 
 const MARKETPLACE_NAME = 'claude2bot'
 const PLUGIN_SPEC = 'claude2bot@claude2bot'
@@ -18,6 +20,10 @@ const WEZTERM_RUNTIME_DIR = join(homedir(), '.local', 'share', 'wezterm')
 const WEZTERM_SOCKET_PATH = join(WEZTERM_RUNTIME_DIR, 'sock')
 const PLUGIN_DATA_DIR = join(homedir(), '.claude', 'plugins', 'data', 'claude2bot-claude2bot')
 const HISTORY_DIR = join(PLUGIN_DATA_DIR, 'history')
+const VOICE_MODEL_DIR = join(PLUGIN_DATA_DIR, 'voice', 'models')
+const DEFAULT_WHISPER_MODEL_NAME = 'ggml-base.bin'
+const DEFAULT_WHISPER_MODEL_PATH = join(VOICE_MODEL_DIR, DEFAULT_WHISPER_MODEL_NAME)
+const DEFAULT_WHISPER_MODEL_URL = `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/${DEFAULT_WHISPER_MODEL_NAME}`
 const WEZTERM_WORKSPACE = 'default'
 const WEZTERM_PROCESS_NAME = 'wezterm-gui'
 const STARTUP_CONFIRM_SEQUENCE =
@@ -35,6 +41,25 @@ const LAUNCHER_ENTRY_PATH =
     : ''
 const USER_ARGS = LAUNCHER_ENTRY_PATH ? process.argv.slice(2) : process.argv.slice(1)
 const DEFAULT_DISPLAY_MODE = 'view'
+const MAX_MEMORY_CONSOLIDATE_DAYS = 2
+const MAX_MEMORY_CANDIDATES_PER_DAY = 40
+const MAX_MEMORY_CONSOLIDATE_BATCHES_PER_DAY = 4
+const MAX_MEMORY_CONTEXTUALIZE_ITEMS = 24
+const MEMORY_FLUSH_DEFAULT_MAX_DAYS = 1
+const MEMORY_FLUSH_DEFAULT_MAX_CANDIDATES = 20
+const MEMORY_FLUSH_DEFAULT_MAX_BATCHES = 1
+const MEMORY_FLUSH_DEFAULT_MIN_PENDING = 8
+const MEMORY_CLAUDE_MODEL = 'sonnet'
+const MEMORY_CLAUDE_EFFORT = 'medium'
+const MEMORY_RUNNER_PATH = join(resourceDir(), 'scripts', 'claude-safe-runner.mjs')
+
+let launcherMemoryStore = null
+function getLauncherMemoryStore() {
+  if (!launcherMemoryStore) {
+    launcherMemoryStore = getMemoryStore(PLUGIN_DATA_DIR)
+  }
+  return launcherMemoryStore
+}
 
 function selfArgs(args) {
   return LAUNCHER_ENTRY_PATH ? [LAUNCHER_ENTRY_PATH, ...args] : args
@@ -75,6 +100,12 @@ function printHelp() {
     '  doctor                 Show environment and installation status',
     '  workspace [path]       Show or set the default workspace path',
     '  display [hide|view]    Show or set the launcher display mode',
+    '  install-ngrok          Install ngrok for webhook exposure',
+    '  install-voice          Install voice dependencies (ffmpeg + whisper)',
+    '  memory-flush          Consolidate recent pending memory candidates',
+    '  memory-rebuild        Rebuild facts/tasks/signals from all stored candidates',
+    '  memory-rebuild-recent Rebuild recent facts/tasks/signals using current semantic rules',
+    '  memory-prune-recent   Keep only recent consolidated memory (facts/tasks/signals/profile)',
     '  sleep-cycle            Run sleeping mode: summarize, restart session',
     '  summarize              Summarize conversations without restart',
     '  config <key> [value]   Get/set config (autotalk, quiet, sleeping, sleeping-time)',
@@ -231,6 +262,59 @@ function getOption(name, fallback) {
   const idx = USER_ARGS.indexOf(name)
   if (idx >= 0 && USER_ARGS[idx + 1]) return USER_ARGS[idx + 1]
   return fallback
+}
+
+function getIntegerOption(name, fallback) {
+  const raw = getOption(name, '')
+  if (!raw) return fallback
+  const parsed = Number.parseInt(raw, 10)
+  return Number.isFinite(parsed) ? parsed : fallback
+}
+
+function claudePromptEnv() {
+  return {
+    ...process.env,
+    CLAUDE2BOT_NO_CONNECT: '1',
+  }
+}
+
+function claudeMemoryPromptArgs(prompt = null) {
+  const args = [
+    MEMORY_RUNNER_PATH,
+    '--model', MEMORY_CLAUDE_MODEL,
+    '--effort', MEMORY_CLAUDE_EFFORT,
+    '--no-connect',
+  ]
+  if (prompt != null) args.push(prompt)
+  return args
+}
+
+function execClaudeMemoryPrompt(prompt, options = {}) {
+  return execFileSync(process.execPath, [
+    ...claudeMemoryPromptArgs(),
+    '--cwd', options.cwd ?? process.cwd(),
+    '--timeout-ms', String(Number(options.timeout ?? 120000)),
+    '--prompt',
+    prompt,
+  ], {
+    encoding: 'utf8',
+    timeout: Number(options.timeout ?? 120000) + 2000,
+    env: process.env,
+  }).trim()
+}
+
+function spawnClaudeMemoryPrompt(input, options = {}) {
+  return spawnSync(process.execPath, [
+    ...claudeMemoryPromptArgs(),
+    '--cwd', options.cwd ?? process.cwd(),
+    '--timeout-ms', String(Number(options.timeout ?? 600000)),
+  ], {
+    cwd: options.cwd,
+    input,
+    stdio: ['pipe', 'inherit', 'inherit'],
+    env: process.env,
+    timeout: Number(options.timeout ?? 600000) + 2000,
+  })
 }
 
 function commandSearchPaths() {
@@ -426,6 +510,77 @@ function ensureWezTermInstalled() {
   }
 
   throw new Error('WezTerm is required but could not be installed automatically.')
+}
+
+function ensureNgrokInstalled() {
+  if (hasCommand('ngrok')) return
+
+  if (process.platform === 'darwin' && hasCommand('brew')) {
+    run('brew', ['install', '--cask', 'ngrok'], true)
+    if (hasCommand('ngrok')) return
+  }
+
+  if (process.platform === 'win32' && hasCommand('winget')) {
+    run('winget', ['install', '-e', '--id', 'Ngrok.Ngrok', '--accept-package-agreements', '--accept-source-agreements'], true)
+    if (hasCommand('ngrok')) return
+  }
+
+  throw new Error('ngrok is required but could not be installed automatically.')
+}
+
+function ensureWhisperModelInstalled() {
+  if (existsSync(DEFAULT_WHISPER_MODEL_PATH)) return
+
+  mkdirSync(VOICE_MODEL_DIR, { recursive: true })
+
+  if (process.platform === 'win32') {
+    const pwsh = resolveCommand('powershell.exe') || 'powershell.exe'
+    execFileSync(pwsh, ['-NoProfile', '-Command', `
+      $ProgressPreference = 'SilentlyContinue'
+      Invoke-WebRequest -Uri '${DEFAULT_WHISPER_MODEL_URL}' -OutFile '${DEFAULT_WHISPER_MODEL_PATH.replace(/\\/g, '\\\\')}'
+    `], { stdio: 'inherit' })
+  } else {
+    run('curl', ['-L', '-o', DEFAULT_WHISPER_MODEL_PATH, DEFAULT_WHISPER_MODEL_URL], true)
+  }
+
+  if (!existsSync(DEFAULT_WHISPER_MODEL_PATH)) {
+    throw new Error(`Failed to download whisper model: ${DEFAULT_WHISPER_MODEL_PATH}`)
+  }
+}
+
+function installVoiceDependencies() {
+  if (process.platform === 'darwin') {
+    if (!hasCommand('brew')) {
+      throw new Error('Homebrew is required to install voice dependencies on macOS.')
+    }
+    if (!hasCommand('ffmpeg')) {
+      run('brew', ['install', 'ffmpeg'], true)
+    }
+    if (!hasCommand('whisper-cpp') && !hasCommand('whisper')) {
+      run('brew', ['install', 'whisper-cpp'], true)
+    }
+    ensureWhisperModelInstalled()
+    return
+  }
+
+  if (process.platform === 'win32') {
+    if (hasCommand('winget')) {
+      if (!hasCommand('ffmpeg')) {
+        run('winget', ['install', '-e', '--id', 'Gyan.FFmpeg', '--accept-package-agreements', '--accept-source-agreements'], true)
+      }
+      if (!hasCommand('whisper-cpp') && !hasCommand('whisper')) {
+        const pwsh = resolveCommand('powershell.exe') || 'powershell.exe'
+        execFileSync(pwsh, ['-NoProfile', '-Command', 'Start-Process "https://github.com/ggml-org/whisper.cpp/releases"'], {
+          stdio: 'inherit',
+        })
+      }
+      ensureWhisperModelInstalled()
+      return
+    }
+    throw new Error('winget is required to install voice dependencies on Windows.')
+  }
+
+  throw new Error('Automatic voice dependency install is not supported on this platform.')
 }
 
 function ensureWezTermMuxRunning(wezterm) {
@@ -702,8 +857,22 @@ if let app = NSWorkspace.shared.runningApplications.first(where: {
 }
 
 function hideWezTermApp() {
-  // Force kill WezTerm GUI — mux keeps Claude session alive
-  // SIGKILL avoids WezTerm's "Detach and Close?" confirmation dialog
+  if (process.platform === 'darwin') {
+    try {
+      execFileSync(resolveCommand('swift') || 'swift', ['-e', `
+import AppKit
+if let app = NSWorkspace.shared.runningApplications.first(where: {
+  let name = ($0.localizedName ?? "").lowercased()
+  let path = ($0.executableURL?.path ?? "").lowercased()
+  return name.contains("wezterm") || path.hasSuffix("/${WEZTERM_PROCESS_NAME}")
+}) {
+  app.hide()
+}
+`], { stdio: 'ignore' })
+      return
+    } catch { /* fall through to hard kill on failure */ }
+  }
+
   try {
     execFileSync('pkill', ['-9', '-x', WEZTERM_PROCESS_NAME], { stdio: 'ignore' })
   } catch { /* no GUI running */ }
@@ -783,6 +952,26 @@ function spawnWezTermWarningWatcher(paneId, windowId, workspacePath) {
   writeLauncherState({ watcherPid: child.pid })
 }
 
+function markWezTermReady(paneId, windowId, workspacePath) {
+  const latestSession = workspacePath ? latestSessionForWorkspace(workspacePath) : null
+  const displayMode = getConfiguredDisplayMode()
+  writeLauncherState(wezTermStatePatch({ paneId, windowId, workspace: WEZTERM_WORKSPACE }, {
+    runtimeMode: 'launcher',
+    phase: 'ready',
+    workspacePath,
+    terminalApp: 'WezTerm',
+    displayMode,
+    connected: true,
+    sessionId: latestSession?.sessionId,
+    claudePid: latestSession?.pid,
+  }))
+  if (displayMode === 'view') {
+    try { showWezTermWindow(paneId) } catch { /* best-effort: final show */ }
+  } else {
+    try { hideWezTermApp() } catch { /* best-effort: final hide */ }
+  }
+}
+
 function waitForWezTermPane(workspacePath, paneId) {
   for (let attempt = 0; attempt < 80; attempt += 1) {
     const pane = Number.isFinite(paneId)
@@ -855,6 +1044,12 @@ function launchClaude(workspacePath, displayMode) {
 
     writeLauncherState({ phase: 'warning_confirm' })
     if (pane?.paneId != null) {
+      const initialSignals = getLaunchSignals(getWezTermPaneText(pane.paneId))
+      if (initialSignals.channelReady) {
+        markWezTermReady(pane.paneId, pane.windowId ?? 0, launchCwd)
+        ensureTrayAppRunningMac()
+        return
+      }
       spawnWezTermWarningWatcher(pane.paneId, pane.windowId ?? 0, launchCwd)
     }
     ensureTrayAppRunningMac()
@@ -945,66 +1140,12 @@ function groupTranscriptsByDate(workspacePath, sinceTimestamp) {
 
 
 function buildContextFile() {
-  const dirs = { daily: join(HISTORY_DIR, 'daily') }
-  const lifetime = join(HISTORY_DIR, 'lifetime.md')
-  const identity = join(HISTORY_DIR, 'identity.md')
-  const interests = join(HISTORY_DIR, 'interests.json')
-  const ongoing = join(HISTORY_DIR, 'ongoing.md')
-  const contextPath = join(HISTORY_DIR, 'context.md')
-
-  const parts = []
-
-  // Identity (fallback: lifetime)
-  const identityContent = existsSync(identity) ? readFileSync(identity, 'utf8').trim() : ''
-  if (identityContent) parts.push(`## Identity\n${identityContent}`)
-
-  // Lifetime (fallback chain: lifetime → yearly → monthly → weekly → daily)
-  let historyContent = ''
-  if (existsSync(lifetime)) {
-    historyContent = readFileSync(lifetime, 'utf8').trim()
-  } else {
-    for (const level of ['yearly', 'monthly', 'weekly', 'daily']) {
-      const dir = join(HISTORY_DIR, level)
-      if (!existsSync(dir)) continue
-      const files = readdirSync(dir).filter(f => f.endsWith('.md')).sort().reverse()
-      if (files.length > 0) {
-        historyContent = files.slice(0, 3).map(f => readFileSync(join(dir, f), 'utf8').trim()).join('\n\n')
-        break
-      }
-    }
-  }
-  if (historyContent) parts.push(`## History\n${historyContent}`)
-
-  // Interests (top 10)
-  if (existsSync(interests)) {
-    try {
-      const data = JSON.parse(readFileSync(interests, 'utf8'))
-      const sorted = Object.entries(data).sort((a, b) => b[1].count - a[1].count).slice(0, 10)
-      if (sorted.length > 0) {
-        parts.push(`## Interests\n${sorted.map(([k, v]) => `${k}(${v.count})`).join(', ')}`)
-      }
-    } catch { /* skip */ }
-  }
-
-  // Ongoing
-  const ongoingContent = existsSync(ongoing) ? readFileSync(ongoing, 'utf8').trim() : ''
-  if (ongoingContent) parts.push(`## Ongoing\n${ongoingContent}`)
-
-  // Recent 7 days daily
-  if (existsSync(dirs.daily)) {
-    const dailyFiles = readdirSync(dirs.daily).filter(f => f.endsWith('.md')).sort().reverse().slice(0, 7)
-    if (dailyFiles.length > 0) {
-      const dailyContent = dailyFiles.map(f => readFileSync(join(dirs.daily, f), 'utf8').trim()).join('\n\n')
-      parts.push(`## Recent Activity\n${dailyContent}`)
-    }
-  }
-
-  mkdirSync(HISTORY_DIR, { recursive: true })
-  writeFileSync(contextPath, `<!-- Auto-generated by sleep-cycle -->\n\n${parts.join('\n\n')}\n`)
-  return contextPath
+  const memoryStore = getLauncherMemoryStore()
+  memoryStore.syncHistoryFromFiles()
+  return memoryStore.writeContextFile()
 }
 
-function sleepCycle(workspacePath) {
+async function sleepCycle(workspacePath) {
   const ws = workspacePath || getConfiguredWorkspace()
   const now = Date.now()
   const today = new Date().toISOString().slice(0, 10)
@@ -1020,6 +1161,7 @@ function sleepCycle(workspacePath) {
   const lastSleepAt = isFirstRun ? 0 : (config.lastSleepAt ?? (now - 24 * 60 * 60 * 1000))
 
   process.stderr.write(`[sleep-cycle] Starting.${isFirstRun ? ' (FIRST RUN — scanning all history)' : ''} Last sleep: ${lastSleepAt ? new Date(lastSleepAt).toISOString() : 'never'}\n`)
+  getLauncherMemoryStore().backfillProject(ws, { limit: 120 })
 
   mkdirSync(join(HISTORY_DIR, 'daily'), { recursive: true })
   mkdirSync(join(HISTORY_DIR, 'weekly'), { recursive: true })
@@ -1045,6 +1187,7 @@ function sleepCycle(workspacePath) {
     const dailyFile = join(dailyDir, `${date}.md`)
     if (existsSync(dailyFile)) continue  // already exists, skip
 
+    getLauncherMemoryStore().ingestTranscriptFiles(dateGroups[date])
     const pingpong = extractPingPong(dateGroups[date])
     if (!pingpong) continue
 
@@ -1056,6 +1199,12 @@ function sleepCycle(workspacePath) {
   if (generated === 0 && dates.length === 0) {
     process.stderr.write('[sleep-cycle] No transcripts since last sleep.\n')
   }
+
+  await consolidateRecentCandidates(dates, ws, {
+    maxDays: MAX_MEMORY_CONSOLIDATE_DAYS,
+    maxCandidatesPerBatch: MAX_MEMORY_CANDIDATES_PER_DAY,
+    maxBatches: MAX_MEMORY_CONSOLIDATE_BATCHES_PER_DAY,
+  })
 
   // 3. Rollups: weekly/monthly/yearly (파일 없으면 생성, 최대 제한)
   // Weekly: 최대 4개 (1달치)
@@ -1095,7 +1244,9 @@ function sleepCycle(workspacePath) {
   // 4. Lifetime merge
   generateLifetimeMerge()
 
-  // 5. Build context.md
+  // 5. Sync file-based memory artifacts into SQLite and rebuild context.md
+  getLauncherMemoryStore().syncHistoryFromFiles()
+  void refreshSleepEmbeddings(ws)
   buildContextFile()
 
   // 6. Save lastSleepAt
@@ -1118,12 +1269,9 @@ function runSleepPrompt(pingpong, { date, ws }) {
     .replace('{{HISTORY_DIR}}', HISTORY_DIR)
   const fullInput = prompt + '\n\n---\n\n' + pingpong
   try {
-    const { status } = spawnSync('claude', ['-p'], {
-      cwd: ws, input: fullInput,
-      stdio: ['pipe', 'inherit', 'inherit'],
-      env: process.env, timeout: 600000,
-    })
+    const { status } = spawnClaudeMemoryPrompt(fullInput, { cwd: ws, timeout: 600000 })
     if (status !== 0) throw new Error(`exit code ${status}`)
+    normalizeSleepArtifactsToEnglish(date, ws)
   } catch (e) {
     process.stderr.write(`[sleep-cycle] claude -p failed for ${date}: ${e.message}\n`)
   }
@@ -1132,14 +1280,539 @@ function runSleepPrompt(pingpong, { date, ws }) {
 function runRollup(level, key, content) {
   const outFile = join(HISTORY_DIR, level, `${key}.md`)
   try {
-    const summary = execFileSync('claude', ['-p',
-      `Compress these summaries into a concise ${level} summary. Write in English except proper nouns. Output only the summary:\n\n${content}`
-    ], { encoding: 'utf8', timeout: 120000 }).trim()
-    writeFileSync(outFile, `# ${key}\n\n${summary}\n`)
+    const summary = execClaudeMemoryPrompt(
+      `Compress these summaries into a concise ${level} summary. Write in English except proper nouns. Avoid Hangul unless it is part of an exact proper noun or identifier. Output only the summary:\n\n${content}`,
+      { timeout: 120000 },
+    )
+    const normalizedSummary = normalizeTextToEnglish(summary, process.cwd(), {
+      label: `${level} summary`,
+      timeout: 120000,
+    })
+    writeFileSync(outFile, `# ${key}\n\n${normalizedSummary}\n`)
     process.stderr.write(`[sleep-cycle] ${level} ${key} generated.\n`)
   } catch (e) {
     process.stderr.write(`[sleep-cycle] ${level} rollup failed: ${e.message}\n`)
   }
+}
+
+function extractJsonObject(text) {
+  const trimmed = String(text ?? '').trim()
+  if (!trimmed) return null
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i)
+  const candidate = fenced ? fenced[1].trim() : trimmed
+  const start = candidate.indexOf('{')
+  const end = candidate.lastIndexOf('}')
+  if (start < 0 || end <= start) return null
+  try {
+    return JSON.parse(candidate.slice(start, end + 1))
+  } catch {
+    return null
+  }
+}
+
+function containsHangul(text) {
+  return /[\u1100-\u11FF\u3130-\u318F\uAC00-\uD7AF]/.test(String(text ?? ''))
+}
+
+function jsonPayloadContainsHangul(value) {
+  if (typeof value === 'string') return containsHangul(value)
+  if (Array.isArray(value)) return value.some(item => jsonPayloadContainsHangul(item))
+  if (value && typeof value === 'object') {
+    return Object.values(value).some(item => jsonPayloadContainsHangul(item))
+  }
+  return false
+}
+
+function normalizeTextToEnglish(text, ws, options = {}) {
+  const raw = String(text ?? '').trim()
+  if (!raw || !containsHangul(raw)) return raw
+  const label = String(options.label ?? 'memory artifact').trim() || 'memory artifact'
+  const format = options.format === 'json' ? 'JSON' : 'Markdown'
+  const prompt = [
+    `Rewrite this ${label} into concise English.`,
+    'Rules:',
+    `- Return ${format} only.`,
+    '- Translate natural-language content to English.',
+    '- Preserve proper nouns, product names, file paths, URLs, emails, IDs, numbers, code symbols, and identifiers as-is.',
+    '- Do not add explanations, wrappers, or commentary.',
+    '- Avoid Hangul unless it is part of an exact identifier or proper noun that must stay unchanged.',
+    '',
+    raw,
+  ].join('\n')
+  return execClaudeMemoryPrompt(prompt, {
+    cwd: ws,
+    timeout: Number(options.timeout ?? 120000),
+  }).trim()
+}
+
+function normalizeJsonPayloadToEnglish(payload, ws, options = {}) {
+  if (!payload || typeof payload !== 'object' || !jsonPayloadContainsHangul(payload)) return payload
+  const label = String(options.label ?? 'memory payload').trim() || 'memory payload'
+  const serialized = JSON.stringify(payload, null, 2)
+  const prompt = [
+    `Rewrite every natural-language string value in this ${label} JSON object into concise English.`,
+    'Rules:',
+    '- Return JSON only.',
+    '- Preserve the exact JSON shape, keys, arrays, nulls, booleans, and numbers.',
+    '- Preserve proper nouns, product names, file paths, URLs, emails, IDs, numbers, code symbols, and identifiers as-is.',
+    '- If a string is already concise English, keep it unchanged.',
+    '- Avoid Hangul unless it is part of an exact identifier or proper noun that must stay unchanged.',
+    '',
+    serialized,
+  ].join('\n')
+
+  try {
+    const rewritten = extractJsonObject(execClaudeMemoryPrompt(prompt, {
+      cwd: ws,
+      timeout: Number(options.timeout ?? 120000),
+    }))
+    return rewritten && typeof rewritten === 'object' ? rewritten : payload
+  } catch {
+    return payload
+  }
+}
+
+function normalizeSleepArtifactsToEnglish(date, ws) {
+  const targets = [
+    { path: join(HISTORY_DIR, 'daily', `${date}.md`), format: 'markdown', label: `daily summary for ${date}` },
+    { path: join(HISTORY_DIR, 'lifetime.md'), format: 'markdown', label: 'lifetime summary' },
+    { path: join(HISTORY_DIR, 'identity.md'), format: 'markdown', label: 'identity profile' },
+    { path: join(HISTORY_DIR, 'ongoing.md'), format: 'markdown', label: 'ongoing tasks' },
+    { path: join(HISTORY_DIR, 'interests.json'), format: 'json', label: 'interest keywords' },
+  ]
+
+  for (const target of targets) {
+    if (!existsSync(target.path)) continue
+    try {
+      const content = readFileSync(target.path, 'utf8').trim()
+      if (!content || !containsHangul(content)) continue
+      const normalized =
+        target.format === 'json'
+          ? JSON.stringify(
+              normalizeJsonPayloadToEnglish(JSON.parse(content), ws, {
+                label: target.label,
+                timeout: 180000,
+              }),
+              null,
+              2,
+            )
+          : normalizeTextToEnglish(content, ws, {
+              label: target.label,
+              timeout: 180000,
+            })
+      if (normalized && normalized.trim()) {
+        writeFileSync(target.path, normalized.trim() + '\n')
+      }
+    } catch (e) {
+      process.stderr.write(`[sleep-cycle] english normalize failed for ${target.path}: ${e.message}\n`)
+    }
+  }
+}
+
+function normalizeCandidateFingerprint(text) {
+  return cleanMemoryText(text).toLowerCase().replace(/\s+/g, ' ').trim()
+}
+
+function cosineSimilarity(a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length === 0 || a.length !== b.length) return 0
+  let dot = 0
+  let na = 0
+  let nb = 0
+  for (let i = 0; i < a.length; i += 1) {
+    dot += a[i] * b[i]
+    na += a[i] * a[i]
+    nb += b[i] * b[i]
+  }
+  if (!na || !nb) return 0
+  return dot / (Math.sqrt(na) * Math.sqrt(nb))
+}
+
+function percentile(values, p) {
+  if (!values.length) return 0
+  const sorted = [...values].sort((a, b) => a - b)
+  const index = Math.max(0, Math.min(sorted.length - 1, Math.floor((p / 100) * (sorted.length - 1))))
+  return sorted[index]
+}
+
+async function buildSemanticDayPlan(dayEpisodes, options = {}) {
+  const maxEmbedChars = Math.max(120, Number(options.maxEmbedChars ?? 320))
+  const minSimilarityFloor = Number(options.minSimilarityFloor ?? 0.42)
+  const semanticPercentile = Number(options.semanticPercentile ?? 35)
+  const rows = dayEpisodes
+    .map((episode, index) => ({
+      index,
+      id: episode.id,
+      role: episode.role,
+      content: cleanMemoryText(episode.content ?? ''),
+    }))
+    .filter(row => row.content)
+
+  if (rows.length <= 1) {
+    return { rows, segments: rows.length ? [{ start: 0, end: rows.length - 1 }] : [], threshold: 1 }
+  }
+
+  const vectors = await Promise.all(
+    rows.map(row => embedText(String(row.content).slice(0, maxEmbedChars))),
+  )
+  const similarities = []
+  for (let i = 0; i < vectors.length - 1; i += 1) {
+    similarities.push(cosineSimilarity(vectors[i], vectors[i + 1]))
+  }
+  const threshold = Math.max(minSimilarityFloor, percentile(similarities, semanticPercentile))
+
+  const segments = []
+  let start = 0
+  for (let i = 0; i < similarities.length; i += 1) {
+    if (similarities[i] < threshold) {
+      segments.push({ start, end: i })
+      start = i + 1
+    }
+  }
+  segments.push({ start, end: rows.length - 1 })
+
+  return { rows, segments, threshold }
+}
+
+function buildCandidateSpan(dayEpisodes, episodeId, semanticPlan, options = {}) {
+  const overlapTurns = Math.max(0, Number(options.overlapTurns ?? 1))
+  const maxTurns = Math.max(1, Number(options.maxTurns ?? 6))
+  const targetIndex = dayEpisodes.findIndex(item => Number(item.id) === Number(episodeId))
+  if (targetIndex < 0) return ''
+
+  let start = Math.max(0, targetIndex - 1)
+  let end = Math.min(dayEpisodes.length - 1, targetIndex + 2)
+
+  if (semanticPlan?.rows?.length) {
+    const semanticIndex = semanticPlan.rows.findIndex(item => Number(item.id) === Number(episodeId))
+    if (semanticIndex >= 0) {
+      const segment = semanticPlan.segments.find(item => semanticIndex >= item.start && semanticIndex <= item.end)
+      if (segment) {
+        const startRow = semanticPlan.rows[Math.max(0, segment.start - overlapTurns)]
+        const endRow = semanticPlan.rows[Math.min(semanticPlan.rows.length - 1, segment.end + overlapTurns)]
+        if (startRow && endRow) {
+          const startIndex = dayEpisodes.findIndex(item => Number(item.id) === Number(startRow.id))
+          const endIndex = dayEpisodes.findIndex(item => Number(item.id) === Number(endRow.id))
+          if (startIndex >= 0) start = startIndex
+          if (endIndex >= 0) end = endIndex
+        }
+      }
+    }
+  }
+
+  const rows = []
+  for (let i = start; i <= end; i += 1) {
+    const row = dayEpisodes[i]
+    const cleaned = cleanMemoryText(row?.content ?? '')
+    if (!cleaned) continue
+    rows.push({
+      marker: i === targetIndex ? '*' : '-',
+      role: row.role === 'user' ? 'user' : 'assistant',
+      content: cleaned,
+    })
+  }
+
+  if (rows.length === 0) return ''
+  return rows
+    .slice(0, maxTurns)
+    .map(row => `${row.marker} ${row.role}: ${row.content}`)
+    .join('\n')
+}
+
+async function prepareConsolidationCandidates(candidates, maxCandidatesPerBatch, dayEpisodes = []) {
+  const seen = new Set()
+  const prepared = []
+  const semanticPlan = await buildSemanticDayPlan(dayEpisodes, {
+    maxEmbedChars: 320,
+    semanticPercentile: 35,
+    minSimilarityFloor: 0.42,
+  })
+  for (const item of candidates) {
+    const cleaned = cleanMemoryText(item?.content ?? '')
+    if (!cleaned) continue
+    const fingerprint = normalizeCandidateFingerprint(cleaned)
+    if (!fingerprint || seen.has(fingerprint)) continue
+    seen.add(fingerprint)
+    const spanContent = buildCandidateSpan(dayEpisodes, item?.episode_id, semanticPlan, { overlapTurns: 1, maxTurns: 6 })
+    prepared.push({
+      ...item,
+      content: cleaned,
+      span_content: spanContent || cleaned,
+    })
+    if (prepared.length >= maxCandidatesPerBatch) break
+  }
+  return prepared
+}
+
+function contextualizeMemoryItems(ws, options = {}) {
+  const store = getLauncherMemoryStore()
+  const perTypeLimit = Math.max(8, Math.floor(Number(options.maxItems ?? MAX_MEMORY_CONTEXTUALIZE_ITEMS) / 2))
+  const items = store.getEmbeddableItems({ perTypeLimit }).slice(0, Number(options.maxItems ?? MAX_MEMORY_CONTEXTUALIZE_ITEMS))
+  if (items.length === 0) return new Map()
+
+  const promptPath = join(resourceDir(), 'defaults', 'memory-contextualize-prompt.md')
+  const template = existsSync(promptPath)
+    ? readFileSync(promptPath, 'utf8')
+    : 'Output JSON only with contextual retrieval notes.'
+
+  const itemsText = items
+    .map((item, index) => [
+      `#${index + 1}`,
+      `key=${item.key}`,
+      `type=${item.entityType}`,
+      item.subtype ? `subtype=${item.subtype}` : '',
+      item.ref ? `ref=${item.ref}` : '',
+      item.slot ? `slot=${item.slot}` : '',
+      item.status ? `status=${item.status}` : '',
+      item.priority ? `priority=${item.priority}` : '',
+      `content=${item.content}`,
+    ].filter(Boolean).join('\n'))
+    .join('\n\n')
+
+  const prompt = template.replace('{{ITEMS}}', itemsText)
+  try {
+    const raw = execClaudeMemoryPrompt(prompt, {
+      cwd: ws,
+      timeout: 180000,
+    })
+    const parsed = normalizeJsonPayloadToEnglish(extractJsonObject(raw), ws, {
+      label: 'memory contextualization payload',
+      timeout: 120000,
+    })
+    const contextMap = new Map()
+    for (const row of parsed?.items ?? []) {
+      const key = String(row?.key ?? '').trim()
+      const context = String(row?.context ?? '').trim()
+      if (!key || !context) continue
+      contextMap.set(key, context)
+    }
+    process.stderr.write(`[memory] contextualized items=${contextMap.size}\n`)
+    return contextMap
+  } catch (e) {
+    process.stderr.write(`[memory] contextualize failed: ${e.message}\n`)
+    return new Map()
+  }
+}
+
+async function refreshSleepEmbeddings(ws) {
+  const store = getLauncherMemoryStore()
+  const contextMap = contextualizeMemoryItems(ws, { maxItems: MAX_MEMORY_CONTEXTUALIZE_ITEMS })
+  const updated = await store.ensureEmbeddings({
+    perTypeLimit: Math.max(16, Math.floor(MAX_MEMORY_CONTEXTUALIZE_ITEMS / 2)),
+    contextMap,
+  })
+  process.stderr.write(`[memory] embeddings refreshed: ${updated}\n`)
+}
+
+async function rebuildAllMemory(workspacePath) {
+  const ws = workspacePath || getConfiguredWorkspace()
+  if (!ws || !workspaceExists(ws)) {
+    throw new Error(`Workspace does not exist: ${ws || '(not configured)'}`)
+  }
+
+  const store = getLauncherMemoryStore()
+  store.backfillProject(ws, { limit: 400 })
+  store.syncHistoryFromFiles()
+  store.resetConsolidatedMemory()
+
+  const dayKeys = store.getPendingCandidateDays(10000, 1)
+    .map(item => item.day_key)
+    .sort()
+
+  if (dayKeys.length === 0) {
+    await refreshSleepEmbeddings(ws)
+    buildContextFile()
+    process.stdout.write('[memory-rebuild] no candidate days found.\n')
+    return
+  }
+
+  for (const dayKey of dayKeys) {
+    await consolidateCandidateDay(dayKey, ws, {
+      maxCandidatesPerBatch: MAX_MEMORY_CANDIDATES_PER_DAY,
+      maxBatches: 999,
+    })
+  }
+
+  store.syncHistoryFromFiles()
+  await refreshSleepEmbeddings(ws)
+  buildContextFile()
+  process.stdout.write(`[memory-rebuild] rebuilt ${dayKeys.length} day(s).\n`)
+}
+
+async function rebuildRecentMemory(workspacePath, options = {}) {
+  const ws = workspacePath || getConfiguredWorkspace()
+  if (!ws || !workspaceExists(ws)) {
+    throw new Error(`Workspace does not exist: ${ws || '(not configured)'}`)
+  }
+
+  const store = getLauncherMemoryStore()
+  store.backfillProject(ws, { limit: 240 })
+  store.syncHistoryFromFiles()
+
+  const maxDays = Math.max(1, Number(options.maxDays ?? 2))
+  const maxCandidatesPerBatch = Math.max(1, Number(options.maxCandidatesPerBatch ?? MAX_MEMORY_CANDIDATES_PER_DAY))
+  const maxBatches = Math.max(1, Number(options.maxBatches ?? MAX_MEMORY_CONSOLIDATE_BATCHES_PER_DAY))
+
+  const dayKeys = store.getRecentCandidateDays(maxDays)
+    .map(item => item.day_key)
+    .sort()
+
+  if (dayKeys.length === 0) {
+    process.stdout.write('[memory-rebuild-recent] no candidate days found.\n')
+    return
+  }
+
+  store.resetConsolidatedMemoryForDays(dayKeys)
+
+  for (const dayKey of dayKeys) {
+    await consolidateCandidateDay(dayKey, ws, {
+      maxCandidatesPerBatch,
+      maxBatches,
+    })
+  }
+
+  store.syncHistoryFromFiles()
+  await refreshSleepEmbeddings(ws)
+  buildContextFile()
+  process.stdout.write(`[memory-rebuild-recent] rebuilt ${dayKeys.length} day(s): ${dayKeys.join(', ')}\n`)
+}
+
+async function pruneMemoryToRecent(workspacePath, options = {}) {
+  const ws = workspacePath || getConfiguredWorkspace()
+  if (!ws || !workspaceExists(ws)) {
+    throw new Error(`Workspace does not exist: ${ws || '(not configured)'}`)
+  }
+
+  const store = getLauncherMemoryStore()
+  store.backfillProject(ws, { limit: 240 })
+  store.syncHistoryFromFiles()
+
+  const maxDays = Math.max(1, Number(options.maxDays ?? 5))
+  const dayKeys = store.getRecentCandidateDays(maxDays)
+    .map(item => item.day_key)
+    .sort()
+
+  if (dayKeys.length === 0) {
+    process.stdout.write('[memory-prune-recent] no candidate days found.\n')
+    return
+  }
+
+  store.pruneConsolidatedMemoryOutsideDays(dayKeys)
+  await refreshSleepEmbeddings(ws)
+  buildContextFile()
+  process.stdout.write(`[memory-prune-recent] kept only recent day(s): ${dayKeys.join(', ')}\n`)
+}
+
+async function consolidateCandidateDay(dayKey, ws, options = {}) {
+  const store = getLauncherMemoryStore()
+  const maxCandidatesPerBatch = Math.max(1, Number(options.maxCandidatesPerBatch ?? MAX_MEMORY_CANDIDATES_PER_DAY))
+  const maxBatches = Math.max(1, Number(options.maxBatches ?? MAX_MEMORY_CONSOLIDATE_BATCHES_PER_DAY))
+  let processed = 0
+  let mergedFacts = 0
+  let mergedTasks = 0
+  let mergedSignals = 0
+
+  const promptPath = join(resourceDir(), 'defaults', 'memory-consolidate-prompt.md')
+  const template = existsSync(promptPath)
+    ? readFileSync(promptPath, 'utf8')
+    : 'Output JSON only with facts/tasks/signals.'
+  const dayEpisodes = store.getEpisodesForDate(dayKey)
+
+  for (let batch = 0; batch < maxBatches; batch += 1) {
+    const candidates = await prepareConsolidationCandidates(
+      store.getCandidatesForDate(dayKey),
+      maxCandidatesPerBatch,
+      dayEpisodes,
+    )
+    if (candidates.length === 0) break
+
+    const candidateText = candidates
+      .map((item, index) => {
+        const primary = String(item.content).slice(0, 300)
+        const span = String(item.span_content || item.content).slice(0, 800)
+        return `#${index + 1} [${item.role}] score=${item.score}\nCandidate:\n${primary}\nContext:\n${span}`
+      })
+      .join('\n\n')
+
+    const prompt = template
+      .replace('{{DATE}}', dayKey)
+      .replace('{{CANDIDATES}}', candidateText)
+
+    try {
+      const raw = execClaudeMemoryPrompt(prompt, {
+        cwd: ws,
+        timeout: 180000,
+      })
+      const parsed = normalizeJsonPayloadToEnglish(extractJsonObject(raw), ws, {
+        label: `memory consolidation payload for ${dayKey}`,
+        timeout: 120000,
+      })
+      if (!parsed) {
+        process.stderr.write(`[memory] consolidate ${dayKey}: invalid JSON\n`)
+        break
+      }
+
+      const sourceEpisodeId = candidates[0]?.episode_id ?? null
+      store.upsertProfiles(parsed.profiles ?? [], `${dayKey}T23:59:59.000Z`, sourceEpisodeId)
+      await store.upsertFacts(parsed.facts ?? [], `${dayKey}T23:59:59.000Z`, sourceEpisodeId)
+      store.upsertTasks(parsed.tasks ?? [], `${dayKey}T23:59:59.000Z`, sourceEpisodeId)
+      store.upsertSignals(parsed.signals ?? [], sourceEpisodeId, `${dayKey}T23:59:59.000Z`)
+      store.markCandidateIdsConsolidated(candidates.map(item => item.id))
+      processed += candidates.length
+      mergedFacts += (parsed.facts ?? []).length
+      mergedTasks += (parsed.tasks ?? []).length
+      mergedSignals += (parsed.signals ?? []).length
+    } catch (e) {
+      process.stderr.write(`[memory] consolidate ${dayKey} failed: ${e.message}\n`)
+      break
+    }
+  }
+
+  if (processed > 0) {
+    process.stderr.write(`[memory] consolidated ${dayKey}: candidates=${processed}, facts=${mergedFacts}, tasks=${mergedTasks}, signals=${mergedSignals}\n`)
+  }
+}
+
+async function consolidateRecentCandidates(dayKeys, ws, options = {}) {
+  const targets = [...dayKeys]
+    .sort()
+    .reverse()
+    .slice(0, Math.max(1, Number(options.maxDays ?? MAX_MEMORY_CONSOLIDATE_DAYS)))
+    .sort()
+  for (const dayKey of targets) {
+    await consolidateCandidateDay(dayKey, ws, options)
+  }
+}
+
+async function memoryFlush(workspacePath, options = {}) {
+  const ws = workspacePath || getConfiguredWorkspace()
+  if (!ws || !workspaceExists(ws)) {
+    throw new Error(`Workspace does not exist: ${ws || '(not configured)'}`)
+  }
+
+  const store = getLauncherMemoryStore()
+  const maxDays = Math.max(1, Number(options.maxDays ?? MEMORY_FLUSH_DEFAULT_MAX_DAYS))
+  const maxCandidatesPerBatch = Math.max(1, Number(options.maxCandidatesPerBatch ?? MEMORY_FLUSH_DEFAULT_MAX_CANDIDATES))
+  const maxBatches = Math.max(1, Number(options.maxBatches ?? MEMORY_FLUSH_DEFAULT_MAX_BATCHES))
+  const minPending = Math.max(1, Number(options.minPending ?? MEMORY_FLUSH_DEFAULT_MIN_PENDING))
+  const pendingDays = store.getPendingCandidateDays(Math.max(maxDays * 3, maxDays), minPending)
+
+  if (pendingDays.length === 0) {
+    process.stdout.write('[memory-flush] no flushable candidate batches.\n')
+    return
+  }
+
+  const targets = pendingDays
+    .map(item => item.day_key)
+    .slice(0, maxDays)
+    .reverse()
+
+  await consolidateRecentCandidates(targets, ws, {
+    maxDays,
+    maxCandidatesPerBatch,
+    maxBatches,
+  })
+  store.syncHistoryFromFiles()
+  store.writeContextFile()
 }
 
 function collectDailiesForWeek(weekNum, year) {
@@ -1198,10 +1871,15 @@ function generateLifetimeMerge() {
 
   if (!mergeInput.trim()) return
   try {
-    const merged = execFileSync('claude', ['-p',
-      `Merge and compress this into a single lifetime summary. Remove duplicates, keep only the most important history and patterns. Write in English except proper nouns. Output only the summary:\n\n${mergeInput}`
-    ], { encoding: 'utf8', timeout: 120000 }).trim()
-    writeFileSync(lifetimePath, merged + '\n')
+    const merged = execClaudeMemoryPrompt(
+      `Merge and compress this into a single lifetime summary. Remove duplicates, keep only the most important history and patterns. Write in English except proper nouns. Avoid Hangul unless it is part of an exact proper noun or identifier. Output only the summary:\n\n${mergeInput}`,
+      { timeout: 120000 },
+    )
+    const normalizedMerged = normalizeTextToEnglish(merged, process.cwd(), {
+      label: 'lifetime summary',
+      timeout: 120000,
+    })
+    writeFileSync(lifetimePath, normalizedMerged + '\n')
     process.stderr.write('[sleep-cycle] lifetime.md updated.\n')
   } catch (e) {
     process.stderr.write(`[sleep-cycle] lifetime merge failed: ${e.message}\n`)
@@ -1215,13 +1893,14 @@ function getWeekNumber(date) {
   return Math.ceil(((d - yearStart) / 86400000 + 1) / 7)
 }
 
-function summarizeOnly(workspacePath) {
+async function summarizeOnly(workspacePath) {
   const ws = workspacePath || getConfiguredWorkspace()
   const now = Date.now()
   const config = readLauncherConfig() ?? {}
   const lastSleepAt = config.lastSleepAt ?? (now - 24 * 60 * 60 * 1000)
 
   process.stderr.write(`[summarize] Starting for workspace: ${ws}\n`)
+  getLauncherMemoryStore().backfillProject(ws, { limit: 120 })
 
   mkdirSync(join(HISTORY_DIR, 'daily'), { recursive: true })
 
@@ -1235,6 +1914,7 @@ function summarizeOnly(workspacePath) {
   for (const date of dates) {
     const dailyFile = join(dailyDir, `${date}.md`)
     if (existsSync(dailyFile)) continue
+    getLauncherMemoryStore().ingestTranscriptFiles(dateGroups[date])
     const pingpong = extractPingPong(dateGroups[date])
     if (!pingpong) continue
     runSleepPrompt(pingpong, { date, ws })
@@ -1246,6 +1926,13 @@ function summarizeOnly(workspacePath) {
     process.stderr.write('[summarize] No new dailies to generate.\n')
   }
 
+  await consolidateRecentCandidates(dates, ws, {
+    maxDays: MAX_MEMORY_CONSOLIDATE_DAYS,
+    maxCandidatesPerBatch: MAX_MEMORY_CANDIDATES_PER_DAY,
+    maxBatches: MAX_MEMORY_CONSOLIDATE_BATCHES_PER_DAY,
+  })
+  getLauncherMemoryStore().syncHistoryFromFiles()
+  void refreshSleepEmbeddings(ws)
   buildContextFile()
   process.stderr.write('[summarize] context.md updated.\n')
 }
@@ -1407,7 +2094,10 @@ async function main() {
   const scope = getOption('--scope', DEFAULT_SCOPE)
   const cliWorkspace = getOption('--workspace', '')
   const cliDisplayMode = getOption('--display', '')
-  const displayMode = normalizeDisplayMode(cliDisplayMode || getConfiguredDisplayMode())
+  const cliMaxDays = getIntegerOption('--max-days', MEMORY_FLUSH_DEFAULT_MAX_DAYS)
+  const cliMaxCandidates = getIntegerOption('--max-candidates', MEMORY_FLUSH_DEFAULT_MAX_CANDIDATES)
+  const cliMaxBatches = getIntegerOption('--max-batches', MEMORY_FLUSH_DEFAULT_MAX_BATCHES)
+  const cliMinPending = getIntegerOption('--min-pending', MEMORY_FLUSH_DEFAULT_MIN_PENDING)
 
   if (command === '--help' || command === '-h' || USER_ARGS.includes('--help') || USER_ARGS.includes('-h')) {
     printHelp()
@@ -1446,24 +2136,8 @@ async function main() {
             sawChannelReady = true
           }
 
-          const latestSession = workspacePath ? latestSessionForWorkspace(workspacePath) : null
           if (sawChannelReady) {
-            const displayMode = getConfiguredDisplayMode()
-            writeLauncherState(wezTermStatePatch({ paneId, windowId, workspace: WEZTERM_WORKSPACE }, {
-              runtimeMode: 'launcher',
-              phase: 'ready',
-              workspacePath,
-              terminalApp: 'WezTerm',
-              displayMode,
-              connected: true,
-              sessionId: latestSession?.sessionId,
-              claudePid: latestSession?.pid,
-            }))
-            if (displayMode === 'view') {
-              try { showWezTermWindow(paneId) } catch { /* best-effort: final show */ }
-            } else {
-              try { hideWezTermApp() } catch { /* best-effort: final hide */ }
-            }
+            markWezTermReady(paneId, windowId, workspacePath)
             return
           }
 
@@ -1494,13 +2168,7 @@ async function main() {
       updatePlugin()
       break
     case 'launch': {
-      const workspacePath = await resolveWorkspace(cliWorkspace)
-      installPlugin(scope)
-      ensureWezTermInstalled()
-      if (!workspaceExists(workspacePath)) {
-        throw new Error(`Workspace does not exist: ${workspacePath}`)
-      }
-      launchClaude(workspacePath, displayMode)
+      await restartLauncherWindow(scope, cliWorkspace)
       break
     }
     case 'show':
@@ -1516,10 +2184,33 @@ async function main() {
       stopLauncher()
       break
     case 'sleep-cycle':
-      sleepCycle(cliWorkspace)
+      await sleepCycle(cliWorkspace)
       break
     case 'summarize':
-      summarizeOnly(cliWorkspace)
+      await summarizeOnly(cliWorkspace)
+      break
+    case 'memory-flush':
+      await memoryFlush(cliWorkspace, {
+        maxDays: cliMaxDays,
+        maxCandidatesPerBatch: cliMaxCandidates,
+        maxBatches: cliMaxBatches,
+        minPending: cliMinPending,
+      })
+      break
+    case 'memory-rebuild':
+      await rebuildAllMemory(cliWorkspace)
+      break
+    case 'memory-rebuild-recent':
+      await rebuildRecentMemory(cliWorkspace, {
+        maxDays: cliMaxDays,
+        maxCandidatesPerBatch: cliMaxCandidates,
+        maxBatches: cliMaxBatches,
+      })
+      break
+    case 'memory-prune-recent':
+      await pruneMemoryToRecent(cliWorkspace, {
+        maxDays: cliMaxDays,
+      })
       break
     case 'doctor': {
       const workspacePath = cliWorkspace ? resolve(cliWorkspace) : getConfiguredWorkspace()
@@ -1543,6 +2234,7 @@ async function main() {
         break
       }
       const nextMode = setDisplayModeConfig(rawMode)
+      writeLauncherState({ displayMode: nextMode })
       // Immediately apply show/hide if a session is connected
       const displayState = readLauncherState()
       if (displayState?.connected && displayState.weztermPaneId != null) {
@@ -1561,6 +2253,12 @@ async function main() {
       }
       break
     }
+    case 'install-ngrok':
+      ensureNgrokInstalled()
+      break
+    case 'install-voice':
+      installVoiceDependencies()
+      break
     default:
       printHelp()
       process.exitCode = 1

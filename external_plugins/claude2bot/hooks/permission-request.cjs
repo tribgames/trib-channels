@@ -141,6 +141,20 @@ process.stdin.on('end', async () => {
     // Create the pending marker for the matching result poll.
     fs.writeFileSync(pendingFile, JSON.stringify({ uuid: uuid, messageId: messageId, channelId: channelId, toolName: toolName, createdAt: Date.now() }));
 
+    // SIGTERM handler — PC에서 직접 승인 시 Claude Code가 훅 프로세스를 kill
+    // Discord 메시지에서 버튼 제거 + 상태 업데이트
+    process.on('SIGTERM', async () => {
+      try { fs.unlinkSync(pendingFile); } catch {}
+      try { fs.unlinkSync(resultFile); } catch {}
+      if (messageId) {
+        await discordApi('PATCH', '/api/v10/channels/' + channelId + '/messages/' + messageId, token, {
+          content: content + '\n\n✅ Approved from terminal.',
+          components: []
+        }).catch(() => {});
+      }
+      process.exit(0);
+    });
+
     // Poll for the decision result file.
     const startTime = Date.now();
 
