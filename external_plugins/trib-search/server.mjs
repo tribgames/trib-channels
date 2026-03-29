@@ -124,21 +124,16 @@ async function runSingleSearch(query, config, usageState, options = {}) {
   const searchMode = config.searchMode || 'search-first'
   const results = { query, searchMode, raw: null, ai: null, errors: [] }
 
-  // x.com always routes to grok x_search
+  // x.com always routes to x_search raw provider
   if (site === 'x.com') {
     try {
-      const response = await runAiSearch({
-        query,
-        provider: 'grok',
-        site,
-        model: config.aiModels?.grok || null,
-        timeoutMs: config.aiTimeoutMs,
-      })
-      noteProviderSuccess(usageState, 'grok')
-      results.ai = { provider: 'grok', ...response }
+      const { runXSearch } = await import('./lib/providers.mjs')
+      const searchResults = await runXSearch({ query, maxResults: options.maxResults || 5 })
+      noteProviderSuccess(usageState, 'x_search')
+      results.raw = { mode: 'direct', usedProvider: 'x_search', query, results: searchResults }
     } catch (e) {
-      noteProviderFailure(usageState, 'grok', e.message, 60000)
-      results.errors.push({ provider: 'grok', error: e.message })
+      noteProviderFailure(usageState, 'x_search', e.message, 60000)
+      results.errors.push({ provider: 'x_search', error: e.message })
     }
     return results
   }

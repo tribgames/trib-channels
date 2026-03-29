@@ -1,0 +1,17 @@
+{
+  "name": "trib-search",
+  "version": "0.0.6",
+  "description": "Unified search plugin for Claude Code with raw search, AI search, scrape, map, and crawl tools.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@mozilla/readability": "^0.5.0",
+    "jsdom": "^26.0.0",
+    "puppeteer-core": "^24.9.0",
+    "zod": "^3.23.8"
+  }
+}

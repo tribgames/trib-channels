@@ -59,6 +59,18 @@ async function runGrokApi(prompt, model, env, timeoutMs) {
     throw new Error('XAI_API_KEY or GROK_API_KEY is required for Grok API mode')
   }
 
+  const body = {
+    messages: [
+      {
+        role: 'user',
+        content: prompt,
+      },
+    ],
+    model: model || 'grok-4',
+    stream: false,
+    temperature: 0.7,
+  }
+
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
@@ -69,17 +81,7 @@ async function runGrokApi(prompt, model, env, timeoutMs) {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${apiKey}`,
       },
-      body: JSON.stringify({
-        messages: [
-          {
-            role: 'user',
-            content: prompt,
-          },
-        ],
-        model: model || 'grok-4',
-        stream: false,
-        temperature: 0.7,
-      }),
+      body: JSON.stringify(body),
     })
 
     if (!response.ok) {

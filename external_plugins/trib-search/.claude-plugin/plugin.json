@@ -1,0 +1,19 @@
+{
+  "name": "trib-search",
+  "description": "Search plugin for Claude Code with raw search, AI search, scrape, map, crawl, and usage commands.",
+  "version": "0.0.6",
+  "author": {
+    "name": "TRIBGAMES",
+    "email": "tempest1033@gmail.com"
+  },
+  "homepage": "https://github.com/tempest1033/trib-search",
+  "repository": "https://github.com/tempest1033/trib-search",
+  "license": "Apache-2.0",
+  "keywords": [
+    "search",
+    "mcp",
+    "web",
+    "crawl",
+    "claude-code"
+  ]
+}
