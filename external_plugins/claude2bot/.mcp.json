@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "claude2bot": {
-      "command": "npm",
-      "args": ["start", "--prefix", "${CLAUDE_PLUGIN_ROOT}"],
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/run-mcp.mjs"],
       "cwd": "${CLAUDE_PLUGIN_ROOT}"
     }
   }

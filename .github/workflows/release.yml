@@ -23,6 +23,7 @@ jobs:
           check "$PLUGIN/.claude-plugin/plugin.json"
           check "$PLUGIN/package.json"
           check "$PLUGIN/server.ts"
+          check "$PLUGIN/scripts/run-mcp.mjs"
           check "$PLUGIN/hooks/hooks.json"
           check ".claude-plugin/marketplace.json"
 
@@ -56,44 +57,11 @@ jobs:
           fi
           echo "✓ All checks passed"
 
-  build-macos:
-    needs: validate
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build macOS tray app
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}" SKIP_SIGN=1 bash scripts/build-tray-macos.sh
-          cd dist && zip -r ../Claude2BotLauncher-macos.zip Claude2BotLauncher.app
-      - uses: actions/upload-artifact@v4
-        with:
-          name: macos-tray
-          path: Claude2BotLauncher-macos.zip
-
-  build-windows:
-    needs: validate
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build Windows tray exe
-        shell: pwsh
-        run: |
-          Install-Module ps2exe -Scope CurrentUser -Force
-          powershell -ExecutionPolicy Bypass -File scripts/build-tray-windows.ps1
-          Compress-Archive -Path dist\Claude2BotLauncher.exe, dist\launcher.mjs, dist\launcher-wezterm.lua, tray\windows\icon.ico -DestinationPath Claude2BotLauncher-windows.zip
-      - uses: actions/upload-artifact@v4
-        with:
-          name: windows-tray
-          path: Claude2BotLauncher-windows.zip
-
   release:
-    needs: [build-macos, build-windows]
+    needs: validate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          path: artifacts
       - name: Create Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -101,8 +69,4 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             --title "$GITHUB_REF_NAME" \
             --latest \
-            --generate-notes \
-            artifacts/macos-tray/Claude2BotLauncher-macos.zip \
-            artifacts/windows-tray/Claude2BotLauncher-windows.zip \
-            scripts/install.sh \
-            scripts/install.ps1
+            --generate-notes

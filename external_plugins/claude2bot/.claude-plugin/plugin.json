@@ -1,7 +1,14 @@
 {
   "name": "claude2bot",
   "description": "Discord channel plugin for Claude Code with scheduler, voice transcription, and access control.",
-  "version": "0.0.4",
+  "version": "0.0.1",
+  "author": {
+    "name": "claude2bot",
+    "email": "dev@tribgames.com"
+  },
+  "homepage": "https://github.com/claude2bot/claude2bot",
+  "repository": "https://github.com/claude2bot/claude2bot",
+  "license": "Apache-2.0",
   "keywords": [
     "channel",
     "discord",

@@ -35,4 +35,4 @@ Configure via tray app Settings or `/setup`:
 - Will not interrupt active conversations
 - Adjusts tone by time of day (morning: light, evening: wrap-up)
 - If user declines, backs off gracefully
-- Combined with Sleeping Mode memory for context-aware topics
+- Combined with Memory Summarize for context-aware topics

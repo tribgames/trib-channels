@@ -1,5 +1,8 @@
 node_modules/
 dist/
+config-backups/
+Claude2BotLauncher-*.zip
+.mcp.json
 bun.lock
 settings.local.md
 *.tsbuildinfo

@@ -97,6 +97,7 @@ process.stdin.on('end', async () => {
     const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
     const token = config.discord && config.discord.token;
     if (!token) process.exit(0);
+    const access = config.access || null;
     const mainLabel = config.channelsConfig && config.channelsConfig.main;
     const channels = config.channelsConfig && config.channelsConfig.channels;
     const channelId = mainLabel && channels && channels[mainLabel] && channels[mainLabel].id;
@@ -130,6 +131,10 @@ process.stdin.on('end', async () => {
       }]
     };
 
+    if (access && access.allowFrom && access.allowFrom.length > 0) {
+      body.content += '\n\nAllowed approvers: ' + access.allowFrom.join(', ');
+    }
+
     const msgResult = await discordApi('POST', '/api/v10/channels/' + channelId + '/messages', token, body);
     const messageId = msgResult.id;
 
@@ -148,7 +153,7 @@ process.stdin.on('end', async () => {
       try { fs.unlinkSync(resultFile); } catch {}
       if (messageId) {
         await discordApi('PATCH', '/api/v10/channels/' + channelId + '/messages/' + messageId, token, {
-          content: content + '\n\n✅ Approved from terminal.',
+          content: content + '\n\n↩️ Resolved from terminal.',
           components: []
         }).catch(() => {});
       }

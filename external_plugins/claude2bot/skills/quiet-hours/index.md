@@ -12,7 +12,7 @@ Quiet Hours is a do-not-disturb mode. During quiet hours, claude2bot won't initi
 - Set a time range (e.g., 22:00-08:00)
 - During this period: no autotalk, no scheduled proactive messages
 - User-initiated messages still work normally
-- Sleeping Mode runs independently (sleep-cycle has its own schedule)
+- Memory Summarize runs independently (memory cycle has its own schedule)
 
 ## Settings
 

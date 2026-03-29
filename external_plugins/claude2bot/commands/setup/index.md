@@ -1,5 +1,5 @@
 ---
-description: View and configure claude2bot settings — channels, access, profile, voice, quiet hours, autotalk, sleeping mode.
+description: View and configure claude2bot settings — channels, access, profile, voice, quiet hours, autotalk, memory summarize.
 args: "[status|channels|access|profile|voice|quiet|autotalk|sleeping] [detail]"
 allowed-tools:
   - AskUserQuestion
@@ -116,17 +116,17 @@ To **toggle autotalk**: flip `autotalk.enabled` in bot.json.
 To **set frequency**: set `autotalk.freq` to 1-5 (1=~1/day, 5=~10/day) in bot.json.
 
 ### sleeping
-Manage Sleeping Mode in `~/.claude2bot-launcher.json`.
+Manage Memory Summarize in `${CLAUDE_PLUGIN_DATA}/bot.json`.
 
-If no detail is given, display current sleeping state (enabled, time, lastSleepAt).
+If no detail is given, display current summarize state (enabled, time, lastSleepAt).
 
 To **toggle**: set `sleepEnabled` to `true` or `false`.
 
 To **set time**: set `sleepTime` to `"HH:MM"` (e.g., `"03:00"`).
 
-To **run now**: inform user to use `/claude2bot sleeping action:run` or CLI `launcher sleep-cycle`.
+To **run now**: inform user to use `/claude2bot memory sleep` or the MCP `memory_cycle` tool.
 
-Sleeping Mode daily summarizes conversations, updates identity/ongoing/interests/lifetime, and restarts the session. Memory files are at `${CLAUDE_PLUGIN_DATA}/history/`.
+Memory Summarize daily summarizes conversations, updates identity/ongoing/interests/lifetime, and restarts the session. Memory files are at `${CLAUDE_PLUGIN_DATA}/history/`.
 
 ### quiet (updated)
 Note: proactive DND (`proactive.dndStart/dndEnd`) has been removed. All quiet hours now use `quiet.schedule` in bot.json only.

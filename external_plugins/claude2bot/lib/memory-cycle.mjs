@@ -1,5 +1,5 @@
 /**
- * memory-cycle.mjs — Memory consolidation, compression, and sleep cycle.
+ * memory-cycle.mjs — Memory consolidation, compression, and summarize cycle.
  * Extracted from launcher.mjs to remove launcher dependency.
  */
 
@@ -46,6 +46,7 @@ function claudeMemoryPromptArgs() {
     '--no-session-persistence',
     '--plugin-dir', '/tmp/claude2bot-noplugin',
     '--model', 'sonnet',
+    '--effort', 'medium',
   ]
 }
 

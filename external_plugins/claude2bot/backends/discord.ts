@@ -2,8 +2,7 @@
  * Discord backend — forked from the official Claude Code Discord plugin.
  *
  * Implements ChannelBackend with full access control (pairing, allowlists,
- * guild-channel support with mention-triggering). State lives in
- * <stateDir>/access.json.
+ * guild-channel support with mention-triggering). Policy lives in config.json.
  */
 
 import {
@@ -28,6 +27,8 @@ import {
 } from 'fs'
 import { join, sep } from 'path'
 import type {
+  AccessConfig,
+  AccessPendingEntry,
   ChannelBackend,
   InboundMessage,
   SendOptions,
@@ -42,19 +43,11 @@ import { chunk } from '../lib/format.js'
 
 // ── Access control types ───────────────────────────────────────────────
 
-type PendingEntry = {
-  senderId: string
-  chatId: string
-  createdAt: number
-  expiresAt: number
-  replies: number
-}
-
 type Access = {
   dmPolicy: 'pairing' | 'allowlist' | 'disabled'
   allowFrom: string[]
   channels: Record<string, ChannelAccessPolicy>
-  pending: Record<string, PendingEntry>
+  pending: Record<string, AccessPendingEntry>
   mentionPatterns?: string[]
   ackReaction?: string
   replyToMode?: 'off' | 'first' | 'all'
@@ -84,6 +77,21 @@ function defaultAccess(): Access {
   }
 }
 
+function normalizeAccess(parsed?: Partial<AccessConfig> | null): Access {
+  const defaults = defaultAccess()
+  return {
+    dmPolicy: parsed?.dmPolicy ?? defaults.dmPolicy,
+    allowFrom: parsed?.allowFrom ?? defaults.allowFrom,
+    channels: parsed?.channels ?? defaults.channels,
+    pending: parsed?.pending ?? defaults.pending,
+    mentionPatterns: parsed?.mentionPatterns,
+    ackReaction: parsed?.ackReaction,
+    replyToMode: parsed?.replyToMode,
+    textChunkLimit: parsed?.textChunkLimit,
+    chunkMode: parsed?.chunkMode,
+  }
+}
+
 function safeAttName(att: Attachment): string {
   return (att.name ?? att.id).replace(/[\[\]\r\n;]/g, '_')
 }
@@ -101,12 +109,13 @@ export class DiscordBackend implements ChannelBackend {
 
   private client: Client
   private stateDir: string
-  private accessFile: string
+  private configFile: string
   private approvedDir: string
   private inboxDir: string
   private token: string
   private isStatic: boolean
   private bootAccess: Access | null = null
+  private initialAccess: Access
   private recentSentIds = new Set<string>()
   private sendCount = 0
   private approvalTimer: ReturnType<typeof setInterval> | null = null
@@ -115,10 +124,11 @@ export class DiscordBackend implements ChannelBackend {
   constructor(config: DiscordBackendConfig, stateDir: string) {
     this.token = config.token
     this.stateDir = stateDir
-    this.accessFile = join(stateDir, 'access.json')
+    this.configFile = config.configPath ?? ''
     this.approvedDir = join(stateDir, 'approved')
     this.inboxDir = join(stateDir, 'inbox')
     this.isStatic = config.accessMode === 'static'
+    this.initialAccess = normalizeAccess(config.access)
 
     this.client = new Client({
       intents: [
@@ -135,7 +145,7 @@ export class DiscordBackend implements ChannelBackend {
 
   async connect(): Promise<void> {
     if (this.isStatic) {
-      const a = this.readAccessFile()
+      const a = this.loadAccess()
       if (a.dmPolicy === 'pairing') {
         process.stderr.write('claude2bot discord: static mode — dmPolicy "pairing" downgraded to "allowlist"\n')
         a.dmPolicy = 'allowlist'
@@ -429,41 +439,49 @@ export class DiscordBackend implements ChannelBackend {
 
   // ── Access control ─────────────────────────────────────────────────
 
-  private readAccessFile(): Access {
+  private readConfigAccess(): Access | null {
     try {
-      const raw = readFileSync(this.accessFile, 'utf8')
-      const parsed = JSON.parse(raw) as Partial<Access>
-      return {
-        dmPolicy: parsed.dmPolicy ?? 'pairing',
-        allowFrom: parsed.allowFrom ?? [],
-        channels: parsed.channels ?? {},
-        pending: parsed.pending ?? {},
-        mentionPatterns: parsed.mentionPatterns,
-        ackReaction: parsed.ackReaction,
-        replyToMode: parsed.replyToMode,
-        textChunkLimit: parsed.textChunkLimit,
-        chunkMode: parsed.chunkMode,
-      }
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return defaultAccess()
-      try {
-        renameSync(this.accessFile, `${this.accessFile}.corrupt-${Date.now()}`)
-      } catch {}
-      process.stderr.write('claude2bot discord: access.json corrupt, moved aside. Starting fresh.\n')
-      return defaultAccess()
+      if (!this.configFile) return this.initialAccess
+      const raw = readFileSync(this.configFile, 'utf8')
+      const parsed = JSON.parse(raw) as { access?: Partial<AccessConfig> }
+      return normalizeAccess(parsed.access ?? this.initialAccess)
+    } catch {
+      return this.initialAccess
     }
   }
 
   private loadAccess(): Access {
-    return this.bootAccess ?? this.readAccessFile()
+    return this.bootAccess ?? this.readConfigAccess() ?? this.initialAccess
   }
 
   private saveAccess(a: Access): void {
     if (this.isStatic) return
+    if (!this.configFile) return
     mkdirSync(this.stateDir, { recursive: true, mode: 0o700 })
-    const tmp = this.accessFile + '.tmp'
-    writeFileSync(tmp, JSON.stringify(a, null, 2) + '\n', { mode: 0o600 })
-    renameSync(tmp, this.accessFile)
+    const current = (() => {
+      try {
+        return JSON.parse(readFileSync(this.configFile, 'utf8')) as Record<string, unknown>
+      } catch {
+        return {}
+      }
+    })()
+    const next = {
+      ...current,
+      access: {
+        dmPolicy: a.dmPolicy,
+        allowFrom: a.allowFrom,
+        channels: a.channels,
+        pending: a.pending,
+        ...(a.mentionPatterns ? { mentionPatterns: a.mentionPatterns } : {}),
+        ...(a.ackReaction ? { ackReaction: a.ackReaction } : {}),
+        ...(a.replyToMode ? { replyToMode: a.replyToMode } : {}),
+        ...(a.textChunkLimit ? { textChunkLimit: a.textChunkLimit } : {}),
+        ...(a.chunkMode ? { chunkMode: a.chunkMode } : {}),
+      },
+    }
+    const tmp = this.configFile + '.tmp'
+    writeFileSync(tmp, JSON.stringify(next, null, 2) + '\n', { mode: 0o600 })
+    renameSync(tmp, this.configFile)
   }
 
   private pruneExpired(a: Access): boolean {

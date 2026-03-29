@@ -193,11 +193,29 @@ export interface ChannelAccessPolicy {
   allowFrom: string[]
 }
 
+export interface AccessPendingEntry {
+  senderId: string
+  chatId: string
+  createdAt: number
+  expiresAt: number
+  replies: number
+}
+
+export interface AccessConfig {
+  dmPolicy: 'pairing' | 'allowlist' | 'disabled'
+  allowFrom: string[]
+  channels: Record<string, ChannelAccessPolicy>
+  pending?: Record<string, AccessPendingEntry>
+  mentionPatterns?: string[]
+  ackReaction?: string
+  replyToMode?: 'off' | 'first' | 'all'
+  textChunkLimit?: number
+  chunkMode?: 'length' | 'newline'
+}
+
 // ── Voice types ───────────────────────────────────────────────────────
 
 export interface VoiceConfig {
-  /** Whether voice message transcription is enabled */
-  enabled: boolean
   /** Whisper binary name or absolute path (default: auto-detect whisper-cli) */
   command?: string
   /** GGML model file path (omit to use whisper's built-in default) */
@@ -212,11 +230,14 @@ export interface DiscordBackendConfig {
   token: string
   stateDir?: string
   accessMode?: 'static' | 'dynamic'
+  configPath?: string
+  access?: AccessConfig
 }
 
 export interface PluginConfig {
   backend: 'discord'
   discord?: DiscordBackendConfig
+  access?: AccessConfig
   /** Named channel configuration */
   channelsConfig?: ChannelsConfig
   /** MD file paths to inject as additional context into instructions */

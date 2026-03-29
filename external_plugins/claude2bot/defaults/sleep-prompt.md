@@ -5,9 +5,27 @@ History directory: {{HISTORY_DIR}}
 
 Read existing files from {{HISTORY_DIR}}/ if they exist (lifetime.md, identity.md, ongoing.md, interests.json).
 
-The conversation log follows below (u: = user, a: = assistant). Generate/update the following files. Write ALL content in English except proper nouns.
+The conversation log follows below (u: = user, a: = assistant). Generate/update the following files. Write ALL content in English except proper nouns. Do not leave Korean or Hangul in natural-language text unless it is part of an exact proper noun or identifier that must remain unchanged.
 
-1. Create: {{HISTORY_DIR}}/daily/{{DATE}}.md — Summarize in ~5 lines: tasks worked on, key decisions, completed vs in-progress, user preferences/feedback.
+1. Create: {{HISTORY_DIR}}/daily/{{DATE}}.md
+Write a structured daily summary using these exact sections:
+
+## Key Decisions
+- ...
+
+## Active Work
+- ...
+
+## Preferences / Constraints
+- ...
+
+## Open Questions
+- ...
+
+## Signals
+- ...
+
+Only include high-signal items that are likely useful later. Drop chatter, filler, tools, logs, and repeated status noise.
 
 2. Update: {{HISTORY_DIR}}/lifetime.md — Merge today into existing lifetime. Compress older entries. Rolling summary of everything important.
 

@@ -6,7 +6,7 @@
 import { readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { DiscordBackend } from '../backends/discord.js'
-import type { ChannelBackend, PluginConfig, BotConfig, ProfileConfig } from '../backends/types.js'
+import type { AccessConfig, ChannelBackend, PluginConfig, BotConfig, ProfileConfig } from '../backends/types.js'
 
 if (!process.env.CLAUDE_PLUGIN_DATA) {
   process.stderr.write(
@@ -23,9 +23,16 @@ export const PLUGIN_ROOT =
 
 const CONFIG_FILE = join(DATA_DIR, 'config.json')
 
+const DEFAULT_ACCESS: AccessConfig = {
+  dmPolicy: 'pairing',
+  allowFrom: [],
+  channels: {},
+}
+
 const DEFAULT_CONFIG = {
   backend: 'discord',
   discord: { token: '' },
+  access: DEFAULT_ACCESS,
   channelsConfig: {
     main: 'general',
     channels: {
@@ -36,7 +43,17 @@ const DEFAULT_CONFIG = {
 
 export function loadConfig(): PluginConfig {
   try {
-    return JSON.parse(readFileSync(CONFIG_FILE, 'utf8'))
+    const raw = JSON.parse(readFileSync(CONFIG_FILE, 'utf8')) as PluginConfig
+    return {
+      ...raw,
+      access: {
+        ...DEFAULT_ACCESS,
+        ...(raw.access ?? {}),
+        allowFrom: raw.access?.allowFrom ?? [],
+        channels: raw.access?.channels ?? {},
+        pending: raw.access?.pending ?? {},
+      },
+    }
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
       mkdirSync(DATA_DIR, { recursive: true })
@@ -65,7 +82,11 @@ export function createBackend(config: PluginConfig): ChannelBackend {
   const stateDir =
     config.discord.stateDir ?? join(DATA_DIR, 'discord')
   mkdirSync(stateDir, { recursive: true })
-  return new DiscordBackend(config.discord, stateDir)
+  return new DiscordBackend({
+    ...config.discord,
+    configPath: CONFIG_FILE,
+    access: config.access,
+  }, stateDir)
 }
 
 // ── bot.json ──────────────────────────────────────────────────────────

@@ -1,5 +1,5 @@
 ---
-description: Run memory management operations — sleep cycle, consolidation, rebuild, prune, status.
+description: Run memory management operations — memory summarize, consolidation, rebuild, prune, status.
 allowed-tools:
   - mcp__plugin_claude2bot_claude2bot__memory_cycle
 ---
@@ -12,8 +12,8 @@ Use the `memory_cycle` MCP tool to manage claude2bot's long-term memory.
 
 | Action | Description |
 |--------|-------------|
-| `status` | Show last sleep cycle time, pending candidates count |
-| `sleep` | Full sleep cycle: daily summary + consolidation + compression chain + embeddings |
+| `status` | Show last summarize time, pending candidates count |
+| `sleep` | Full memory summarize: daily summary + consolidation + compression chain + embeddings |
 | `flush` | Consolidate pending memory candidates into facts/tasks/signals |
 | `rebuild` | Rebuild recent memory (re-consolidate last N days) |
 | `prune` | Remove old consolidated memory, keep only recent days |
@@ -21,7 +21,7 @@ Use the `memory_cycle` MCP tool to manage claude2bot's long-term memory.
 ## Usage
 
 - `/claude2bot memory` → show status
-- `/claude2bot memory sleep` → run full sleep cycle
+- `/claude2bot memory sleep` → run full memory summarize
 - `/claude2bot memory flush` → consolidate pending candidates
 - `/claude2bot memory rebuild` → rebuild recent 2 days
 - `/claude2bot memory prune` → keep only last 5 days

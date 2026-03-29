@@ -13,19 +13,6 @@ import { join } from 'path'
 import { DATA_DIR, loadConfig, loadBotConfig, saveBotConfig, loadProfileConfig, saveProfileConfig } from './config.js'
 import type { PluginConfig, TimedSchedule } from '../backends/types.js'
 import type { Scheduler } from './scheduler.js'
-// Launcher state/control — legacy, will be removed when commands are migrated
-let launcherStateConnected: any = () => false
-let readLauncherConfig: any = () => null
-let readLauncherState: any = () => null
-let controlLauncher: any = () => ({ ok: false, message: 'launcher removed' })
-try {
-  const ls = await import('./launcher-state.js')
-  launcherStateConnected = ls.launcherStateConnected
-  readLauncherConfig = ls.readLauncherConfig
-  readLauncherState = ls.readLauncherState
-  const lc = await import('./launcher-control.js')
-  controlLauncher = lc.controlLauncher
-} catch { /* launcher files removed — legacy commands will return graceful errors */ }
 import { t } from './i18n.js'
 
 // ── Types ────────────────────────────────────────────────────────────
@@ -142,8 +129,6 @@ export async function handleBotCommand(
   switch (sub) {
     case 'schedule':
       return handleSchedule(parsed, ctx)
-    case 'launcher':
-      return handleLauncher(parsed, ctx)
     case 'autotalk':
       return handleAutotalk(parsed, ctx)
     case 'quiet':
@@ -166,7 +151,6 @@ export async function handleBotCommand(
             '**Simple**',
             '`/bot status`',
             '`/bot profile`',
-            '`/bot launcher`',
             '`/bot schedule list`',
             '',
             '**Parameterized**',
@@ -192,8 +176,6 @@ export async function handleBotCommand(
 function handleBotStatus(_ctx: CommandContext): CommandResult {
   const config = loadConfig()
   const bot = loadBotConfig()
-  const launcher = readLauncherState()
-  const launcherConnected = launcherStateConnected(launcher)
   const ni = config.nonInteractive ?? []
   const i = config.interactive ?? []
 
@@ -213,11 +195,6 @@ function handleBotStatus(_ctx: CommandContext): CommandResult {
 
   const profile = loadProfileConfig()
   lines.push(`**Profile** ${profile.name || '-'}`)
-  lines.push(`**Launcher** ${launcherConnected ? `connected (${launcher?.workspacePath || '-'})` : 'not connected'}`)
-
-// [components removed]
-  if (launcherConnected) {
-  }
 
   return {
     embeds: [{
@@ -225,77 +202,6 @@ function handleBotStatus(_ctx: CommandContext): CommandResult {
       description: lines.join('\n'),
       color: 0x5865F2,
     }],
-  }
-}
-
-function handleLauncher(parsed: ParsedCommand, ctx: CommandContext): CommandResult {
-  const action = parsed.args[1] ?? 'list'
-  const launcher = readLauncherState()
-  const launcherConfig = readLauncherConfig()
-  const launcherConnected = launcherStateConnected(launcher)
-  const launcherPhase = launcher?.phase ?? '-'
-  const launcherReady = launcherPhase === 'ready'
-  const activeDisplay = launcher?.displayMode ?? 'view'
-  const savedDisplay = launcherConfig?.displayMode ?? activeDisplay
-
-  if (!launcherConnected) {
-    return {
-      embeds: [{
-        title: '\uD83D\uDE80 Launcher',
-        description: 'Launcher is not connected.',
-        color: 0xFEE75C,
-      }],
-    }
-  }
-
-  switch (action) {
-    case 'launch': {
-      const result = controlLauncher('launch')
-      return { text: result.message }
-    }
-    case 'mode-view': {
-      const result = controlLauncher('display-view')
-      return { text: result.message }
-    }
-    case 'mode-hide': {
-      const result = controlLauncher('display-hide')
-      return { text: result.message }
-    }
-    case 'restart': {
-      if (!launcherReady) return { text: `Launcher is not ready yet (phase: ${launcherPhase}).` }
-      const result = controlLauncher('restart')
-      return { text: result.message }
-    }
-    case 'status':
-    case 'list': {
-      const launcherInfo = launcher ?? {}
-      const lines = [
-        `**Mode** ${launcherInfo.runtimeMode ?? 'launcher'}`,
-        `**Phase** ${launcherInfo.phase ?? '-'}`,
-        `**Active Display** ${activeDisplay}`,
-        `**Saved Display** ${savedDisplay}`,
-        `**Workspace** ${launcherInfo.workspacePath ?? '-'}`,
-        `**Backend** ${launcherInfo.terminalApp ?? '-'}`,
-        `**Window** ${launcherInfo.terminalWindowId ?? '-'}`,
-        `**Connected** ${launcherConnected ? 'Yes' : 'No'}`,
-        `**Apply Policy** restart required for mode changes`,
-      ]
-      if (launcherInfo.weztermPaneId != null) lines.push(`**Pane** ${launcherInfo.weztermPaneId}`)
-      if (launcherInfo.sessionId) lines.push(`**Session** ${launcherInfo.sessionId}`)
-      if (launcherInfo.claudePid) lines.push(`**PID** ${launcherInfo.claudePid}`)
-      if (launcherInfo.updatedAt) {
-        lines.push(`**Updated** ${new Date(launcherInfo.updatedAt).toISOString()}`)
-      }
-      return {
-        embeds: [{
-          title: '\uD83D\uDE80 Launcher',
-          description: lines.join('\n'),
-          color: 0x5865F2,
-        }],
-      }
-    }
-    default:
-      return { text: t('unknown_action', ctx.lang, { action }) }
   }
 }
 
@@ -563,39 +469,29 @@ function handleSleeping(parsed: ParsedCommand, ctx: CommandContext): CommandResu
 
       return {
         embeds: [{
-          title: '\uD83D\uDE34 Sleeping Mode',
-          description: `**Status**: ${enabled ? 'ON' : 'OFF'}\n**Sleep Time**: ${time}`,
+          title: '\uD83E\uDDE0 Memory Summarize',
+          description: `**Status**: ${enabled ? 'ON' : 'OFF'}\n**Summarize Time**: ${time}`,
           color: 0x5865F2,
         }],
       }
     }
     case 'on': {
       writeLauncherConfigField('sleepEnabled', true)
-      return { text: 'Sleeping Mode enabled.' }
+      return { text: 'Memory Summarize enabled.' }
     }
     case 'off': {
       writeLauncherConfigField('sleepEnabled', false)
-      return { text: 'Sleeping Mode disabled.' }
+      return { text: 'Memory Summarize disabled.' }
     }
     case 'time': {
       const time = parsed.args[2] ?? parsed.params.time
       if (!time) return { text: 'Usage: /bot sleeping time HH:MM' }
       writeLauncherConfigField('sleepTime', time)
-      return { text: `Sleep time set to ${time}` }
+      return { text: `Summarize time set to ${time}` }
     }
     case 'now':
     case 'run': {
-      // Try launcher sleep-cycle if available, otherwise just summarize
-      const state = readLauncherState()
-      if (state?.launcherExecPath) {
-        const { execFile } = require('child_process')
-        const entryPath = state.launcherEntryPath ?? ''
-        const args = entryPath ? [entryPath, 'sleep-cycle'] : ['sleep-cycle']
-        execFile(state.launcherExecPath, args, { stdio: 'ignore', detached: true }).unref?.()
-        return { text: 'Sleep cycle started. Session will restart shortly.' }
-      }
-      // No launcher — just trigger summary via scheduler inject
-      return { text: 'Summarize today\'s conversation and update memory files (history/daily, identity, ongoing, lifetime).' }
+      return { text: 'Use `/claude2bot memory sleep` or MCP `memory_cycle` tool to run memory summarize.' }
     }
     default:
       return { text: t('unknown_action', ctx.lang, { action }) }
@@ -608,8 +504,8 @@ function handleDisplay(parsed: ParsedCommand, _ctx: CommandContext): CommandResu
   const mode = parsed.args[1]
 
   if (!mode) {
-    const state = readLauncherState()
-    const displayMode = state?.displayMode ?? 'view'
+    const config = readLauncherConfigFile()
+    const displayMode = config?.displayMode ?? 'view'
     return {
       embeds: [{
         title: '\uD83D\uDDA5 Display Mode',
@@ -620,8 +516,8 @@ function handleDisplay(parsed: ParsedCommand, _ctx: CommandContext): CommandResu
   }
 
   if (mode === 'view' || mode === 'hide') {
-    const result = controlLauncher(mode === 'view' ? 'display-view' : 'display-hide')
-    return { text: result.message }
+    writeLauncherConfigField('displayMode', mode)
+    return { text: `Display mode set to ${mode}.` }
   }
 
   return { text: 'Usage: /bot display [view|hide]' }

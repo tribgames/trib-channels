@@ -285,7 +285,7 @@ function buildClaude2BotCommand(): SlashCommandBuilder {
 
   // /claude2bot sleeping [action] [value]
   claude2bot.addSubcommand(sub =>
-    sub.setName('sleeping').setDescription('Sleeping mode control')
+    sub.setName('sleeping').setDescription('Memory Summarize control')
       .addStringOption(opt =>
         opt.setName('action').setDescription('on, off, run, time').setRequired(false)
           .addChoices(
@@ -605,11 +605,11 @@ async function handleSetupOverview(
     '**Parameterized Commands**',
     '`/claude2bot autotalk level:<1-5|OFF>`',
     '`/claude2bot quiet schedule:<HH:MM-HH:MM>`',
-    '`/claude2bot sleeping action:<on|off|run|time>`',
+    '`/claude2bot sleeping action:<on|off|run|time>` (Memory Summarize)',
     '`/claude2bot schedule action:<list|add|remove|test>`',
     '',
     '**Optional Add-ons**',
-    'Launcher/tray: auto restart and background management',
+    'Tray app: auto restart and background management',
     'ngrok: webhook exposure',
     'whisper CLI: voice transcription',
   ]
@@ -714,18 +714,10 @@ async function handleClaude2BotCommand(
       return handleEvent(interaction, ctx, action)
     }
     case 'workspace': {
-      const wsPath = interaction.options.getString('path')
-      if (wsPath) {
-          await interaction.reply({
-          embeds: [{ title: 'Workspace', description: `Use CLI: \`launcher workspace ${wsPath}\``, color: 0x5865F2 }],
-          flags: 64,
-        })
-      } else {
-        await interaction.reply({
-          embeds: [{ title: 'Workspace', description: process.cwd(), color: 0x5865F2 }],
-          flags: 64,
-        })
-      }
+      await interaction.reply({
+        embeds: [{ title: 'Workspace', description: process.cwd(), color: 0x5865F2 }],
+        flags: 64,
+      })
       return
     }
     default:

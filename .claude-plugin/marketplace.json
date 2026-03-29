@@ -11,6 +11,12 @@
       "description": "Discord channel plugin with scheduler, voice transcription, and proactive chat",
       "category": "productivity",
       "source": "./external_plugins/claude2bot"
+    },
+    {
+      "name": "trib-search",
+      "description": "Unified search plugin with raw search, AI search, scrape, map, crawl, and usage tracking",
+      "category": "productivity",
+      "source": "./external_plugins/trib-search"
     }
   ]
 }

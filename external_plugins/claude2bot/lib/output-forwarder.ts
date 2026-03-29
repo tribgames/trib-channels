@@ -15,6 +15,7 @@ export interface ForwarderCallbacks {
   send(channelId: string, text: string): Promise<void>
   react(channelId: string, messageId: string, emoji: string): Promise<void>
   removeReaction(channelId: string, messageId: string, emoji: string): Promise<void>
+  recordAssistantTurn?: (payload: { channelId: string; text: string; sessionId?: string }) => Promise<void> | void
 }
 
 export interface SessionBoundTranscript {
@@ -122,6 +123,7 @@ export class OutputForwarder {
   private sending = false
   private mainSessionId = ''
   private watchDebounce: ReturnType<typeof setTimeout> | null = null
+  private turnTextBuffer = ''
 
   hasBinding(): boolean {
     return !!this.transcriptPath
@@ -160,6 +162,7 @@ export class OutputForwarder {
     this.lastHash = ''
     this.inExplorerSequence = false
     this.hasSeenAssistant = false
+    this.turnTextBuffer = ''
     if (this.idleTimer) { clearTimeout(this.idleTimer); this.idleTimer = null }
   }
 
@@ -286,6 +289,9 @@ export class OutputForwarder {
     const hash = createHash('md5').update(formatted).digest('hex')
     if (this.lastHash === hash) return
     this.lastHash = hash
+    this.turnTextBuffer = this.turnTextBuffer
+      ? `${this.turnTextBuffer}\n\n${text.trim()}`
+      : text.trim()
     const chunks = chunk(formatted, 2000)
     this.sentCount += chunks.length
     this.persistState()
@@ -353,6 +359,14 @@ export class OutputForwarder {
       }
       const newText = this.extractNewText()
       if (newText) await this.sendOnce(newText)
+      if (this.turnTextBuffer.trim()) {
+        await this.cb.recordAssistantTurn?.({
+          channelId: this.channelId,
+          text: this.turnTextBuffer.trim(),
+          sessionId: this.mainSessionId || undefined,
+        })
+        this.turnTextBuffer = ''
+      }
       this.updateState(state => {
         state.sessionIdle = true
       })
