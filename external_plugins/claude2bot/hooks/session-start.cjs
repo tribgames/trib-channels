@@ -2,8 +2,8 @@
  * claude2bot session-start hook
  *
  * Loads settings files and injects them as additionalContext:
- *   1. settings.default.md (bundled with plugin)
- *   2. contextFiles from config.json
+ *   1. contextFiles from config.json
+ *   2. context.md (memory bridge)
  *   3. settings.local.md (user overrides, gitignored)
  */
 
@@ -13,7 +13,6 @@ const path = require('path');
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || __dirname.replace(/[/\\]hooks$/, '');
 const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA;
 
-const DEFAULT_FILE = path.join(PLUGIN_ROOT, 'settings.default.md');
 const LOCAL_FILE = path.join(DATA_DIR, 'settings.local.md');
 const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
 const MEMORY_CONTEXT_FILE = path.join(DATA_DIR, 'history', 'context.md');
@@ -37,11 +36,7 @@ function loadConfig() {
 // Build additional context
 const parts = [];
 
-// 1. Default settings (bundled)
-const defaults = tryRead(DEFAULT_FILE);
-if (defaults) parts.push(defaults);
-
-// 2. Context files from config
+// 1. Context files from config.json
 const config = loadConfig();
 const contextFiles = config.contextFiles || [];
 for (const f of contextFiles) {
@@ -49,11 +44,11 @@ for (const f of contextFiles) {
   if (content) parts.push(content);
 }
 
-// 3. SQLite-backed memory bridge rendered to context.md
+// 2. SQLite-backed memory bridge rendered to context.md
 const memoryContext = tryRead(MEMORY_CONTEXT_FILE);
 if (memoryContext) parts.push(memoryContext);
 
-// 4. Local overrides
+// 3. Local overrides
 const local = tryRead(LOCAL_FILE);
 if (local) parts.push(local);
 

@@ -4,7 +4,7 @@
  */
 
 import { execFileSync, spawnSync } from 'child_process'
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { homedir, tmpdir } from 'os'
 import { join } from 'path'
 import { cleanMemoryText, getMemoryStore } from './memory.mjs'
@@ -106,15 +106,6 @@ function jsonPayloadContainsHangul(value) {
   return false
 }
 
-function normalizeTextToEnglish(text, ws, options = {}) {
-  const raw = String(text ?? '').trim()
-  if (!raw || !containsHangul(raw)) return raw
-  const label = String(options.label ?? 'memory artifact').trim() || 'memory artifact'
-  const format = options.format === 'json' ? 'JSON' : 'Markdown'
-  const prompt = `Rewrite this ${label} into concise English.\nRules:\n- Return ${format} only.\n- Translate natural-language content to English.\n- Preserve proper nouns, product names, file paths, URLs, emails, IDs, numbers, code symbols, and identifiers as-is.\n- Avoid Hangul unless it is part of an exact identifier or proper noun.\n\n${raw}`
-  return execClaudePrompt(prompt, { cwd: ws, timeout: Number(options.timeout ?? 120000) }).trim()
-}
-
 function normalizeJsonPayloadToEnglish(payload, ws, options = {}) {
   if (!payload || typeof payload !== 'object' || !jsonPayloadContainsHangul(payload)) return payload
   const label = String(options.label ?? 'memory payload').trim() || 'memory payload'
@@ -124,29 +115,6 @@ function normalizeJsonPayloadToEnglish(payload, ws, options = {}) {
     const rewritten = extractJsonObject(execClaudePrompt(prompt, { cwd: ws, timeout: Number(options.timeout ?? 120000) }))
     return rewritten && typeof rewritten === 'object' ? rewritten : payload
   } catch { return payload }
-}
-
-function normalizeSleepArtifacts(date, ws) {
-  const targets = [
-    { path: join(HISTORY_DIR, 'daily', `${date}.md`), format: 'markdown', label: `daily summary for ${date}` },
-    { path: join(HISTORY_DIR, 'lifetime.md'), format: 'markdown', label: 'lifetime summary' },
-    { path: join(HISTORY_DIR, 'identity.md'), format: 'markdown', label: 'identity profile' },
-    { path: join(HISTORY_DIR, 'ongoing.md'), format: 'markdown', label: 'ongoing tasks' },
-    { path: join(HISTORY_DIR, 'interests.json'), format: 'json', label: 'interest keywords' },
-  ]
-  for (const target of targets) {
-    if (!existsSync(target.path)) continue
-    try {
-      const content = readFileSync(target.path, 'utf8').trim()
-      if (!content || !containsHangul(content)) continue
-      const normalized = target.format === 'json'
-        ? JSON.stringify(normalizeJsonPayloadToEnglish(JSON.parse(content), ws, { label: target.label, timeout: 180000 }), null, 2)
-        : normalizeTextToEnglish(content, ws, { label: target.label, timeout: 180000 })
-      if (normalized?.trim()) writeFileSync(target.path, normalized.trim() + '\n')
-    } catch (e) {
-      process.stderr.write(`[memory-cycle] normalize failed for ${target.path}: ${e.message}\n`)
-    }
-  }
 }
 
 function cosineSimilarity(a, b) {
@@ -236,7 +204,7 @@ export async function consolidateCandidateDay(dayKey, ws, options = {}) {
     const prompt = template.replace('{{DATE}}', dayKey).replace('{{CANDIDATES}}', candidateText)
     try {
       const raw = execClaudePrompt(prompt, { cwd: ws, timeout: 180000 })
-      const parsed = normalizeJsonPayloadToEnglish(extractJsonObject(raw), ws, { label: `consolidation for ${dayKey}`, timeout: 120000 })
+      const parsed = extractJsonObject(raw)
       if (!parsed) { process.stderr.write(`[memory-cycle] consolidate ${dayKey}: invalid JSON\n`); break }
       const srcEp = candidates[0]?.episode_id ?? null
       const ts = `${dayKey}T23:59:59.000Z`
@@ -259,62 +227,6 @@ export async function consolidateCandidateDay(dayKey, ws, options = {}) {
 export async function consolidateRecent(dayKeys, ws, options = {}) {
   const targets = [...dayKeys].sort().reverse().slice(0, Math.max(1, Number(options.maxDays ?? MAX_MEMORY_CONSOLIDATE_DAYS))).sort()
   for (const dayKey of targets) await consolidateCandidateDay(dayKey, ws, options)
-}
-
-function collectDailiesForWeek(weekNum, year) {
-  const dailyDir = join(HISTORY_DIR, 'daily')
-  if (!existsSync(dailyDir)) return ''
-  return readdirSync(dailyDir).filter(f => f.endsWith('.md')).sort().map(f => {
-    const d = new Date(f.replace('.md', ''))
-    const w = getWeekNumber(d)
-    return w === weekNum && String(d.getFullYear()) === String(year) ? readFileSync(join(dailyDir, f), 'utf8') : ''
-  }).filter(Boolean).join('\n\n---\n\n')
-}
-
-function collectFilesForPeriod(dir, level, year, month) {
-  const srcDir = join(HISTORY_DIR, level)
-  if (!existsSync(srcDir)) return ''
-  return readdirSync(srcDir).filter(f => f.endsWith('.md') && f.startsWith(`${year}-${month ? month : ''}`))
-    .sort().map(f => readFileSync(join(srcDir, f), 'utf8')).filter(Boolean).join('\n\n---\n\n')
-}
-
-function getWeekNumber(date) {
-  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()))
-  d.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay() || 7))
-  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1))
-  return Math.ceil(((d - yearStart) / 86400000 + 1) / 7)
-}
-
-function runRollup(level, key, content) {
-  const outFile = join(HISTORY_DIR, level, `${key}.md`)
-  try {
-    const summary = execClaudePrompt(`Compress these summaries into a concise ${level} summary. Write in English except proper nouns. Output only the summary:\n\n${content}`, { timeout: 120000 })
-    const normalized = normalizeTextToEnglish(summary, process.cwd(), { label: `${level} summary`, timeout: 120000 })
-    writeFileSync(outFile, `# ${key}\n\n${normalized}\n`)
-    process.stderr.write(`[memory-cycle] ${level} ${key} generated.\n`)
-  } catch (e) { process.stderr.write(`[memory-cycle] ${level} rollup failed: ${e.message}\n`) }
-}
-
-function generateLifetimeMerge() {
-  const lifetimePath = join(HISTORY_DIR, 'lifetime.md')
-  const sources = ['yearly', 'monthly', 'weekly', 'daily']
-  const parts = []
-  for (const level of sources) {
-    const dir = join(HISTORY_DIR, level)
-    if (!existsSync(dir)) continue
-    for (const f of readdirSync(dir).filter(f => f.endsWith('.md')).sort().reverse().slice(0, 3)) {
-      parts.push(readFileSync(join(dir, f), 'utf8'))
-    }
-  }
-  if (existsSync(lifetimePath)) parts.push(readFileSync(lifetimePath, 'utf8'))
-  if (!parts.length) return
-  const mergeInput = parts.join('\n\n---\n\n')
-  try {
-    const merged = execClaudePrompt(`Merge and compress this into a single lifetime summary. Remove duplicates, keep only the most important history and patterns. Write in English except proper nouns. Output only the summary:\n\n${mergeInput}`, { timeout: 120000 })
-    const normalized = normalizeTextToEnglish(merged, process.cwd(), { label: 'lifetime summary', timeout: 120000 })
-    writeFileSync(lifetimePath, normalized + '\n')
-    process.stderr.write('[memory-cycle] lifetime.md updated.\n')
-  } catch (e) { process.stderr.write(`[memory-cycle] lifetime merge failed: ${e.message}\n`) }
 }
 
 async function refreshEmbeddings(ws) {
@@ -343,19 +255,14 @@ async function refreshEmbeddings(ws) {
 export async function sleepCycle(ws) {
   const store = getStore()
   const now = Date.now()
-  const today = new Date().toISOString().slice(0, 10)
-  const [year, month] = today.split('-')
-  const weekNum = getWeekNumber(new Date())
-  const weekKey = `${year}-W${String(weekNum).padStart(2, '0')}`
 
   const config = readCycleConfig()
   const isFirstRun = !config.lastSleepAt && !existsSync(join(HISTORY_DIR, 'lifetime.md'))
-  const lastSleepAt = isFirstRun ? 0 : (config.lastSleepAt ?? (now - 86400000))
 
   process.stderr.write(`[memory-cycle] Starting.${isFirstRun ? ' (FIRST RUN)' : ''}\n`)
   store.backfillProject(ws, { limit: 120 })
 
-  for (const d of ['daily', 'weekly', 'monthly', 'yearly']) mkdirSync(join(HISTORY_DIR, d), { recursive: true })
+  mkdirSync(join(HISTORY_DIR, 'daily'), { recursive: true })
 
   // 1. Generate daily summaries
   const MAX_DAYS = 7
@@ -377,7 +284,6 @@ export async function sleepCycle(ws) {
     try {
       const { status } = spawnClaudePrompt(prompt + '\n\n---\n\n' + pingpong, { cwd: ws, timeout: 600000 })
       if (status !== 0) throw new Error(`exit code ${status}`)
-      normalizeSleepArtifacts(date, ws)
       generated++
       process.stderr.write(`[memory-cycle] Daily ${date} generated.\n`)
     } catch (e) { process.stderr.write(`[memory-cycle] daily failed for ${date}: ${e.message}\n`) }
@@ -386,33 +292,12 @@ export async function sleepCycle(ws) {
   // 2. Consolidation
   await consolidateRecent(pendingDays, ws)
 
-  // 3. Rollups
-  const weeklyDir = join(HISTORY_DIR, 'weekly')
-  if ((existsSync(weeklyDir) ? readdirSync(weeklyDir).filter(f => f.endsWith('.md')).length : 0) < 4) {
-    const weeklyFile = join(weeklyDir, `${weekKey}.md`)
-    if (!existsSync(weeklyFile)) { const c = collectDailiesForWeek(weekNum, year); if (c) runRollup('weekly', weekKey, c) }
-  }
-  const monthKey = `${year}-${month}`
-  const monthlyDir = join(HISTORY_DIR, 'monthly')
-  if ((existsSync(monthlyDir) ? readdirSync(monthlyDir).filter(f => f.endsWith('.md')).length : 0) < 12) {
-    const monthlyFile = join(monthlyDir, `${monthKey}.md`)
-    if (!existsSync(monthlyFile)) { const c = collectFilesForPeriod(HISTORY_DIR, 'weekly', year, month); if (c) runRollup('monthly', monthKey, c) }
-  }
-  const yearlyDir = join(HISTORY_DIR, 'yearly')
-  if ((existsSync(yearlyDir) ? readdirSync(yearlyDir).filter(f => f.endsWith('.md')).length : 0) < 3) {
-    const yearlyFile = join(yearlyDir, `${year}.md`)
-    if (!existsSync(yearlyFile)) { const c = collectFilesForPeriod(HISTORY_DIR, 'monthly', year, ''); if (c) runRollup('yearly', year, c) }
-  }
-
-  // 4. Lifetime merge
-  generateLifetimeMerge()
-
-  // 5. Sync + embeddings + context
+  // 3. Sync + embeddings + context
   store.syncHistoryFromFiles()
   await refreshEmbeddings(ws)
   store.writeContextFile()
 
-  // 6. Save timestamp
+  // 4. Save timestamp
   writeCycleConfig({ ...config, lastSleepAt: now })
   process.stderr.write('[memory-cycle] Cycle complete.\n')
 }
@@ -432,7 +317,6 @@ export async function summarizeOnly(ws) {
     const template = existsSync(promptPath) ? readFileSync(promptPath, 'utf8') : 'Summarize the conversation below.'
     try {
       spawnClaudePrompt(template.replace('{{DATE}}', date).replace('{{HISTORY_DIR}}', HISTORY_DIR) + '\n\n---\n\n' + pingpong, { cwd: ws, timeout: 600000 })
-      normalizeSleepArtifacts(date, ws)
       process.stderr.write(`[memory-cycle] summarized ${date}\n`)
     } catch (e) { process.stderr.write(`[memory-cycle] summarize failed: ${e.message}\n`) }
   }

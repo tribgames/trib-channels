@@ -1166,8 +1166,7 @@ export class MemoryStore {
       } catch { /* duplicate rowid import */ }
       const shouldCandidate =
         entry.role === 'user' &&
-        entry.kind !== 'schedule-inject' &&
-        entry.kind !== 'event-inject'
+        entry.kind === 'message'
       const score = shouldCandidate ? candidateScore(clean, entry.role) : 0
       if (score > 0) {
         this.insertCandidateStmt.run(finalEpisodeId, ts, dayKey, entry.role, clean, score)
@@ -2011,6 +2010,7 @@ export class MemoryStore {
       const recentEpisodes = this.db.prepare(`
         SELECT role, content
         FROM episodes
+        WHERE kind = 'message'
         ORDER BY ts DESC, id DESC
         LIMIT 12
       `).all().reverse()
@@ -2747,8 +2747,13 @@ export class MemoryStore {
     const queryTokenCount = queryTokens.size
     const primaryIntent = intent?.primary ?? 'decision'
 
+    const dedupKey = (item) => {
+      const contentHash = (item.content || '').slice(0, 50).toLowerCase().replace(/\s+/g, '')
+      return `${item.type}:${item.subtype}:${contentHash}`
+    }
+
     for (const item of sparseResults) {
-      const key = `${item.type}:${item.subtype}:${item.ref}`
+      const key = dedupKey(item)
       merged.set(key, {
         ...item,
         sparse_score: Number(item.score),
@@ -2757,7 +2762,7 @@ export class MemoryStore {
     }
 
     for (const item of denseResults) {
-      const key = `${item.type}:${item.subtype}:${item.ref}`
+      const key = dedupKey(item)
       const prev = merged.get(key)
       if (prev) {
         prev.dense_score = Number(item.score)
@@ -3275,7 +3280,7 @@ export class MemoryStore {
         const recentTopics = this.db.prepare(`
           SELECT content FROM episodes
           WHERE role = 'user'
-            AND kind NOT IN ('schedule-inject', 'event-inject')
+            AND kind = 'message'
             AND content NOT LIKE 'You are consolidating%'
             AND content NOT LIKE 'You are improving%'
             AND LENGTH(content) BETWEEN 10 AND 200

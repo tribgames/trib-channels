@@ -160,11 +160,8 @@ const profileLine = profile.name
   ? `The user's name is ${profile.name}. Always address them by name, never as "user".${profile.lang ? ` Respond in ${profile.lang}.` : ''}${profile.tone ? ` Tone: ${profile.tone}.` : ''}`
   : ''
 
-const deviceTime = new Date().toLocaleString('en-US', { timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, dateStyle: 'full', timeStyle: 'short' })
-
 const INSTRUCTIONS = [
   'Always prioritize user safety. Never take actions that could harm the user, their data, or their systems without explicit approval.',
-  `Current time: ${deviceTime}`,
   profileLine,
   BASE_INSTRUCTIONS,
   settings ?? '',
@@ -1392,7 +1389,8 @@ async function handleInbound(
     channelId: route.targetChatId,
     userId: msg.userId,
   })
-  const content = memoryContext ? `${memoryContext}\n\n${messageBody}` : messageBody
+  const now = new Date().toLocaleString()
+  const content = (memoryContext ? `<system-reminder>\n${memoryContext}\n</system-reminder>\n\n` : '') + `[${now}]\n${messageBody}`
 
   void mcp.notification({
     method: 'notifications/claude/channel',
