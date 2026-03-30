@@ -16,7 +16,7 @@ Quiet Hours is a do-not-disturb mode. During quiet hours, claude2bot won't initi
 
 ## Settings
 
-Configure via tray app Settings or `/setup`:
+Configure via `/setup` or `/bot quiet`:
 - **Quiet Hours**: ON/OFF
 - **From**: Start time (e.g., 22:00)
 - **To**: End time (e.g., 08:00)

@@ -26,7 +26,7 @@ Autotalk is a proactive conversation feature. When enabled, claude2bot occasiona
 
 ## Settings
 
-Configure via tray app Settings or `/setup`:
+Configure via `/setup` or `/bot autotalk`:
 - **Autotalk**: ON/OFF
 - **Frequency**: 1-5 (or OFF)
 

@@ -11,22 +11,10 @@ An agentic Discord plugin for [Claude Code](https://docs.anthropic.com/en/docs/c
 
 ## Get started
 
-### macOS
-
 ```bash
-curl -fsSL https://github.com/claude2bot/claude2bot/releases/latest/download/install.sh | bash
+claude plugin marketplace add https://github.com/claude2bot/claude2bot
+claude plugin install claude2bot@claude2bot
 ```
-
-### Windows
-
-```powershell
-irm https://github.com/claude2bot/claude2bot/releases/latest/download/install.ps1 | iex
-```
-
-Install as a Claude Code plugin:
-
-> [!NOTE]
-> macOS requires [Homebrew](https://brew.sh). Windows uses winget (built-in).
 > Claude Code channel mode is experimental and uses the `--dangerously-load-development-channels` flag.
 
 ### Manual installation

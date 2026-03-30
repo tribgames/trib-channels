@@ -35,9 +35,9 @@ Rules:
 - Put longer explanation, rationale, and next-step context in `details`, not in the title.
 - For tasks, estimate the current lifecycle stage as one of: `planned`, `investigating`, `implementing`, `wired`, `verified`, `done`.
 - For tasks, estimate the confidence/evidence level as one of: `claimed`, `implemented`, `verified`.
-- Signals should only capture stable interaction patterns worth tracking later.
-- Signals should be broad patterns, not narrow incidents. Merge similar interests into a larger theme instead of creating many small signals.
-- Extract stable user profile items separately when possible. Prefer keys like `language`, `tone`, `address`, `response_style`, `timezone`.
+- Extract at least 1 signal per batch when any notable interaction pattern, topic interest, or behavioral cue is present.
+- Prefer broad patterns, but narrow signals (single topic interest, one-off preference) are acceptable at lower scores (0.3-0.5).
+- Always extract at least 1 profile item per batch if any user trait, preference, or communication style is mentioned or implied. Even weak signals (confidence 0.3) are valuable. Prefer keys like `language`, `tone`, `address`, `response_style`, `timezone`, `work_hours`, `expertise`.
 - Extract entities and relations when a candidate mentions named things (projects, tools, people, systems) and their connections.
 - Entity types: `project`, `tool`, `person`, `system`, `concept`, `service`.
 - Relation types: `uses`, `depends_on`, `part_of`, `created_by`, `integrates_with`, `replaced_by`, `blocks`.

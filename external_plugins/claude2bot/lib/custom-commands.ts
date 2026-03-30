@@ -8,7 +8,6 @@
  */
 
 import { readFileSync, writeFileSync, mkdirSync } from 'fs'
-import { homedir } from 'os'
 import { join } from 'path'
 import { DATA_DIR, loadConfig, loadBotConfig, saveBotConfig, loadProfileConfig, saveProfileConfig } from './config.js'
 import type { PluginConfig, TimedSchedule } from '../backends/types.js'
@@ -161,7 +160,7 @@ export async function handleBotCommand(
             '`/bot schedule add ...`',
             '',
             '**Guided setup**',
-            'Use `/claude2bot setup` for first-run onboarding and tray setup.',
+            'Use `/claude2bot setup` for first-run onboarding.',
           ].join('\n'),
           color: 0x5865F2,
         }],
@@ -463,7 +462,7 @@ function handleSleeping(parsed: ParsedCommand, ctx: CommandContext): CommandResu
 
   switch (action) {
     case 'status': {
-      const config = readLauncherConfigFile()
+      const config = loadBotConfig()
       const enabled = config?.sleepEnabled !== false
       const time = config?.sleepTime ?? '03:00'
 
@@ -476,17 +475,17 @@ function handleSleeping(parsed: ParsedCommand, ctx: CommandContext): CommandResu
       }
     }
     case 'on': {
-      writeLauncherConfigField('sleepEnabled', true)
+      writeBotField('sleepEnabled', true)
       return { text: 'Memory Summarize enabled.' }
     }
     case 'off': {
-      writeLauncherConfigField('sleepEnabled', false)
+      writeBotField('sleepEnabled', false)
       return { text: 'Memory Summarize disabled.' }
     }
     case 'time': {
       const time = parsed.args[2] ?? parsed.params.time
       if (!time) return { text: 'Usage: /bot sleeping time HH:MM' }
-      writeLauncherConfigField('sleepTime', time)
+      writeBotField('sleepTime', time)
       return { text: `Summarize time set to ${time}` }
     }
     case 'now':
@@ -504,7 +503,7 @@ function handleDisplay(parsed: ParsedCommand, _ctx: CommandContext): CommandResu
   const mode = parsed.args[1]
 
   if (!mode) {
-    const config = readLauncherConfigFile()
+    const config = loadBotConfig()
     const displayMode = config?.displayMode ?? 'view'
     return {
       embeds: [{
@@ -516,25 +515,19 @@ function handleDisplay(parsed: ParsedCommand, _ctx: CommandContext): CommandResu
   }
 
   if (mode === 'view' || mode === 'hide') {
-    writeLauncherConfigField('displayMode', mode)
+    writeBotField('displayMode', mode)
     return { text: `Display mode set to ${mode}.` }
   }
 
   return { text: 'Usage: /bot display [view|hide]' }
 }
 
-// ── Launcher config helpers ─────────────────────────────────────────
+// ── Bot config helpers (sleeping, display) ──────────────────────────
 
-function readLauncherConfigFile(): any {
-  const configPath = join(homedir(), '.claude2bot-launcher.json')
-  try { return JSON.parse(readFileSync(configPath, 'utf8')) } catch { return {} }
-}
-
-function writeLauncherConfigField(key: string, value: any): void {
-  const configPath = join(homedir(), '.claude2bot-launcher.json')
-  const config = readLauncherConfigFile()
-  config[key] = value
-  writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n')
+function writeBotField(key: string, value: any): void {
+  const bot = loadBotConfig()
+  ;(bot as any)[key] = value
+  saveBotConfig(bot)
 }
 
 // ── /bot(schedule, ...) ──────────────────────────────────────────────
