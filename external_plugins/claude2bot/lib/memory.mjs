@@ -811,6 +811,9 @@ export class MemoryStore {
       this.db.exec(`ALTER TABLE facts ADD COLUMN last_retrieved_at TEXT;`)
     } catch { /* already present */ }
     try {
+      this.db.exec(`ALTER TABLE facts ADD COLUMN superseded_by INTEGER REFERENCES facts(id);`)
+    } catch { /* already present */ }
+    try {
       this.db.exec(`ALTER TABLE tasks ADD COLUMN retrieval_count INTEGER NOT NULL DEFAULT 0;`)
     } catch { /* already present */ }
     try {
@@ -1654,7 +1657,7 @@ export class MemoryStore {
                 const oldVector = JSON.parse(old.vector_json)
                 const sim = cosineSimilarity(newVector, oldVector)
                 if (sim > 0.75 && old.text !== text) {
-                  this.db.prepare(`UPDATE facts SET status = 'superseded' WHERE id = ?`).run(old.id)
+                  this.db.prepare(`UPDATE facts SET status = 'superseded', superseded_by = ? WHERE id = ?`).run(row.id, old.id)
                 }
               } catch {}
             }
@@ -1995,24 +1998,6 @@ export class MemoryStore {
       .slice(0, 5)
     if (activeSignals.length > 0) {
       parts.push(`## Signals\n${activeSignals.map(item => `- [${item.kind}] ${item.value}`).join('\n')}`)
-    }
-
-    // ## Recent — daily summaries from history/daily/
-    const dailyDir = join(this.historyDir, 'daily')
-    if (existsSync(dailyDir)) {
-      const dailies = readdirSync(dailyDir)
-        .filter(f => f.endsWith('.md'))
-        .sort()
-        .reverse()
-        .slice(0, 2)
-      if (dailies.length) {
-        const recentLines = []
-        for (const f of dailies) {
-          const content = readFileSync(join(dailyDir, f), 'utf8').trim()
-          if (content) recentLines.push(content.slice(0, 500))
-        }
-        if (recentLines.length) parts.push(`## Recent\n${recentLines.join('\n\n')}`)
-      }
     }
 
     // Fallback — all sections empty → recent dialogues

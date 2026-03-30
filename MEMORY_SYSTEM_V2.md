@@ -516,3 +516,43 @@ claude2bot의 메모리 시스템을 인간 뇌의 기억 구조를 모방하여
 - https://github.com/mem0ai/mem0/issues/4573
 - https://github.com/mem0ai/mem0/issues/4536
 - https://arxiv.org/html/2603.19595v1 (All-Mem: 비파괴적 편집 대안)
+
+### recall_memory 최종 파라미터
+
+```json
+{
+  "name": "recall_memory",
+  "annotations": { "title": "Memory Recall" },
+  "inputSchema": {
+    "properties": {
+      "query": { "type": "string", "description": "Search keywords (3-5 words)" },
+      "type": { "enum": ["all", "facts", "tasks", "signals", "episodes"], "default": "all" },
+      "timerange": { "type": "string", "description": "today, this-week, 2026-03" },
+      "limit": { "type": "number", "default": 5 },
+      "source": { "type": "boolean", "default": false, "description": "Include source episode + line" },
+      "context": { "description": "Number of surrounding episodes OR 'semantic' for topic-based chunking" },
+      "compact": { "type": "boolean", "default": true, "description": "Use u/a shorthand for episodes" }
+    },
+    "required": ["query"]
+  }
+}
+```
+
+### Episode context 모드
+- `context: 5` → 전후 5개 episode (기계적, SQL 1회)
+- `context: "semantic"` → 같은 토픽 segment만 (buildSemanticDayPlan 재사용)
+- `compact: true` → `u:` / `a:` 축약, 초 단위 제거
+
+### 업계 프로덕션 이슈 교훈
+- Mem0: 97.8% junk, 환각 프로필, DELETE 정보 손실
+- Letta: 극심한 느림, archival memory 실패
+- Zep/Graphiti: Event loop 충돌 (치명적), Neo4j 의존
+- OpenClaw: 세션 상태 손상, 메모리 리콜 신뢰 불가
+- 공통: 모든 프로젝트에서 사용자가 자체 메모리 시스템 구축
+
+### claude2bot이 회피하는 패턴
+- LLM CRUD → 코드 기반 (결정적)
+- junk 추출 → 5레이어 전처리
+- 셀프호스팅 복잡도 → SQLite + 로컬 embedding
+- 세션 상태 손상 → episodes DB + source FK
+- event loop 충돌 → 단순 아키텍처

@@ -27,7 +27,7 @@ import { controlClaudeSession } from './lib/session-control.js'
 import { JsonStateFile, ensureDir, removeFileIfExists, writeTextFile, type StatusState } from './lib/state-file.js'
 import { getMemoryStore } from './lib/memory.mjs'
 import { configureEmbedding } from './lib/embedding-provider.mjs'
-import { sleepCycle, memoryFlush, rebuildRecent, pruneToRecent, getCycleStatus, autoFlush, runCycle1, parseInterval } from './lib/memory-cycle.mjs'
+import { sleepCycle, memoryFlush, rebuildRecent, pruneToRecent, getCycleStatus, autoFlush, runCycle1, parseInterval, buildSemanticDayPlan } from './lib/memory-cycle.mjs'
 import {
   buildModalRequestSpec,
   PendingInteractionStore,
@@ -1042,6 +1042,8 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           timerange: { type: 'string', description: 'e.g. today, this-week, 2026-03' },
           limit: { type: 'number', default: 5, description: 'Max results' },
           source: { type: 'boolean', default: false, description: 'Include source episode + line' },
+          context: { type: ['number', 'string'], description: 'Number of surrounding episodes OR "semantic" for topic-based chunking' },
+          compact: { type: 'boolean', default: true, description: 'Use u/a shorthand for episodes' },
         },
         required: ['query'],
       },
@@ -1208,6 +1210,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         const typeFilter = String(args.type ?? 'all')
         const limit = Number(args.limit ?? 5)
         const includeSource = Boolean(args.source ?? false)
+        const contextArg = args.context as string | number | undefined
+        const useCompact = args.compact !== false // default true
 
         const results = await memoryStore.searchRelevantHybrid(query, limit * 2)
 
@@ -1218,9 +1222,59 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
 
         // Map memory type names: fact->facts, task->tasks, signal->signals, episode->episodes
         const typeMap: Record<string, string> = { fact: 'facts', task: 'tasks', signal: 'signals', episode: 'episodes', summary: 'episodes' }
-        const formatted = results
+        const filtered = results
           .filter((r: Record<string, unknown>) => typeFilter === 'all' || typeMap[r.type as string] === typeFilter || r.type === typeFilter)
           .slice(0, limit)
+
+        // Context expansion: gather surrounding episodes for each matched episode
+        let contextEpisodes: string[] = []
+        if (contextArg !== undefined) {
+          const episodeResults = filtered.filter((r: Record<string, unknown>) => r.type === 'episode' || r.type === 'summary')
+          for (const r of episodeResults) {
+            const matchedId = Number(r.entity_id ?? r.id ?? 0)
+            if (!matchedId) continue
+            const matchedEp = memoryStore.db.prepare('SELECT day_key FROM episodes WHERE id = ?').get(matchedId) as { day_key?: string } | undefined
+            if (!matchedEp?.day_key) continue
+            const dayEpisodes = memoryStore.getEpisodesForDate(matchedEp.day_key)
+            if (contextArg === 'semantic') {
+              const plan = await buildSemanticDayPlan(dayEpisodes)
+              const idx = plan.rows.findIndex((row: Record<string, unknown>) => Number(row.id) === matchedId)
+              if (idx >= 0) {
+                const seg = plan.segments.find((s: { start: number; end: number }) => idx >= s.start && idx <= s.end)
+                if (seg) {
+                  const startIdx = dayEpisodes.findIndex((e: Record<string, unknown>) => Number(e.id) === Number(plan.rows[seg.start]?.id))
+                  const endIdx = dayEpisodes.findIndex((e: Record<string, unknown>) => Number(e.id) === Number(plan.rows[seg.end]?.id))
+                  if (startIdx >= 0 && endIdx >= 0) {
+                    const slice = dayEpisodes.slice(startIdx, endIdx + 1)
+                    contextEpisodes.push(`--- context (semantic segment, ${matchedEp.day_key}) ---`)
+                    for (const ep of slice) {
+                      const role = useCompact ? (ep.role === 'user' ? 'u' : 'a') : ep.role
+                      const ts = useCompact ? String(ep.ts ?? '').replace(/:\d{2}\.\d+/, '') : String(ep.ts ?? '')
+                      contextEpisodes.push(`[${ts}] ${role}: ${ep.content}`)
+                    }
+                  }
+                }
+              }
+            } else {
+              const n = Math.max(1, Number(contextArg))
+              const matchIdx = dayEpisodes.findIndex((e: Record<string, unknown>) => Number(e.id) === matchedId)
+              if (matchIdx >= 0) {
+                const start = Math.max(0, matchIdx - n)
+                const end = Math.min(dayEpisodes.length - 1, matchIdx + n)
+                contextEpisodes.push(`--- context (±${n}, ${matchedEp.day_key}) ---`)
+                for (let i = start; i <= end; i++) {
+                  const ep = dayEpisodes[i]
+                  const role = useCompact ? (ep.role === 'user' ? 'u' : 'a') : ep.role
+                  const ts = useCompact ? String(ep.ts ?? '').replace(/:\d{2}\.\d+/, '') : String(ep.ts ?? '')
+                  const marker = i === matchIdx ? '*' : ' '
+                  contextEpisodes.push(`${marker}[${ts}] ${role}: ${ep.content}`)
+                }
+              }
+            }
+          }
+        }
+
+        const formatted = filtered
           .map((r: Record<string, unknown>) => {
             const ts = r.updated_at ?? r.source_ts
             const date = ts ? new Date(typeof ts === 'number' && ts < 1e12 ? (ts as number) * 1000 : ts as number).toLocaleString() : 'unknown'
@@ -1233,7 +1287,11 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           })
           .join('\n')
 
-        result = { content: [{ type: 'text', text: formatted || '(no matching memories found)' }] }
+        const output = contextEpisodes.length > 0
+          ? `${formatted}\n\n${contextEpisodes.join('\n')}`
+          : formatted
+
+        result = { content: [{ type: 'text', text: output || '(no matching memories found)' }] }
         break
       }
       default:

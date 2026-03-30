@@ -132,7 +132,7 @@ function percentile(values, p) {
   return sorted[Math.max(0, Math.min(sorted.length - 1, Math.floor((p / 100) * (sorted.length - 1))))]
 }
 
-async function buildSemanticDayPlan(dayEpisodes) {
+export async function buildSemanticDayPlan(dayEpisodes) {
   const rows = dayEpisodes.map((ep, i) => ({ index: i, id: ep.id, role: ep.role, content: cleanMemoryText(ep.content ?? '') })).filter(r => r.content)
   if (rows.length <= 1) return { rows, segments: rows.length ? [{ start: 0, end: rows.length - 1 }] : [], threshold: 1 }
   const vectors = await Promise.all(rows.map(r => embedText(String(r.content).slice(0, 320))))
@@ -263,42 +263,17 @@ export async function sleepCycle(ws) {
   process.stderr.write(`[memory-cycle] Starting.${isFirstRun ? ' (FIRST RUN)' : ''}\n`)
   store.backfillProject(ws, { limit: 120 })
 
-  mkdirSync(join(HISTORY_DIR, 'daily'), { recursive: true })
-
-  // 1. Generate daily summaries
+  // 1. Consolidation
   const MAX_DAYS = 7
   const pendingDays = store.getPendingCandidateDays(MAX_DAYS, 1).map(d => d.day_key).sort()
-
-  let generated = 0
-  for (const date of pendingDays) {
-    if (generated >= MAX_DAYS) break
-    const dailyFile = join(HISTORY_DIR, 'daily', `${date}.md`)
-    if (existsSync(dailyFile)) continue
-
-    const episodes = store.getEpisodesForDate(date)
-    const pingpong = episodes.filter(e => e.role === 'user' || e.role === 'assistant').map(e => `${e.role}: ${cleanMemoryText(e.content).slice(0, 400)}`).join('\n')
-    if (!pingpong) continue
-
-    const promptPath = join(resourceDir(), 'defaults', 'sleep-prompt.md')
-    const template = existsSync(promptPath) ? readFileSync(promptPath, 'utf8') : 'Summarize the conversation below.'
-    const prompt = template.replace('{{DATE}}', date).replace('{{HISTORY_DIR}}', HISTORY_DIR)
-    try {
-      const { status } = spawnClaudePrompt(prompt + '\n\n---\n\n' + pingpong, { cwd: ws, timeout: 600000 })
-      if (status !== 0) throw new Error(`exit code ${status}`)
-      generated++
-      process.stderr.write(`[memory-cycle] Daily ${date} generated.\n`)
-    } catch (e) { process.stderr.write(`[memory-cycle] daily failed for ${date}: ${e.message}\n`) }
-  }
-
-  // 2. Consolidation
   await consolidateRecent(pendingDays, ws)
 
-  // 3. Sync + embeddings + context
+  // 2. Sync + embeddings + context
   store.syncHistoryFromFiles()
   await refreshEmbeddings(ws)
   store.writeContextFile()
 
-  // 4. Save timestamp
+  // 3. Save timestamp
   writeCycleConfig({ ...config, lastSleepAt: now })
   process.stderr.write('[memory-cycle] Cycle complete.\n')
 }
@@ -307,23 +282,7 @@ export async function summarizeOnly(ws) {
   const store = getStore()
   store.backfillProject(ws, { limit: 120 })
   const pendingDays = store.getPendingCandidateDays(3, 1).map(d => d.day_key).sort()
-  for (const date of pendingDays) {
-    const dailyFile = join(HISTORY_DIR, 'daily', `${date}.md`)
-    if (existsSync(dailyFile)) continue
-    mkdirSync(join(HISTORY_DIR, 'daily'), { recursive: true })
-    const episodes = store.getEpisodesForDate(date)
-    const pingpong = episodes.filter(e => e.role === 'user' || e.role === 'assistant').map(e => `${e.role}: ${cleanMemoryText(e.content).slice(0, 400)}`).join('\n')
-    if (!pingpong) continue
-    const promptPath = join(resourceDir(), 'defaults', 'sleep-prompt.md')
-    const template = existsSync(promptPath) ? readFileSync(promptPath, 'utf8') : 'Summarize the conversation below.'
-    try {
-      spawnClaudePrompt(template.replace('{{DATE}}', date).replace('{{HISTORY_DIR}}', HISTORY_DIR) + '\n\n---\n\n' + pingpong, { cwd: ws, timeout: 600000 })
-      process.stderr.write(`[memory-cycle] summarized ${date}\n`)
-    } catch (e) { process.stderr.write(`[memory-cycle] summarize failed: ${e.message}\n`) }
-  }
-  // Consolidate candidates extracted during summarization
-  const candidateDays = store.getPendingCandidateDays(3, 1).map(d => d.day_key).sort()
-  if (candidateDays.length > 0) await consolidateRecent(candidateDays, ws)
+  if (pendingDays.length > 0) await consolidateRecent(pendingDays, ws)
   await refreshEmbeddings(ws)
   store.syncHistoryFromFiles()
   store.writeContextFile()
@@ -489,7 +448,18 @@ export async function runCycle1(ws, config) {
       .map((c, i) => `#${i + 1} [${c.role}]: ${c.content.slice(0, 300)}`)
       .join('\n\n')
 
-    const extractionPrompt = loadCycle1Prompt().replace('{{CANDIDATES}}', candidateText)
+    // Inject existing related memories for dedup/change detection
+    let existingMemorySection = ''
+    try {
+      const searchQuery = candidates.map(c => c.content.slice(0, 80)).join(' ')
+      const existingMemories = await store.searchRelevantHybrid(searchQuery, 5)
+      if (existingMemories && existingMemories.length > 0) {
+        const memLines = existingMemories.map((m, i) => `${i + 1}. [${m.type}] ${m.content || m.text || ''}`).join('\n')
+        existingMemorySection = `\n\nExisting memories (skip duplicates, note changes):\n${memLines}\n`
+      }
+    } catch { /* best effort */ }
+
+    const extractionPrompt = loadCycle1Prompt().replace('{{CANDIDATES}}', candidateText + existingMemorySection)
 
     // Call LLM via provider abstraction
     let raw
