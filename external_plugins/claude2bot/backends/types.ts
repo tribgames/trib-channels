@@ -261,6 +261,8 @@ export interface PluginConfig {
     cycle1?: {
       interval?: string
       timeout?: number
+      maxCandidatesPerBatch?: number
+      maxBatches?: number
       provider?: {
         connection: 'codex' | 'cli' | 'ollama' | 'api'
         model?: string

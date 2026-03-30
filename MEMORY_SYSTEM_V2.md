@@ -483,3 +483,36 @@ claude2bot의 메모리 시스템을 인간 뇌의 기억 구조를 모방하여
 - [ ] cycle3 주간 장기 정리
 - [ ] 프로필 학습 (profile.json 제거)
 - [ ] trib-search 동기화
+
+---
+
+## 17. LLM CRUD를 채택하지 않는 이유
+
+### Mem0 프로덕션 결과 (GitHub #4573, 2026-03-27)
+- 32일 운영, 10,134개 메모리 전수 감사
+- **97.8%가 junk** — 원본 사용 가능한 건 38개뿐
+- 52.7%: 시스템 프롬프트 반복 추출
+- 5.2%: **환각 유저 프로필** (존재하지 않는 사람 날조)
+- 2.1%: **보안 유출** (IP, 파일 경로)
+- DELETE 시 새 fact ADD 안 해서 **정보 블랙홀** (#4536)
+- "더 좋은 모델 = 더 무차별 추출" (Sonnet도 동일)
+
+### claude2bot 접근 — 코드 기반 CRUD
+- 벡터 유사도 0.85 → 시맨틱 중복 감지 (코드, 결정적)
+- slot 충돌 → 같은 카테고리 값 교체 (코드, 결정적)
+- superseded → 벡터 0.75+ 텍스트 다름 (코드, 결정적)
+- stale → 시간 기반 decay (코드, 결정적)
+- **DELETE 없음** — soft delete만 (stale/superseded)
+- **LLM은 extraction만** — CRUD 판단은 코드에 위임
+
+### 5레이어 전처리가 Mem0 junk를 방지하는 방법
+1. cleanMemoryText → 시스템 태그/코드블록 제거 (Mem0의 52.7% 문제 해결)
+2. looksLowSignal → 20+패턴으로 노이즈 차단 (heartbeat, cron, 시스템 이벤트)
+3. candidateScore → 다차원 점수 (과장/artifact 감점)
+4. kind='message' 필터 → transcript/turn 제외 (시스템 프롬프트 재추출 방지)
+5. shouldKeepFact → confidence/단어수/글자수 게이트 (환각/임시 항목 차단)
+
+### 참고
+- https://github.com/mem0ai/mem0/issues/4573
+- https://github.com/mem0ai/mem0/issues/4536
+- https://arxiv.org/html/2603.19595v1 (All-Mem: 비파괴적 편집 대안)

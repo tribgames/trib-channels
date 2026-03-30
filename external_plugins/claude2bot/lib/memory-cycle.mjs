@@ -449,6 +449,8 @@ function loadCycle1Prompt() {
 }
 
 const DEFAULT_CYCLE1_PROVIDER = { connection: 'codex', model: 'gpt-5.3-codex-spark', effort: 'medium' }
+const MAX_CYCLE1_CANDIDATES_PER_BATCH = 50
+const MAX_CYCLE1_BATCHES = 5
 
 export async function runCycle1(ws, config) {
   const store = getStore()
@@ -460,56 +462,79 @@ export async function runCycle1(ws, config) {
   if (!newEpisodes || newEpisodes.length === 0) return { extracted: 0 }
 
   // Filter: user messages only, clean + low-signal filter
-  const candidates = newEpisodes
+  const allCandidates = newEpisodes
     .filter(e => e.role === 'user' && e.kind === 'message')
     .map(e => ({ ...e, content: cleanMemoryText(e.content) }))
     .filter(e => e.content && !looksLowSignalCycle1(e.content))
 
-  if (candidates.length === 0) {
-    // Update timestamp even if no candidates to avoid re-scanning
+  if (allCandidates.length === 0) {
     writeCycleConfig({ ...cycleConfig, lastCycle1At: Date.now() })
     return { extracted: 0 }
   }
 
-  // Build prompt
-  const candidateText = candidates
-    .map((c, i) => `#${i + 1} [${c.role}]: ${c.content.slice(0, 300)}`)
-    .join('\n\n')
-
-  const extractionPrompt = loadCycle1Prompt().replace('{{CANDIDATES}}', candidateText)
-
-  // Call LLM via provider abstraction
+  const maxPerBatch = Math.max(1, Number(config?.memory?.cycle1?.maxCandidatesPerBatch ?? MAX_CYCLE1_CANDIDATES_PER_BATCH))
+  const maxBatches = Math.max(1, Number(config?.memory?.cycle1?.maxBatches ?? MAX_CYCLE1_BATCHES))
   const provider = config?.memory?.cycle1?.provider || DEFAULT_CYCLE1_PROVIDER
   const timeout = config?.memory?.cycle1?.timeout || 60000
-  const raw = await callLLM(extractionPrompt, provider, { timeout, cwd: ws })
 
-  // Parse and upsert
-  const parsed = extractJsonObject(raw)
-  if (!parsed) {
-    writeCycleConfig({ ...cycleConfig, lastCycle1At: Date.now() })
-    return { extracted: candidates.length, error: 'invalid JSON' }
+  let totalExtracted = 0, totalFacts = 0, totalTasks = 0, totalSignals = 0
+
+  for (let batch = 0; batch < maxBatches; batch++) {
+    const start = batch * maxPerBatch
+    if (start >= allCandidates.length) break
+    const candidates = allCandidates.slice(start, start + maxPerBatch)
+
+    // Build prompt
+    const candidateText = candidates
+      .map((c, i) => `#${i + 1} [${c.role}]: ${c.content.slice(0, 300)}`)
+      .join('\n\n')
+
+    const extractionPrompt = loadCycle1Prompt().replace('{{CANDIDATES}}', candidateText)
+
+    // Call LLM via provider abstraction
+    let raw
+    try {
+      raw = await callLLM(extractionPrompt, provider, { timeout, cwd: ws })
+    } catch (e) {
+      process.stderr.write(`[memory-cycle1] batch ${batch} LLM error: ${e.message}\n`)
+      break
+    }
+
+    // Parse and upsert
+    const parsed = extractJsonObject(raw)
+    if (!parsed) {
+      process.stderr.write(`[memory-cycle1] batch ${batch}: invalid JSON\n`)
+      continue
+    }
+
+    const ts = new Date().toISOString()
+    const srcEp = candidates[0]?.id ?? null
+    if (parsed.profiles) store.upsertProfiles(parsed.profiles, ts, srcEp)
+    if (parsed.facts) await store.upsertFacts(parsed.facts, ts, srcEp)
+    if (parsed.tasks) store.upsertTasks(parsed.tasks, ts, srcEp)
+    if (parsed.signals) store.upsertSignals(parsed.signals, srcEp, ts)
+    if (parsed.entities) store.upsertEntities(parsed.entities, ts, srcEp)
+    if (parsed.relations) store.upsertRelations(parsed.relations, ts, srcEp)
+
+    totalExtracted += candidates.length
+    totalFacts += (parsed.facts || []).length
+    totalTasks += (parsed.tasks || []).length
+    totalSignals += (parsed.signals || []).length
   }
-
-  const ts = new Date().toISOString()
-  const srcEp = candidates[0]?.id ?? null
-  if (parsed.profiles) store.upsertProfiles(parsed.profiles, ts, srcEp)
-  if (parsed.facts) await store.upsertFacts(parsed.facts, ts, srcEp)
-  if (parsed.tasks) store.upsertTasks(parsed.tasks, ts, srcEp)
-  if (parsed.signals) store.upsertSignals(parsed.signals, srcEp, ts)
-  if (parsed.entities) store.upsertEntities(parsed.entities, ts, srcEp)
-  if (parsed.relations) store.upsertRelations(parsed.relations, ts, srcEp)
 
   // Update context file + timestamp
   store.writeContextFile()
   writeCycleConfig({ ...cycleConfig, lastCycle1At: Date.now() })
 
   const result = {
-    extracted: candidates.length,
-    facts: (parsed.facts || []).length,
-    tasks: (parsed.tasks || []).length,
-    signals: (parsed.signals || []).length,
+    extracted: totalExtracted,
+    facts: totalFacts,
+    tasks: totalTasks,
+    signals: totalSignals,
   }
-  process.stderr.write(`[memory-cycle1] extracted=${result.extracted} facts=${result.facts} tasks=${result.tasks} signals=${result.signals}\n`)
+  if (totalExtracted > 0) {
+    process.stderr.write(`[memory-cycle1] extracted=${result.extracted} facts=${result.facts} tasks=${result.tasks} signals=${result.signals}\n`)
+  }
   return result
 }
 
