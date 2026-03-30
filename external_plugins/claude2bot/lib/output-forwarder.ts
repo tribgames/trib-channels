@@ -26,9 +26,21 @@ export interface SessionBoundTranscript {
   exists: boolean
 }
 
+export interface ClaudeSessionRecord {
+  pid: number
+  sessionId: string
+  cwd: string
+  startedAt: number
+  kind: string
+  entrypoint: string
+}
+
 type SessionMeta = {
   sessionId?: string
   cwd?: string
+  startedAt?: number
+  kind?: string
+  entrypoint?: string
 }
 
 export function cwdToProjectSlug(cwd: string): string {
@@ -57,71 +69,101 @@ function getParentPid(pid: number): number | null {
   }
 }
 
-export function discoverSessionBoundTranscript(): SessionBoundTranscript | null {
-  const projectsDir = join(homedir(), '.claude', 'projects')
-  const sessionsDir = join(homedir(), '.claude', 'sessions')
+function readSessionRecord(pid: number): ClaudeSessionRecord | null {
+  const sessionFile = join(homedir(), '.claude', 'sessions', `${pid}.json`)
+  try {
+    const session = JSON.parse(readFileSync(sessionFile, 'utf8')) as SessionMeta
+    if (!session.sessionId) return null
+    return {
+      pid,
+      sessionId: session.sessionId,
+      cwd: resolve(session.cwd ?? process.cwd()),
+      startedAt: typeof session.startedAt === 'number' ? session.startedAt : 0,
+      kind: typeof session.kind === 'string' ? session.kind : '',
+      entrypoint: typeof session.entrypoint === 'string' ? session.entrypoint : '',
+    }
+  } catch {
+    return null
+  }
+}
+
+function isInteractiveSession(session: ClaudeSessionRecord | null): session is ClaudeSessionRecord {
+  if (!session) return false
+  return session.kind === 'interactive' || (!session.kind && session.entrypoint === 'cli')
+}
+
+export function discoverCurrentClaudeSession(): ClaudeSessionRecord | null {
   let pid: number | null = process.ppid
-  const projectSlug = cwdToProjectSlug(process.cwd())
 
   for (let depth = 0; pid && pid > 1 && depth < 6; depth += 1) {
-    const sessionFile = join(sessionsDir, `${pid}.json`)
-    try {
-      const session = JSON.parse(readFileSync(sessionFile, 'utf8')) as SessionMeta
-      if (session.sessionId) {
-        const sessionCwd = resolve(session.cwd ?? process.cwd())
-        const preferred = join(projectsDir, cwdToProjectSlug(sessionCwd), `${session.sessionId}.jsonl`)
-        if (existsSync(preferred)) {
-          return {
-            claudePid: pid,
-            sessionId: session.sessionId,
-            sessionCwd,
-            transcriptPath: preferred,
-            exists: true,
-          }
-        }
-
-        const fallback = join(projectsDir, projectSlug, `${session.sessionId}.jsonl`)
-        if (existsSync(fallback)) {
-          return {
-            claudePid: pid,
-            sessionId: session.sessionId,
-            sessionCwd,
-            transcriptPath: fallback,
-            exists: true,
-          }
-        }
-
-        // Fallback: find the most recently modified .jsonl in the sessionCwd-based project dir
-        const cwdProjectDir = join(projectsDir, cwdToProjectSlug(sessionCwd))
-        try {
-          const files = readdirSync(cwdProjectDir)
-            .filter(f => f.endsWith('.jsonl') && !f.startsWith('agent-'))
-            .map(f => ({ path: join(cwdProjectDir, f), mtime: statSync(join(cwdProjectDir, f)).mtimeMs }))
-            .sort((a, b) => b.mtime - a.mtime)
-          if (files.length > 0) {
-            return {
-              claudePid: pid,
-              sessionId: session.sessionId,
-              sessionCwd,
-              transcriptPath: files[0].path,
-              exists: true,
-            }
-          }
-        } catch { /* dir may not exist */ }
-
-        return {
-          claudePid: pid,
-          sessionId: session.sessionId,
-          sessionCwd,
-          transcriptPath: preferred,
-          exists: false,
-        }
-      }
-    } catch { /* try parent */ }
+    const session = readSessionRecord(pid)
+    if (session) return session
     pid = getParentPid(pid)
   }
 
   return null
+}
+
+export function listInteractiveClaudeSessions(): ClaudeSessionRecord[] {
+  const sessionsDir = join(homedir(), '.claude', 'sessions')
+  try {
+    return readdirSync(sessionsDir)
+      .filter(file => file.endsWith('.json'))
+      .map(file => parseInt(basename(file, '.json'), 10))
+      .filter(pid => Number.isFinite(pid))
+      .map(pid => readSessionRecord(pid))
+      .filter(isInteractiveSession)
+      .sort((a, b) => {
+        if (b.startedAt !== a.startedAt) return b.startedAt - a.startedAt
+        return b.pid - a.pid
+      })
+  } catch {
+    return []
+  }
+}
+
+export function getLatestInteractiveClaudeSession(): ClaudeSessionRecord | null {
+  return listInteractiveClaudeSessions()[0] ?? null
+}
+
+function resolveTranscriptForSession(session: ClaudeSessionRecord): SessionBoundTranscript {
+  const projectsDir = join(homedir(), '.claude', 'projects')
+  const projectSlug = cwdToProjectSlug(process.cwd())
+  const preferred = join(projectsDir, cwdToProjectSlug(session.cwd), `${session.sessionId}.jsonl`)
+  if (existsSync(preferred)) {
+    return {
+      claudePid: session.pid,
+      sessionId: session.sessionId,
+      sessionCwd: session.cwd,
+      transcriptPath: preferred,
+      exists: true,
+    }
+  }
+
+  const fallback = join(projectsDir, projectSlug, `${session.sessionId}.jsonl`)
+  if (existsSync(fallback)) {
+    return {
+      claudePid: session.pid,
+      sessionId: session.sessionId,
+      sessionCwd: session.cwd,
+      transcriptPath: fallback,
+      exists: true,
+    }
+  }
+
+  return {
+    claudePid: session.pid,
+    sessionId: session.sessionId,
+    sessionCwd: session.cwd,
+    transcriptPath: preferred,
+    exists: false,
+  }
+}
+
+export function discoverSessionBoundTranscript(): SessionBoundTranscript | null {
+  const session = discoverCurrentClaudeSession()
+  if (!session) return null
+  return resolveTranscriptForSession(session)
 }
 
 export class OutputForwarder {

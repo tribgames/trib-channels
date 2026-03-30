@@ -22,7 +22,12 @@ import { loadSettings, tryRead } from './lib/settings.js'
 import { Scheduler } from './lib/scheduler.js'
 import { WebhookServer } from './lib/webhook.js'
 import { EventPipeline } from './lib/event-pipeline.js'
-import { OutputForwarder, discoverSessionBoundTranscript, cwdToProjectSlug } from './lib/output-forwarder.js'
+import {
+  OutputForwarder,
+  discoverCurrentClaudeSession,
+  discoverSessionBoundTranscript,
+  getLatestInteractiveClaudeSession,
+} from './lib/output-forwarder.js'
 import { controlClaudeSession } from './lib/session-control.js'
 import { JsonStateFile, ensureDir, removeFileIfExists, writeTextFile, type StatusState } from './lib/state-file.js'
 import { getMemoryStore } from './lib/memory.mjs'
@@ -45,9 +50,6 @@ import {
   cleanupInstanceRuntimeFiles,
   releaseOwnedChannelLocks,
   clearActiveInstance,
-  killPreviousServer,
-  writeServerPid,
-  clearServerPid,
 } from './lib/runtime-paths.js'
 import type { InboundMessage } from './backends/types.js'
 import { PLUGIN_ROOT } from './lib/config.js'
@@ -71,11 +73,12 @@ function logCrash(label: string, err: unknown): void {
   if (crashLogging) return // prevent infinite loop — never reset once set
   crashLogging = true
 
-  // EPIPE means the parent process closed our pipes — unrecoverable, exit immediately
+  // EPIPE means the parent process closed our pipes — unrecoverable
+  // Disconnect Discord Gateway first to prevent zombie connections, then exit
   if (err instanceof Error && err.message.includes('EPIPE')) {
     try {
       const crashLog = path.join(DATA_DIR, 'crash.log')
-      fs.appendFileSync(crashLog, `[${new Date().toISOString()}] claude2bot: EPIPE detected, exiting\n`)
+      fs.appendFileSync(crashLog, `[${new Date().toISOString()}] claude2bot: EPIPE detected, disconnecting + exiting\n`)
     } catch { /* best effort */ }
     process.exit(1)
   }
@@ -95,7 +98,7 @@ process.on('uncaughtException', err => logCrash('uncaught exception', err))
 
 // When spawned as child of claude -p (non-interactive schedule/webhook),
 // this plugin is loaded but not needed. Exit immediately to avoid
-// killPreviousServer and EPIPE issues.
+// channel bridge conflicts and EPIPE issues.
 if (process.env.CLAUDE2BOT_NO_CONNECT) {
   process.exit(0)
 }
@@ -337,22 +340,9 @@ const forwarder = new OutputForwarder({
   removeReaction: (ch, mid, emoji) => backend.removeReaction(ch, mid, emoji),
 }, statusState)
 
-// Singleton: kill previous server instance, register our PID
-killPreviousServer()
-writeServerPid()
-refreshActiveInstance(INSTANCE_ID)
-
-// Initial transcript binding — start forwarding even before first inbound message
-{
-  const initBound = discoverSessionBoundTranscript()
-  if (initBound?.exists) {
-    const initChannel = statusState.read().channelId
-    if (initChannel) {
-      applyTranscriptBinding(initChannel, initBound.transcriptPath)
-      process.stderr.write(`claude2bot: initial transcript bind: ${initBound.transcriptPath}\n`)
-    }
-  }
-}
+// Runtime ownership follows the newest interactive Claude session.
+// Multiple plugin processes may coexist; only the current owner connects
+// Discord/webhook/scheduler and claims channel state.
 
 try {
   controlWorker = spawn(process.execPath, [path.join(PLUGIN_ROOT, 'hooks', 'control-worker.cjs'), INSTANCE_ID], {
@@ -458,6 +448,88 @@ if (config.webhook?.enabled) {
 // ── Event pipeline ───────────────────────────────────────────────────
 
 const eventPipeline = new EventPipeline(config.events, config.channelsConfig)
+let bridgeRuntimeConnected = false
+let bridgeOwnershipRefreshRunning = false
+let bridgeOwnershipTimer: ReturnType<typeof setInterval> | null = null
+let lastOwnershipNote = ''
+
+function logOwnership(note: string): void {
+  if (lastOwnershipNote === note) return
+  lastOwnershipNote = note
+  process.stderr.write(`[ownership] ${note}\n`)
+}
+
+function getBridgeOwnershipSnapshot(): {
+  current: ReturnType<typeof discoverCurrentClaudeSession>
+  latest: ReturnType<typeof getLatestInteractiveClaudeSession>
+  owned: boolean
+} {
+  const current = discoverCurrentClaudeSession()
+  const latest = getLatestInteractiveClaudeSession()
+  const owned = Boolean(current?.sessionId && latest?.sessionId && current.sessionId === latest.sessionId)
+  return { current, latest, owned }
+}
+
+function bindPersistedTranscriptIfAny(): void {
+  const initBound = discoverSessionBoundTranscript()
+  if (!initBound?.exists) return
+  const initChannel = statusState.read().channelId
+  if (!initChannel) return
+  applyTranscriptBinding(initChannel, initBound.transcriptPath)
+  process.stderr.write(`claude2bot: initial transcript bind: ${initBound.transcriptPath}\n`)
+}
+
+async function startOwnedRuntime(options: { restoreBinding?: boolean } = {}): Promise<void> {
+  if (bridgeRuntimeConnected) return
+  await backend.connect()
+  bridgeRuntimeConnected = true
+  scheduler.start()
+  if (webhookServer) webhookServer.start()
+  eventPipeline.start()
+  refreshActiveInstance(INSTANCE_ID)
+  if (options.restoreBinding !== false) bindPersistedTranscriptIfAny()
+  process.stderr.write(`claude2bot: running with ${backend.name} backend\n`)
+  const current = discoverCurrentClaudeSession()
+  logOwnership(`active main session ${current?.sessionId ?? 'unknown'}`)
+}
+
+async function stopOwnedRuntime(reason: string): Promise<void> {
+  if (!bridgeRuntimeConnected) return
+  stopServerTyping()
+  scheduler.stop()
+  if (webhookServer) webhookServer.stop()
+  eventPipeline.stop()
+  releaseOwnedChannelLocks(INSTANCE_ID)
+  clearActiveInstance(INSTANCE_ID)
+  await backend.disconnect()
+  bridgeRuntimeConnected = false
+  logOwnership(`standby: ${reason}`)
+}
+
+async function refreshBridgeOwnership(options: { restoreBinding?: boolean } = {}): Promise<void> {
+  if (bridgeOwnershipRefreshRunning) return
+  bridgeOwnershipRefreshRunning = true
+  try {
+    const { current, latest, owned } = getBridgeOwnershipSnapshot()
+    if (owned) {
+      await startOwnedRuntime(options)
+      return
+    }
+    if (bridgeRuntimeConnected) {
+      const reason =
+        latest?.sessionId
+          ? `newer interactive session ${latest.sessionId}`
+          : 'no interactive Claude session available'
+      await stopOwnedRuntime(reason)
+      return
+    }
+    if (!current?.sessionId && latest?.sessionId) {
+      logOwnership(`ignoring plugin instance outside tracked Claude session; latest=${latest.sessionId}`)
+    }
+  } finally {
+    bridgeOwnershipRefreshRunning = false
+  }
+}
 
 function reloadRuntimeConfig(): void {
   config = loadConfig()
@@ -469,16 +541,19 @@ function reloadRuntimeConfig(): void {
     config.channelsConfig,
     config.promptsDir,
     botConfig,
+    { restart: bridgeRuntimeConnected },
   )
   // Reload webhook config
   if (config.webhook?.enabled) {
     if (webhookServer) {
-      webhookServer.reloadConfig(config.webhook, config.channelsConfig ?? null)
+      webhookServer.reloadConfig(config.webhook, config.channelsConfig ?? null, {
+        autoStart: bridgeRuntimeConnected,
+      })
     } else {
       webhookServer = new WebhookServer(config.webhook, config.channelsConfig ?? null)
       // wireWebhookHandlers is defined below — safe because reloadRuntimeConfig is only called at runtime
       ;(wireWebhookHandlers as () => void)()
-      webhookServer.start()
+      if (bridgeRuntimeConnected) webhookServer.start()
     }
   } else if (webhookServer) {
     webhookServer.stop()
@@ -623,6 +698,10 @@ function editDiscordMessage(channelId: string, messageId: string, label: string)
 
 // ── Modal display handler (receives raw interactions from discord.ts) ──
 backend.onModalRequest = async (rawInteraction: any) => {
+  if (!bridgeRuntimeConnected || !getBridgeOwnershipSnapshot().owned) {
+    void refreshBridgeOwnership()
+    return
+  }
   const { ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder } = await import('discord.js')
   const customId = rawInteraction.customId
   const channelId = rawInteraction.channelId ?? ''
@@ -652,6 +731,10 @@ backend.onModalRequest = async (rawInteraction: any) => {
 }
 
 backend.onInteraction = (interaction: BackendInteraction) => {
+  if (!bridgeRuntimeConnected || !getBridgeOwnershipSnapshot().owned) {
+    void refreshBridgeOwnership()
+    return
+  }
   scheduler.noteActivity()
 
   // ── Permission button handling (perm-{uuid}-{action}) ──
@@ -1757,25 +1840,10 @@ const INBOUND_DEDUP_DIR = path.join(os.tmpdir(), 'claude2bot-inbound')
 ensureDir(INBOUND_DEDUP_DIR)
 
 function claimChannelOwner(channelId: string): boolean {
+  // The active bridge owner is the newest interactive Claude session.
   const ownerPath = getChannelOwnerPath(channelId)
-  const now = Date.now()
   try {
-    const raw = fs.readFileSync(ownerPath, 'utf8')
-    const owner = JSON.parse(raw) as { instanceId: string; pid: number; updatedAt: number }
-    if (owner.instanceId === INSTANCE_ID) {
-      fs.writeFileSync(ownerPath, JSON.stringify({ ...owner, updatedAt: now }))
-      return true
-    }
-    if (owner.updatedAt && now - owner.updatedAt < 10 * 60_000) {
-      try {
-        process.kill(owner.pid, 0)
-        return false
-      } catch { /* dead owner, take over */ }
-    }
-  } catch { /* no owner */ }
-
-  try {
-    fs.writeFileSync(ownerPath, JSON.stringify({ instanceId: INSTANCE_ID, pid: process.pid, updatedAt: now }))
+    fs.writeFileSync(ownerPath, JSON.stringify({ instanceId: INSTANCE_ID, pid: process.pid, updatedAt: Date.now() }))
     return true
   } catch {
     return false
@@ -1838,6 +1906,10 @@ function resolveInboundRoute(chatId: string): {
 }
 
 backend.onMessage = (msg) => {
+  if (!bridgeRuntimeConnected || !getBridgeOwnershipSnapshot().owned) {
+    void refreshBridgeOwnership()
+    return
+  }
   if (shouldDropDuplicateInbound(msg)) return
   if (!claimChannelOwner(msg.chatId)) return
   const route = resolveInboundRoute(msg.chatId)
@@ -1857,19 +1929,6 @@ backend.onMessage = (msg) => {
   if (transcriptPath) {
     applyTranscriptBinding(route.targetChatId, transcriptPath)
   } else {
-    // Fallback: find most recent transcript file for this project
-    try {
-      const fallbackCwd = boundTranscript?.sessionCwd ?? process.cwd()
-      const projectDir = path.join(os.homedir(), '.claude', 'projects', cwdToProjectSlug(fallbackCwd))
-      const files = fs.readdirSync(projectDir)
-        .filter((f: string) => f.endsWith('.jsonl') && !f.startsWith('agent-'))
-        .map((f: string) => ({ path: path.join(projectDir, f), mtime: fs.statSync(path.join(projectDir, f)).mtimeMs }))
-        .sort((a: any, b: any) => b.mtime - a.mtime)
-      if (files.length > 0) {
-        applyTranscriptBinding(route.targetChatId, files[0].path)
-        process.stderr.write(`claude2bot: fallback transcript bind: ${files[0].path}\n`)
-      }
-    } catch {}
     refreshActiveInstance(INSTANCE_ID, { channelId: route.targetChatId })
   }
 
@@ -2008,17 +2067,12 @@ await mcp.connect(new StdioServerTransport())
 // Special/system sends (greeting, permission, schedules, events) still choose
 // their own explicit targets.
 
-{
-  await backend.connect()
-  scheduler.start()
-  if (webhookServer) webhookServer.start()
-  eventPipeline.start()
-  process.stderr.write(`claude2bot: running with ${backend.name} backend\n`)
+await refreshBridgeOwnership({ restoreBinding: true })
+bridgeOwnershipTimer = setInterval(() => {
+  void refreshBridgeOwnership()
+}, 1000)
 
-  // Ensure transcript exists for forwarder binding
-  // Transcript is created by Claude Code on first interaction — we can't force it
-  // The polling bind above (2s interval) will catch it when it appears
-
+if (bridgeRuntimeConnected) {
   // Greeting — inject once, then bind forwarder when transcript appears
   const greetingDone = path.join(DATA_DIR, '.greeting-sent')
   const today = new Date().toISOString().slice(0, 10)
@@ -2069,7 +2123,6 @@ await mcp.connect(new StdioServerTransport())
     }
   })()
   } // end greeting guard
-
 }
 
 let shuttingDown = false
@@ -2077,24 +2130,28 @@ function shutdown(): void {
   if (shuttingDown) return
   shuttingDown = true
   try { process.stderr.write('claude2bot: shutting down\n') } catch { /* EPIPE */ }
-  setTimeout(() => process.exit(0), 2000)
+  // Hard deadline: exit after 3s no matter what
+  setTimeout(() => process.exit(0), 3000)
+  if (bridgeOwnershipTimer) {
+    clearInterval(bridgeOwnershipTimer)
+    bridgeOwnershipTimer = null
+  }
   try { fs.unwatchFile(TURN_END_FILE) } catch {}
   try { controlWorker?.kill() } catch {}
-  try { webhookServer?.stop() } catch {}
-  try { eventPipeline.stop() } catch {}
-  releaseOwnedChannelLocks(INSTANCE_ID)
-  clearActiveInstance(INSTANCE_ID)
-  clearServerPid()
-  cleanupInstanceRuntimeFiles(INSTANCE_ID)
-  void backend.disconnect().finally(() => process.exit(0))
+  void stopOwnedRuntime('process shutdown')
+    .catch(() => {})
+    .finally(() => {
+      cleanupInstanceRuntimeFiles(INSTANCE_ID)
+      process.exit(0)
+    })
 }
 process.stdin.on('end', () => {
-  process.stderr.write('[claude2bot] stdin end, waiting 3s before shutdown...\n')
-  setTimeout(() => shutdown(), 3000)
+  try { process.stderr.write('[claude2bot] stdin end, shutting down...\n') } catch { /* EPIPE */ }
+  shutdown()
 })
 process.stdin.on('close', () => {
-  process.stderr.write('[claude2bot] stdin closed, waiting 3s before shutdown...\n')
-  setTimeout(() => shutdown(), 3000)
+  try { process.stderr.write('[claude2bot] stdin closed, shutting down...\n') } catch { /* EPIPE */ }
+  shutdown()
 })
 process.on('SIGTERM', shutdown)
 process.on('SIGINT', () => {

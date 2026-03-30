@@ -127,6 +127,27 @@ const child = process.platform === 'win32'
       return spawn(tsxBin, [serverTs], { cwd: pluginRoot, stdio: 'inherit', env: spawnEnv })
     })()
 
+let shuttingDown = false
+function relayShutdown(signal = 'SIGTERM') {
+  if (shuttingDown) return
+  shuttingDown = true
+  log(`relay shutdown signal=${signal}`)
+
+  try {
+    child.kill(signal)
+  } catch {
+    process.exit(0)
+    return
+  }
+
+  setTimeout(() => {
+    try {
+      child.kill('SIGKILL')
+      log('child forced to SIGKILL after shutdown timeout')
+    } catch { /* ignore */ }
+  }, 3000).unref()
+}
+
 child.on('exit', (code, signal) => {
   log(`child exit code=${code ?? 'null'} signal=${signal ?? 'null'}`)
   process.exit(code ?? 0)
@@ -136,3 +157,9 @@ child.on('error', err => {
   process.stderr.write(`run-mcp: spawn failed: ${err}\n`)
   process.exit(1)
 })
+
+process.on('SIGTERM', () => relayShutdown('SIGTERM'))
+process.on('SIGINT', () => relayShutdown(process.platform === 'win32' ? 'SIGTERM' : 'SIGINT'))
+process.on('SIGHUP', () => relayShutdown('SIGTERM'))
+process.on('disconnect', () => relayShutdown('SIGTERM'))
+process.on('beforeExit', () => relayShutdown('SIGTERM'))

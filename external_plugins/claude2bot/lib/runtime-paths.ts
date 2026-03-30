@@ -157,48 +157,89 @@ function waitForExit(pid: number, timeoutMs: number): boolean {
   return false
 }
 
-export function killPreviousServer(): void {
-  try {
-    const oldPid = parseInt(readFileSync(SERVER_PID_FILE, 'utf8').trim(), 10)
-    if (!oldPid || oldPid === process.pid) return
-
-    // Check if process is alive
-    try { process.kill(oldPid, 0) } catch { return }
-
-    if (!looksLikeClaude2BotServer(oldPid)) return
-
-    if (process.platform === 'win32') {
-      // Windows: taskkill /F /T kills process tree
+function killSinglePid(pid: number): void {
+  if (process.platform === 'win32') {
+    try {
+      execFileSync('taskkill', ['/F', '/T', '/PID', String(pid)], { encoding: 'utf8', timeout: 5000 })
+    } catch (err) {
+      console.warn(`[singleton] taskkill failed for PID ${pid}:`, (err as Error).message)
+    }
+  } else {
+    let groupKilled = false
+    try {
+      process.kill(-pid, 'SIGTERM')
+      groupKilled = true
+    } catch {
+      try { process.kill(pid, 'SIGTERM') } catch { /* ignore */ }
+    }
+    if (!waitForExit(pid, 2000)) {
       try {
-        execFileSync('taskkill', ['/F', '/T', '/PID', String(oldPid)], { encoding: 'utf8', timeout: 5000 })
-      } catch (err) {
-        console.warn(`[singleton] taskkill failed for PID ${oldPid}:`, (err as Error).message)
+        if (groupKilled) {
+          process.kill(-pid, 'SIGKILL')
+        } else {
+          process.kill(pid, 'SIGKILL')
+        }
+      } catch { /* ignore */ }
+      if (!waitForExit(pid, 1000)) {
+        console.warn(`[singleton] failed to kill previous server PID ${pid}`)
+      }
+    }
+  }
+}
+
+function findAllClaude2BotServerPids(): number[] {
+  const myPid = process.pid
+  const pids: number[] = []
+  try {
+    if (process.platform === 'win32') {
+      const out = execFileSync('tasklist', ['/FO', 'CSV', '/NH'], { encoding: 'utf8' }).trim()
+      for (const line of out.split('\n')) {
+        const match = line.match(/"[^"]*","(\d+)"/)
+        if (!match) continue
+        const pid = parseInt(match[1], 10)
+        if (!pid || pid === myPid) continue
+        if (looksLikeClaude2BotServer(pid)) pids.push(pid)
       }
     } else {
-      // Unix: try process group kill first (negative PID)
-      let groupKilled = false
-      try {
-        process.kill(-oldPid, 'SIGTERM')
-        groupKilled = true
-      } catch {
-        // process group kill failed — fall back to single PID
-        try { process.kill(oldPid, 'SIGTERM') } catch { /* ignore */ }
-      }
-
-      // Wait up to 2s for graceful exit
-      if (!waitForExit(oldPid, 2000)) {
-        // Still alive — escalate to SIGKILL
-        try {
-          if (groupKilled) {
-            process.kill(-oldPid, 'SIGKILL')
-          } else {
-            process.kill(oldPid, 'SIGKILL')
-          }
-        } catch { /* ignore */ }
-
-        if (!waitForExit(oldPid, 1000)) {
-          console.warn(`[singleton] failed to kill previous server PID ${oldPid}`)
+      // macOS/Linux: ps aux and look for server.ts processes
+      const out = execFileSync('ps', ['ax', '-o', 'pid=,command='], { encoding: 'utf8' }).trim()
+      for (const line of out.split('\n')) {
+        const trimmed = line.trim()
+        if (!trimmed) continue
+        const spaceIdx = trimmed.indexOf(' ')
+        if (spaceIdx === -1) continue
+        const pid = parseInt(trimmed.slice(0, spaceIdx), 10)
+        if (!pid || pid === myPid) continue
+        const cmd = trimmed.slice(spaceIdx + 1)
+        const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT ?? ''
+        if (
+          cmd.includes('claude2bot') ||
+          (pluginRoot && cmd.includes(pluginRoot)) ||
+          cmd.includes('tsx server.ts') ||
+          (cmd.includes('server.ts') && (cmd.includes('node') || cmd.includes('tsx')))
+        ) {
+          pids.push(pid)
         }
+      }
+    }
+  } catch { /* ps/tasklist failed — fall through to PID file */ }
+  return pids
+}
+
+export function killAllPreviousServers(): void {
+  // 1) Scan all running processes matching server.ts pattern
+  const pids = findAllClaude2BotServerPids()
+  for (const pid of pids) {
+    killSinglePid(pid)
+  }
+
+  // 2) Also check PID file (in case ps scan missed it)
+  try {
+    const oldPid = parseInt(readFileSync(SERVER_PID_FILE, 'utf8').trim(), 10)
+    if (oldPid && oldPid !== process.pid && !pids.includes(oldPid)) {
+      try { process.kill(oldPid, 0) } catch { return }
+      if (looksLikeClaude2BotServer(oldPid)) {
+        killSinglePid(oldPid)
       }
     }
   } catch { /* no pid file = first run */ }

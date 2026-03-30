@@ -101,10 +101,14 @@ export class WebhookServer {
     logWebhook('stopped')
   }
 
-  reloadConfig(config: WebhookConfig, _channelsConfig: ChannelsConfig | null): void {
+  reloadConfig(
+    config: WebhookConfig,
+    _channelsConfig: ChannelsConfig | null,
+    options: { autoStart?: boolean } = {},
+  ): void {
     this.stop()
     this.config = config
-    if (config.enabled) this.start()
+    if (options.autoStart !== false && config.enabled) this.start()
   }
 
   // ── Webhook handler ───────────────────────────────────────────────

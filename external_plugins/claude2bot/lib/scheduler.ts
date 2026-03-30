@@ -203,6 +203,7 @@ export class Scheduler {
     channelsConfig: ChannelsConfig | undefined,
     promptsDir?: string,
     botConfig?: BotConfig,
+    options: { restart?: boolean } = {},
   ): void {
     this.nonInteractive = nonInteractive.filter(s => s.enabled !== false)
     this.interactive = interactive.filter(s => s.enabled !== false)
@@ -216,6 +217,7 @@ export class Scheduler {
     this.proactiveSlots = []
     this.proactiveSlotsDate = ''
     this.proactiveFiredToday = 0
+    if (options.restart === false) return
     this.restart()
   }
 
