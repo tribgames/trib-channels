@@ -1,5 +1,5 @@
 /**
- * memory-cycle.mjs — Memory consolidation, compression, and summarize cycle.
+ * memory-cycle.mjs — Memory consolidation and cleanup cycle.
  * Standalone memory consolidation module.
  */
 
@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { homedir, tmpdir } from 'os'
 import { join } from 'path'
 import { cleanMemoryText, getMemoryStore } from './memory.mjs'
-import { embedText } from './embedding-provider.mjs'
+import { embedText, configureEmbedding } from './embedding-provider.mjs'
 import { callLLM } from './llm-provider.mjs'
 
 const PLUGIN_DATA_DIR = process.env.CLAUDE_PLUGIN_DATA || join(homedir(), '.claude', 'plugins', 'data', 'claude2bot-claude2bot')
@@ -55,6 +55,14 @@ const AUTO_FLUSH_THRESHOLD = 15
 const AUTO_FLUSH_INTERVAL_MS = 2 * 60 * 60 * 1000  // 2 hours
 
 function getStore() {
+  const mainConfig = readMainConfig()
+  const embeddingConfig = mainConfig?.embedding ?? {}
+  if (embeddingConfig.provider || embeddingConfig.ollamaModel) {
+    configureEmbedding({
+      provider: embeddingConfig.provider,
+      ollamaModel: embeddingConfig.ollamaModel,
+    })
+  }
   return getMemoryStore(PLUGIN_DATA_DIR)
 }
 
@@ -85,7 +93,6 @@ function execClaudePrompt(prompt, options = {}) {
   mkdirSync(join(tmpdir(), 'claude2bot-noplugin'), { recursive: true })
   return execFileSync(claudeCmd, [
     ...claudeMemoryPromptArgs(),
-    '--timeout-ms', String(Number(options.timeout ?? 120000)),
     '--prompt', prompt,
   ], {
     cwd: options.cwd ?? process.cwd(),
@@ -99,7 +106,6 @@ function spawnClaudePrompt(input, options = {}) {
   mkdirSync(join(tmpdir(), 'claude2bot-noplugin'), { recursive: true })
   return spawnSync(claudeCmd, [
     ...claudeMemoryPromptArgs(),
-    '--timeout-ms', String(Number(options.timeout ?? 600000)),
   ], {
     cwd: options.cwd,
     input,
@@ -348,7 +354,7 @@ export async function sleepCycle(ws) {
   const config = readCycleConfig()
   const mainConfig = readMainConfig()
   const cycle2Config = mainConfig?.memory?.cycle2 ?? {}
-  const isFirstRun = !config.lastSleepAt && !existsSync(join(HISTORY_DIR, 'lifetime.md'))
+  const isFirstRun = !config.lastSleepAt && !existsSync(join(HISTORY_DIR, 'context.md'))
 
   process.stderr.write(`[memory-cycle] Starting.${isFirstRun ? ' (FIRST RUN)' : ''}\n`)
   store.backfillProject(ws, { limit: 120 })

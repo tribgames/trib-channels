@@ -4,6 +4,7 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  rmSync,
   statSync,
   writeFileSync,
 } from 'fs'
@@ -25,13 +26,13 @@ function parseTemporalHint(query) {
   const kst = new Date(now.getTime() + 9 * 60 * 60 * 1000)
   const today = kst.toISOString().slice(0, 10)
   const daysAgo = (n) => new Date(kst.getTime() - n * 86400000).toISOString().slice(0, 10)
-  if (/어제|yesterday/i.test(query)) return { start: daysAgo(1), end: daysAgo(1) }
-  if (/그저께|그제|그그저께/i.test(query)) return { start: daysAgo(2), end: daysAgo(2) }
-  if (/지난\s*주|last\s*week/i.test(query)) return { start: daysAgo(7), end: daysAgo(1) }
-  if (/이번\s*주|this\s*week/i.test(query)) return { start: daysAgo(kst.getDay() || 7), end: today }
-  if (/오늘|today/i.test(query)) return { start: today, end: today }
-  if (/최근|recently/i.test(query)) return { start: daysAgo(3), end: today }
-  const dateMatch = query.match(/(\d{1,2})월\s*(\d{1,2})일/)
+  if (/yesterday/i.test(query)) return { start: daysAgo(1), end: daysAgo(1) }
+  if (/two days ago|day before yesterday/i.test(query)) return { start: daysAgo(2), end: daysAgo(2) }
+  if (/last\s*week/i.test(query)) return { start: daysAgo(7), end: daysAgo(1) }
+  if (/this\s*week/i.test(query)) return { start: daysAgo(kst.getDay() || 7), end: today }
+  if (/today/i.test(query)) return { start: today, end: today }
+  if (/recently/i.test(query)) return { start: daysAgo(3), end: today }
+  const dateMatch = query.match(/(\d{1,2})\/(\d{1,2})/)
   if (dateMatch) {
     const m = String(dateMatch[1]).padStart(2, '0')
     const d = String(dateMatch[2]).padStart(2, '0')
@@ -41,39 +42,129 @@ function parseTemporalHint(query) {
   return null
 }
 
+function isProfileIntent(intent) {
+  return intent === 'profile'
+}
+
+function isPolicyIntent(intent) {
+  return intent === 'policy' || intent === 'security'
+}
+
+function getIntentTypeCaps(intent, options = {}) {
+  const hasTaskCandidate = Boolean(options.hasTaskCandidate)
+  const hasCoreResult = Boolean(options.hasCoreResult)
+  const conciseQuery = Boolean(options.conciseQuery)
+  if (isProfileIntent(intent)) return new Map([['fact', 3], ['task', 0], ['signal', 2], ['episode', 0]])
+  if (intent === 'task') return new Map([['fact', 1], ['task', hasTaskCandidate ? 4 : 2], ['signal', 0], ['episode', 1]])
+  if (isPolicyIntent(intent)) return new Map([['fact', 4], ['task', 1], ['signal', 1], ['episode', 0]])
+  if (intent === 'event') return new Map([['fact', 1], ['task', 1], ['signal', 0], ['episode', 4]])
+  if (intent === 'history') return new Map([['fact', 1], ['task', 1], ['signal', 0], ['episode', 3]])
+  return new Map([
+    ['fact', 4],
+    ['task', 3],
+    ['signal', 0],
+    ['episode', hasCoreResult ? (conciseQuery ? 1 : 2) : 2],
+  ])
+}
+
+function getIntentSubtypeBonus(intent, item) {
+  if (isProfileIntent(intent)) {
+    return (
+      item.type === 'fact' && item.subtype === 'preference' ? -0.10 :
+      item.type === 'fact' && item.subtype === 'constraint' ? -0.08 :
+      item.type === 'signal' && (item.subtype === 'tone' || item.subtype === 'language') ? -0.08 :
+      0
+    )
+  }
+  if (intent === 'task') {
+    return item.type === 'task' ? -0.10 : 0
+  }
+  if (isPolicyIntent(intent)) {
+    return (
+      item.type === 'fact' && item.subtype === 'constraint' ? -0.10 :
+      item.type === 'fact' && item.subtype === 'decision' ? -0.06 :
+      0
+    )
+  }
+  if (intent === 'event') {
+    return item.type === 'episode' ? -0.14 : 0
+  }
+  if (intent === 'history') {
+    return item.type === 'episode' ? -0.08 : 0
+  }
+  return item.type === 'fact' && item.subtype === 'decision' ? -0.06 : 0
+}
+
+function shouldKeepRerankItem(intent, item, options = {}) {
+  const hasTaskCandidate = Boolean(options.hasTaskCandidate)
+  if (isProfileIntent(intent)) return item.type === 'fact' || item.type === 'signal'
+  if (intent === 'task' && hasTaskCandidate) return item.type === 'task' || (item.type === 'fact' && item.subtype === 'decision')
+  if (isPolicyIntent(intent)) return item.type === 'fact' || item.type === 'signal'
+  if (intent === 'event') return item.type === 'episode' || item.type === 'fact' || item.type === 'task'
+  if (intent === 'decision') return item.type === 'fact' || item.type === 'task'
+  return true
+}
+
 const stores = new Map()
 const INTENT_PROTOTYPES = {
-  preference: [
+  profile: [
     'user language tone response style preference',
     'how should the assistant speak, write, and address the user',
     'preferred language, tone, and communication style',
-    '사용자의 언어 톤 응답 스타일 선호',
-    '어떤 말투와 언어로 응답해야 하는가',
-    '호칭 말투 응답 스타일 규칙',
+    'preferred address style and communication rules',
+    'how should the system respond to the user',
+    'language and style preference rules',
+    'formal respectful address style',
+    'response tone and wording rules',
+    'language and address behavior',
   ],
   task: [
-    'current active task work in progress next task',
-    'what should be done next in the current workflow',
-    'ongoing work and next session priorities',
-    '현재 진행 중인 작업 다음 작업 우선순위',
-    '지금 해야 할 일과 다음 세션 작업',
-    '활성 작업과 진행 중인 일',
+    'current work status and active priorities',
+    'what is in progress right now and what comes next',
+    'ongoing execution state and next action',
+    'present operational focus and pending work',
+    'priority items in the current workflow',
+    'near-term work status and planned next steps',
   ],
   decision: [
     'architecture decision design constraint rule limitation',
     'system design choice and implementation constraint',
     'agreed technical decision and structural direction',
-    '설계 결정 구조 방향 제약 규칙',
-    '아키텍처 결정과 기술 제약',
-    '확정된 결정사항과 시스템 규칙',
+    'design decision and structural rule',
+    'technical direction and constraints',
+    'agreed system decision',
+  ],
+  policy: [
+    'policy rule restriction allowed forbidden operational behavior',
+    'explicit constraint and operating rule',
+    'workflow policy and behavioral restrictions',
+    'what is allowed forbidden or required in operation',
+    'system rule and user-imposed constraint',
+    'operational guardrail and preference rule',
+  ],
+  security: [
+    'secret credential sensitive value security privacy',
+    'how sensitive data should be handled safely',
+    'secure handling of protected values and access',
+    'private information safety and credential management',
+    'security restriction for confidential operational data',
+    'handling of protected secrets and privileged access',
+  ],
+  event: [
+    'past event incident timeline and what occurred',
+    'time-bounded event trace from prior conversation',
+    'what occurred at a specific time in history',
+    'historical event reconstruction from conversation evidence',
+    'trace a past occurrence using dated conversation context',
+    'timeline-oriented recall of an earlier incident',
   ],
   history: [
-    'recent history what was discussed summary of recent work',
-    'daily or weekly summary of recent conversations',
-    'recent activity and discussed topics',
-    '최근 대화 요약 무엇을 했는지',
-    '최근 기록과 요약',
-    '무슨 주제로 이야기했는지 최근 히스토리',
+    'recent history and discussed topics',
+    'recent activity and prior conversation context',
+    'what has been discussed recently',
+    'near-term conversational history and recent work',
+    'recent context and prior topics',
+    'history of recent discussion and activity',
   ],
 }
 let intentPrototypeVectorsPromise = null
@@ -154,7 +245,6 @@ function looksLowSignal(text) {
   if (/^analyze the conversation and output only markdown/i.test(clean)) return true
   if (/^you are analyzing (today's|a day's) conversation to generate/i.test(clean)) return true
   if (/^summarize the conversation below\.?/i.test(clean)) return true
-  if (/^compress these summaries into a concise .* summary/i.test(clean)) return true
   if (/history directory:/i.test(clean) && /data sources/i.test(clean)) return true
   if (/use read tool/i.test(clean) && /existing files/i.test(clean)) return true
   if (/return this exact shape:/i.test(clean)) return true
@@ -351,16 +441,16 @@ function normalizeProfileKey(key) {
 
 function profileKeyForFact(factType, text = '', slot = '') {
   const combined = `${slot} ${text}`.toLowerCase()
-  if (factType === 'preference' && /\b(address|call|name|nickname|호칭)\b/.test(combined)) return 'address'
-  if (factType === 'preference' && /\b(response style|response-style|style|응답 스타일|말투)\b/.test(combined)) return 'response_style'
-  if (factType === 'constraint' && /\btimezone|time zone|타임존|로컬 시간\b/.test(combined)) return 'timezone'
+  if (factType === 'preference' && /\b(address|call|name|nickname)\b/.test(combined)) return 'address'
+  if (factType === 'preference' && /\b(response style|response-style|style|tone)\b/.test(combined)) return 'response_style'
+  if (factType === 'constraint' && /\btimezone|time zone|local time\b/.test(combined)) return 'timezone'
   return ''
 }
 
 function profileKeyForSignal(kind, value = '') {
   const combined = `${kind} ${value}`.toLowerCase()
-  if (kind === 'language' || /\bkorean|english|한국어|영문|언어\b/.test(combined)) return 'language'
-  if (kind === 'tone' || /\btone|말투|어조\b/.test(combined)) return 'tone'
+  if (kind === 'language' || /\bkorean|english|language\b/.test(combined)) return 'language'
+  if (kind === 'tone' || /\btone|style|formal|respectful\b/.test(combined)) return 'tone'
   return ''
 }
 
@@ -493,12 +583,6 @@ function contextualizeEmbeddingInput(item) {
     return cleanMemoryText(`memory signal${kind}\n${content}`)
   }
 
-  if (entityType === 'summary') {
-    const level = item.subtype ? ` level=${item.subtype}` : ''
-    const period = item.ref ? ` period=${item.ref}` : ''
-    return cleanMemoryText(`memory summary${level}${period}\n${content}`)
-  }
-
   return content
 }
 
@@ -507,9 +591,6 @@ function compactRetrievalContent(item) {
   if (!raw) return ''
   if (item?.type === 'episode') {
     return raw.slice(0, 160)
-  }
-  if (item?.type === 'summary') {
-    return raw.slice(0, 220)
   }
   return raw.slice(0, 260)
 }
@@ -555,10 +636,34 @@ export class MemoryStore {
     if (oldModel === newModel) return { changed: false }
 
     process.stderr.write(`[memory] switching embedding model: ${oldModel} → ${newModel}\n`)
+    const reset = this.resetDerivedMemoryForEmbeddingChange({ newModel })
+    process.stderr.write(
+      `[memory] embedding model changed; cleared derived memory and rebuilt ${reset.rebuiltCandidates} candidates for ${newModel}\n`,
+    )
+    return { changed: true, oldModel, newModel, reset }
+  }
 
-    // Clear all vectors (will be regenerated)
-    this.db.prepare('DELETE FROM memory_vectors').run()
-    this.db.prepare('DELETE FROM pending_embeds').run()
+  resetDerivedMemoryForEmbeddingChange(options = {}) {
+    const preservedEpisodes = Number(this.countEpisodes() ?? 0)
+    this.db.exec(`
+      DELETE FROM memory_candidates;
+      DELETE FROM facts;
+      DELETE FROM task_events;
+      DELETE FROM tasks;
+      DELETE FROM signals;
+      DELETE FROM profiles;
+      DELETE FROM interests;
+      DELETE FROM relations;
+      DELETE FROM entities;
+      DELETE FROM documents;
+      DELETE FROM facts_fts;
+      DELETE FROM tasks_fts;
+      DELETE FROM signals_fts;
+      DELETE FROM memory_vectors;
+      DELETE FROM pending_embeds;
+      DELETE FROM memory_meta;
+    `)
+
     if (this.vecEnabled) {
       try {
         this.db.exec('DROP TABLE IF EXISTS vec_memory')
@@ -567,10 +672,27 @@ export class MemoryStore {
       } catch {}
     }
 
-    // Regenerate all embeddings with new model
-    const updated = await this.ensureEmbeddings({ perTypeLimit: 64 })
-    process.stderr.write(`[memory] re-embedded ${updated} items with ${newModel}\n`)
-    return { changed: true, oldModel, newModel, reembedded: updated }
+    this.clearHistoryOutputs()
+    const rebuiltCandidates = this.rebuildCandidates()
+    this.writeContextFile()
+
+    return {
+      preservedEpisodes,
+      rebuiltCandidates,
+      historyCleared: true,
+      targetModel: options.newModel ?? getEmbeddingModelId(),
+    }
+  }
+
+  clearHistoryOutputs() {
+    ensureDir(this.historyDir)
+    const directFiles = ['context.md', 'identity.md', 'ongoing.md', 'lifetime.md', 'interests.json']
+    for (const name of directFiles) {
+      try { rmSync(join(this.historyDir, name), { force: true }) } catch {}
+    }
+    for (const dir of ['daily', 'weekly', 'monthly', 'yearly']) {
+      try { rmSync(join(this.historyDir, dir), { recursive: true, force: true }) } catch {}
+    }
   }
 
   init() {
@@ -583,7 +705,7 @@ export class MemoryStore {
     `)
 
     // Migrate FTS tables from unicode61 to trigram for Korean support
-    const ftsToMigrate = ['episodes_fts', 'summaries_fts', 'facts_fts', 'tasks_fts', 'signals_fts']
+    const ftsToMigrate = ['episodes_fts', 'facts_fts', 'tasks_fts', 'signals_fts']
     for (const table of ftsToMigrate) {
       try {
         const info = this.db.prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name=?`).get(table)
@@ -632,21 +754,6 @@ export class MemoryStore {
         FOREIGN KEY(episode_id) REFERENCES episodes(id) ON DELETE CASCADE
       );
       CREATE INDEX IF NOT EXISTS idx_candidates_day ON memory_candidates(day_key, status, score DESC);
-
-      CREATE TABLE IF NOT EXISTS summaries (
-        id INTEGER PRIMARY KEY,
-        level TEXT NOT NULL,
-        period_key TEXT NOT NULL,
-        content TEXT NOT NULL,
-        source_range_start TEXT,
-        source_range_end TEXT,
-        created_at INTEGER NOT NULL DEFAULT (unixepoch()),
-        updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
-        UNIQUE(level, period_key)
-      );
-
-      CREATE VIRTUAL TABLE IF NOT EXISTS summaries_fts
-        USING fts5(content, tokenize='trigram');
 
       CREATE TABLE IF NOT EXISTS documents (
         id INTEGER PRIMARY KEY,
@@ -829,12 +936,6 @@ export class MemoryStore {
       this.db.exec(`ALTER TABLE tasks ADD COLUMN evidence_level TEXT NOT NULL DEFAULT 'claimed';`)
     } catch { /* already present */ }
     try {
-      this.db.exec(`ALTER TABLE summaries ADD COLUMN retrieval_count INTEGER NOT NULL DEFAULT 0;`)
-    } catch { /* already present */ }
-    try {
-      this.db.exec(`ALTER TABLE summaries ADD COLUMN last_retrieved_at TEXT;`)
-    } catch { /* already present */ }
-    try {
       this.db.exec(`ALTER TABLE signals ADD COLUMN retrieval_count INTEGER NOT NULL DEFAULT 0;`)
     } catch { /* already present */ }
     try {
@@ -878,24 +979,6 @@ export class MemoryStore {
     this.clearTasksFtsStmt = this.db.prepare(`DELETE FROM tasks_fts`)
     this.clearSignalsFtsStmt = this.db.prepare(`DELETE FROM signals_fts`)
     this.clearVectorsStmt = this.db.prepare(`DELETE FROM memory_vectors`)
-    this.upsertSummaryStmt = this.db.prepare(`
-      INSERT INTO summaries (level, period_key, content, source_range_start, source_range_end, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, unixepoch(), unixepoch())
-      ON CONFLICT(level, period_key) DO UPDATE SET
-        content = excluded.content,
-        source_range_start = excluded.source_range_start,
-        source_range_end = excluded.source_range_end,
-        updated_at = unixepoch()
-    `)
-    this.upsertSummaryFtsDeleteStmt = this.db.prepare(`
-      DELETE FROM summaries_fts WHERE rowid = ?
-    `)
-    this.insertSummaryFtsStmt = this.db.prepare(`
-      INSERT INTO summaries_fts(rowid, content) VALUES (?, ?)
-    `)
-    this.getSummaryIdStmt = this.db.prepare(`
-      SELECT id FROM summaries WHERE level = ? AND period_key = ?
-    `)
     this.upsertDocumentStmt = this.db.prepare(`
       INSERT INTO documents (kind, doc_key, content, updated_at)
       VALUES (?, ?, ?, unixepoch())
@@ -1038,12 +1121,6 @@ export class MemoryStore {
           last_retrieved_at = ?
       WHERE id = ?
     `)
-    this.bumpSummaryRetrievalStmt = this.db.prepare(`
-      UPDATE summaries
-      SET retrieval_count = retrieval_count + 1,
-          last_retrieved_at = ?
-      WHERE id = ?
-    `)
     this.bumpSignalRetrievalStmt = this.db.prepare(`
       UPDATE signals
       SET retrieval_count = retrieval_count + 1,
@@ -1101,15 +1178,6 @@ export class MemoryStore {
       WHERE mv.entity_type = 'signal'
         AND mv.model = ?
     `)
-    this.listDenseSummaryRowsStmt = this.db.prepare(`
-      SELECT 'summary' AS type, s.level AS subtype, s.id AS entity_id, s.content AS content,
-             s.updated_at AS updated_at, s.retrieval_count AS retrieval_count,
-             NULL AS source_ref, NULL AS source_ts, mv.vector_json AS vector_json
-      FROM memory_vectors mv
-      JOIN summaries s ON s.id = mv.entity_id
-      WHERE mv.entity_type = 'summary'
-        AND mv.model = ?
-    `)
     this.listDenseEpisodeRowsStmt = this.db.prepare(`
       SELECT 'episode' AS type, e.role AS subtype, e.id AS entity_id, e.content AS content,
              e.created_at AS updated_at, 0 AS retrieval_count,
@@ -1125,7 +1193,6 @@ export class MemoryStore {
     this.clearFactsFtsStmt.run()
     this.clearTasksFtsStmt.run()
     this.clearSignalsFtsStmt.run()
-    this.upsertSummaryFtsDeleteStmt.run(-1)
 
     const facts = this.db.prepare(`SELECT id, text FROM facts`).all()
     for (const row of facts) {
@@ -1144,11 +1211,6 @@ export class MemoryStore {
       } catch { /* best-effort rebuild */ }
     }
 
-    const summaries = this.db.prepare(`SELECT id, content FROM summaries`).all()
-    this.db.prepare(`DELETE FROM summaries_fts`).run()
-    for (const row of summaries) {
-      this.insertSummaryFtsStmt.run(row.id, row.content)
-    }
   }
 
   appendEpisode(entry) {
@@ -1513,23 +1575,6 @@ export class MemoryStore {
     `).run(dayKey).changes ?? 0)
   }
 
-  upsertSummary(level, periodKey, content, sourceRange = {}) {
-    const clean = cleanMemoryText(content)
-    if (!clean) return
-    this.upsertSummaryStmt.run(
-      level,
-      periodKey,
-      clean,
-      sourceRange.start ?? null,
-      sourceRange.end ?? null,
-    )
-    const row = this.getSummaryIdStmt.get(level, periodKey)
-    if (row?.id) {
-      this.upsertSummaryFtsDeleteStmt.run(row.id)
-      this.insertSummaryFtsStmt.run(row.id, clean)
-    }
-  }
-
   upsertDocument(kind, docKey, content) {
     const clean = cleanMemoryText(content)
     if (!clean) return
@@ -1851,26 +1896,10 @@ export class MemoryStore {
   syncHistoryFromFiles() {
     ensureDir(this.historyDir)
 
-    for (const docKey of ['identity', 'ongoing', 'lifetime', 'context']) {
+    for (const docKey of ['identity', 'ongoing', 'context']) {
       const filePath = join(this.historyDir, `${docKey}.md`)
       if (!existsSync(filePath)) continue
       this.upsertDocument(docKey, docKey, readFileSync(filePath, 'utf8'))
-    }
-
-    const summaryLevels = ['daily', 'weekly', 'monthly', 'yearly']
-    for (const level of summaryLevels) {
-      const dir = join(this.historyDir, level)
-      if (!existsSync(dir)) continue
-      const files = readdirSync(dir).filter(file => file.endsWith('.md')).sort()
-      for (const file of files) {
-        const content = readFileSync(join(dir, file), 'utf8')
-        this.upsertSummary(level, file.replace(/\.md$/, ''), content)
-      }
-    }
-
-    const lifetimePath = join(this.historyDir, 'lifetime.md')
-    if (existsSync(lifetimePath)) {
-      this.upsertSummary('lifetime', 'lifetime', readFileSync(lifetimePath, 'utf8'))
     }
 
     const interestsPath = join(this.historyDir, 'interests.json')
@@ -2115,24 +2144,6 @@ export class MemoryStore {
       })
     }
 
-    const summaryRows = this.db.prepare(`
-      SELECT id, level AS subtype, period_key AS ref, content
-      FROM summaries
-      WHERE level IN ('daily', 'weekly', 'monthly', 'yearly', 'lifetime')
-      ORDER BY updated_at DESC, id DESC
-      LIMIT ?
-    `).all(Math.max(8, perTypeLimit))
-    for (const row of summaryRows) {
-      items.push({
-        key: embeddingItemKey('summary', row.id),
-        entityType: 'summary',
-        entityId: row.id,
-        subtype: row.subtype,
-        ref: row.ref,
-        content: row.content,
-      })
-    }
-
     const episodeLimit = Math.max(8, Math.floor(perTypeLimit / 2))
     const episodeRows = this.db.prepare(`
       SELECT id, role AS subtype, day_key AS ref, content
@@ -2206,12 +2217,12 @@ export class MemoryStore {
 
   _vecRowId(entityType, entityId) {
     // Pack entity type + id into a single integer rowid
-    const typePrefix = { fact: 1, task: 2, signal: 3, summary: 4, episode: 5 }
+    const typePrefix = { fact: 1, task: 2, signal: 3, episode: 4 }
     return (typePrefix[entityType] ?? 9) * 10000000 + Number(entityId)
   }
 
   _vecRowToEntity(rowid) {
-    const typeMap = { 1: 'fact', 2: 'task', 3: 'signal', 4: 'summary', 5: 'episode' }
+    const typeMap = { 1: 'fact', 2: 'task', 3: 'signal', 4: 'episode' }
     const typeNum = Math.floor(rowid / 10000000)
     return { entityType: typeMap[typeNum] ?? 'unknown', entityId: rowid % 10000000 }
   }
@@ -2240,15 +2251,21 @@ export class MemoryStore {
   async classifyQueryIntent(query, queryVector = null) {
     const clean = cleanMemoryText(query)
     if (!clean) {
-      return { primary: 'decision', scores: { preference: 0, task: 0, decision: 0, history: 0 } }
+      return {
+        primary: 'decision',
+        scores: { profile: 0, task: 0, decision: 0, policy: 0, security: 0, event: 0, history: 0 },
+      }
     }
 
     const vector = queryVector ?? await embedText(clean)
     const prototypeVectors = await getIntentPrototypeVectors()
     const scores = {
-      preference: 0,
+      profile: 0,
       task: 0,
       decision: 0,
+      policy: 0,
+      security: 0,
+      event: 0,
       history: 0,
     }
 
@@ -2258,6 +2275,12 @@ export class MemoryStore {
         best = Math.max(best, cosineSimilarity(vector, candidate))
       }
       scores[intent] = best
+    }
+
+    const temporal = parseTemporalHint(clean)
+    if (temporal) {
+      scores.event += 0.28
+      scores.history += 0.14
     }
 
     const primary = Object.entries(scores)
@@ -2346,7 +2369,7 @@ export class MemoryStore {
 
   async getSeedResultsForIntent(intent, query = '', queryVector = null, limit = 4) {
     const seedLimit = Math.max(1, Number(limit))
-    if (intent === 'preference') {
+    if (intent === 'profile') {
       const facts = this.db.prepare(`
         SELECT 'fact' AS type, fact_type AS subtype, CAST(id AS TEXT) AS ref, text AS content,
                unixepoch(last_seen) AS updated_at, id AS entity_id,
@@ -2385,7 +2408,7 @@ export class MemoryStore {
       return (ranked.length > 0 ? ranked : tasks).slice(0, seedLimit).map(item => ({ ...item, score: -9.1 }))
     }
 
-    if (intent === 'decision') {
+    if (intent === 'decision' || intent === 'policy' || intent === 'security') {
       const facts = this.db.prepare(`
         SELECT 'fact' AS type, fact_type AS subtype, CAST(id AS TEXT) AS ref, text AS content,
                unixepoch(last_seen) AS updated_at, id AS entity_id,
@@ -2400,17 +2423,21 @@ export class MemoryStore {
       return (ranked.length > 0 ? ranked : facts).slice(0, seedLimit).map(item => ({ ...item, score: -9.1 }))
     }
 
-    if (intent === 'history') {
-      const summaries = this.db.prepare(`
-        SELECT 'summary' AS type, level AS subtype, period_key AS ref, content,
-               updated_at, id AS entity_id, retrieval_count
-        FROM summaries
-        WHERE level IN ('daily', 'weekly')
-        ORDER BY period_key DESC
+    if (intent === 'event' || intent === 'history') {
+      const episodes = this.db.prepare(`
+        SELECT 'episode' AS type, role AS subtype, CAST(id AS TEXT) AS ref, content,
+               created_at AS updated_at, id AS entity_id, 0 AS retrieval_count
+        FROM episodes
+        WHERE role = 'user'
+          AND kind NOT IN ('schedule-inject', 'event-inject')
+          AND content NOT LIKE 'You are consolidating%'
+          AND content NOT LIKE 'You are improving%'
+          AND LENGTH(content) >= 10
+        ORDER BY ts DESC
         LIMIT ?
-      `).all(Math.max(1, seedLimit - 1))
-      const ranked = await this.rankIntentSeedItems(summaries, query, queryVector, { minSimilarity: 0.08 })
-      return (ranked.length > 0 ? ranked : summaries).slice(0, seedLimit).map(item => ({ ...item, score: -8.2 }))
+      `).all(Math.max(1, seedLimit + 1))
+      const ranked = await this.rankIntentSeedItems(episodes, query, queryVector, { minSimilarity: intent === 'event' ? 0.04 : 0.08 })
+      return (ranked.length > 0 ? ranked : episodes).slice(0, seedLimit).map(item => ({ ...item, score: -8.0 }))
     }
 
     return []
@@ -2436,20 +2463,9 @@ export class MemoryStore {
     const seeded = await this.getSeedResultsForIntent(intent.primary, clean, queryVector, Math.min(4, limit))
     const sparse = [...seeded, ...this.searchRelevantSparse(clean, limit * 2)]
 
-    // Temporal search: add date-matching summaries and episodes (deduplicated)
+    // Temporal search: add date-matching episodes (deduplicated)
     if (temporal) {
       const seen = new Set(sparse.map(r => `${r.type}:${r.entity_id}`))
-      try {
-        const temporalSummaries = this.db.prepare(`
-          SELECT 'summary' AS type, level AS subtype, period_key AS ref, content,
-                 -2.0 AS score, updated_at, id AS entity_id, retrieval_count
-          FROM summaries
-          WHERE period_key >= ? AND period_key <= ? AND level = 'daily'
-        `).all(temporal.start, temporal.end)
-        for (const s of temporalSummaries) {
-          if (!seen.has(`summary:${s.entity_id}`)) { sparse.push(s); seen.add(`summary:${s.entity_id}`) }
-        }
-      } catch {}
       try {
         const temporalEpisodes = this.db.prepare(`
           SELECT 'episode' AS type, role AS subtype, CAST(id AS TEXT) AS ref, content,
@@ -2478,21 +2494,6 @@ export class MemoryStore {
     if (!ftsQuery && shortTokens.length === 0) return []
     const results = []
     const runFts = Boolean(ftsQuery)
-
-    try {
-      if (!runFts) throw 0
-      const summaryHits = this.db.prepare(`
-        SELECT 'summary' AS type, s.level AS subtype, s.period_key AS ref, s.content AS content,
-               bm25(summaries_fts) AS score, s.updated_at AS updated_at, s.id AS entity_id,
-               s.retrieval_count AS retrieval_count
-        FROM summaries_fts
-        JOIN summaries s ON s.id = summaries_fts.rowid
-        WHERE summaries_fts MATCH ?
-        ORDER BY score
-        LIMIT ?
-      `).all(ftsQuery, limit)
-      results.push(...summaryHits)
-    } catch { /* ignore */ }
 
     try {
       if (!runFts) throw 0
@@ -2682,7 +2683,6 @@ export class MemoryStore {
       ...this.listDenseFactRowsStmt.all(model),
       ...this.listDenseTaskRowsStmt.all(model),
       ...this.listDenseSignalRowsStmt.all(model),
-      ...this.listDenseSummaryRowsStmt.all(model),
       ...this.listDenseEpisodeRowsStmt.all(model),
     ]
 
@@ -2740,15 +2740,6 @@ export class MemoryStore {
                  s.source_episode_id AS source_episode_id,
                  mv.vector_json
           FROM signals s JOIN memory_vectors mv ON mv.entity_type = 'signal' AND mv.entity_id = s.id AND mv.model = ?
-          WHERE s.id = ?
-        `).get(model, entityId)
-      }
-      if (entityType === 'summary') {
-        return this.db.prepare(`
-          SELECT 'summary' AS type, s.level AS subtype, s.id AS entity_id, s.content,
-                 s.updated_at AS updated_at, s.retrieval_count AS retrieval_count,
-                 mv.vector_json
-          FROM summaries s JOIN memory_vectors mv ON mv.entity_type = 'summary' AND mv.entity_id = s.id AND mv.model = ?
           WHERE s.id = ?
         `).get(model, entityId)
       }
@@ -2854,16 +2845,15 @@ export class MemoryStore {
                   item.subtype === 'language' ? -0.08 :
                   -0.04
                 )
-              : item.type === 'summary' ? -0.06 :
+              :
               item.type === 'episode' ? -0.04 :
               0
         const intentBoost =
-          primaryIntent === 'preference'
+          isProfileIntent(primaryIntent)
             ? (
                 item.type === 'fact' && (item.subtype === 'preference' || item.subtype === 'constraint') ? -0.18 :
                 item.type === 'signal' && (item.subtype === 'tone' || item.subtype === 'language') ? -0.14 :
                 item.type === 'task' ? 0.10 :
-                item.type === 'summary' ? 0.08 :
                 item.type === 'episode' ? 0.12 :
                 0
               )
@@ -2872,13 +2862,28 @@ export class MemoryStore {
                   item.type === 'task' ? -0.18 :
                   item.type === 'fact' && item.subtype === 'decision' ? -0.06 :
                   item.type === 'signal' ? 0.08 :
-                  item.type === 'summary' ? 0.06 :
                   item.type === 'episode' ? 0.04 :
                   0
                 )
+              : isPolicyIntent(primaryIntent)
+                ? (
+                    item.type === 'fact' && item.subtype === 'constraint' ? -0.18 :
+                    item.type === 'fact' && item.subtype === 'decision' ? -0.10 :
+                    item.type === 'signal' ? -0.04 :
+                    item.type === 'task' ? 0.08 :
+                    item.type === 'episode' ? 0.04 :
+                    0
+                  )
+              : primaryIntent === 'event'
+                ? (
+                    item.type === 'episode' ? -0.22 :
+                    item.type === 'task' && item.source_episode_id != null ? -0.06 :
+                    item.type === 'fact' && item.source_episode_id != null ? -0.04 :
+                    item.type === 'signal' ? 0.08 :
+                    0
+                  )
               : primaryIntent === 'history'
                 ? (
-                    item.type === 'summary' ? -0.16 :
                     item.type === 'episode' ? -0.12 :
                     item.type === 'task' ? -0.04 :
                     item.type === 'signal' ? 0.06 :
@@ -2888,12 +2893,10 @@ export class MemoryStore {
                     item.type === 'fact' && item.subtype === 'decision' ? -0.10 :
                     item.type === 'fact' && item.subtype === 'constraint' ? -0.08 :
                     item.type === 'task' ? -0.05 :
-                    item.type === 'summary' ? 0.04 :
                     0
                   )
         const densityPenalty =
           item.type === 'signal' && overlapCount === 0 ? 0.12 :
-          item.type === 'summary' && overlapCount === 0 ? 0.08 :
           item.type === 'episode' && overlapCount === 0 ? 0.10 :
           0
         // Entity boost: items linked to a matching entity get a score boost
@@ -2912,7 +2915,7 @@ export class MemoryStore {
       })
     const positiveCoreMatches = scored.filter(item =>
       Number(item.overlapCount) > 0 &&
-      (item.type === 'fact' || item.type === 'task' || item.type === 'summary'),
+      (item.type === 'fact' || item.type === 'task'),
     ).length
     const hasPositiveOverlap = scored.some(item => Number(item.overlapCount) > 0)
     const ranked = scored
@@ -2936,55 +2939,18 @@ export class MemoryStore {
     const hasCoreResult = ranked.some(item => item.type === 'fact' || item.type === 'task')
     const conciseQuery = queryTokenCount <= 4
     const hasTaskCandidate = ranked.some(item => item.type === 'task')
-    const typeCaps =
-      primaryIntent === 'preference'
-        ? new Map([['fact', 3], ['task', 0], ['summary', 0], ['signal', 2], ['episode', 0]])
-        : primaryIntent === 'task'
-          ? new Map([['fact', 1], ['task', hasTaskCandidate ? 4 : 2], ['summary', 0], ['signal', 0], ['episode', 1]])
-          : primaryIntent === 'history'
-            ? new Map([['fact', 1], ['task', 1], ['summary', 3], ['signal', 0], ['episode', 2]])
-            : new Map([
-                ['fact', 4],
-                ['task', 3],
-                ['summary', hasCoreResult ? (conciseQuery ? 0 : 1) : 1],
-                ['signal', 0],
-                ['episode', 1],
-              ])
+    const typeCaps = getIntentTypeCaps(primaryIntent, { hasTaskCandidate, hasCoreResult, conciseQuery })
     const typeCounts = new Map()
     const selected = []
     const rerankThreshold = -0.5
     const rerankPool = ranked.slice(0, Math.max(limit * 2, 10))
       .map(item => {
-        const subtypeBonus =
-          primaryIntent === 'preference'
-            ? (
-                item.type === 'fact' && item.subtype === 'preference' ? -0.10 :
-                item.type === 'fact' && item.subtype === 'constraint' ? -0.08 :
-                item.type === 'signal' && (item.subtype === 'tone' || item.subtype === 'language') ? -0.08 :
-                0
-              )
-            : primaryIntent === 'task'
-              ? (item.type === 'task' ? -0.10 : 0)
-              : primaryIntent === 'history'
-                ? (item.type === 'summary' ? -0.08 : item.type === 'episode' ? -0.06 : 0)
-                : (item.type === 'fact' && item.subtype === 'decision' ? -0.06 : 0)
         return {
           ...item,
-          rerank_score: Number(item.weighted_score) + subtypeBonus,
+          rerank_score: Number(item.weighted_score) + getIntentSubtypeBonus(primaryIntent, item),
         }
       })
-      .filter(item => {
-        if (primaryIntent === 'preference') {
-          return item.type === 'fact' || item.type === 'signal'
-        }
-        if (primaryIntent === 'task' && hasTaskCandidate) {
-          return item.type === 'task' || (item.type === 'fact' && item.subtype === 'decision')
-        }
-        if (primaryIntent === 'decision') {
-          return item.type === 'fact' || item.type === 'task'
-        }
-        return true
-      })
+      .filter(item => shouldKeepRerankItem(primaryIntent, item, { hasTaskCandidate }))
       .sort((a, b) => Number(a.rerank_score) - Number(b.rerank_score))
 
     for (const item of rerankPool) {
@@ -3009,8 +2975,6 @@ export class MemoryStore {
         this.bumpFactRetrievalStmt.run(now, entityId)
       } else if (item.type === 'task') {
         this.bumpTaskRetrievalStmt.run(now, entityId)
-      } else if (item.type === 'summary') {
-        this.bumpSummaryRetrievalStmt.run(now, entityId)
       } else if (item.type === 'signal') {
         this.bumpSignalRetrievalStmt.run(now, entityId)
       }
@@ -3069,10 +3033,12 @@ export class MemoryStore {
             ? 2
             : 1
       const intentBoost =
-        primaryIntent === 'preference'
+        isProfileIntent(primaryIntent)
           ? typeBoost
           : primaryIntent === 'task'
             ? (item.subtype === 'constraint' ? 1 : 0)
+            : isPolicyIntent(primaryIntent)
+              ? (item.subtype === 'constraint' ? 2 : item.subtype === 'preference' ? 1 : 0)
             : 0
       const semanticBoost = vector ? semanticScores[i] * 3 : 0
       items.push({
@@ -3082,15 +3048,16 @@ export class MemoryStore {
       })
     }
     const limit =
-      primaryIntent === 'preference' ? 4 :
+      isProfileIntent(primaryIntent) ? 4 :
+      isPolicyIntent(primaryIntent) ? 3 :
       primaryIntent === 'decision' ? 3 :
       primaryIntent === 'task' ? 1 :
       primaryIntent === 'history' ? 1 :
       2
     return items
       .filter(item => {
-        // preference intent: all core memory relevant
-        if (primaryIntent === 'preference') return true
+        // profile intent: all core memory relevant
+        if (isProfileIntent(primaryIntent)) return true
         // others: require keyword overlap or semantic relevance
         return Number(item.overlapCount) > 0 || Number(item.rankScore) > 4.5
       })
@@ -3150,14 +3117,25 @@ export class MemoryStore {
     const clean = cleanMemoryText(query)
     if (!clean || looksLowSignal(clean)) return ''
 
+    const totalStartedAt = Date.now()
+    const stageTimings = []
+    const measureStage = async (label, work) => {
+      const startedAt = Date.now()
+      try {
+        return await work()
+      } finally {
+        stageTimings.push(`${label}=${Date.now() - startedAt}ms`)
+      }
+    }
+
     const limit = Number(options.limit ?? 6)
     const lines = []
-    const queryVector = await embedText(clean)
-    const focusVector = await this.buildRecentFocusVector({
+    const queryVector = await measureStage('embed_query', () => embedText(clean))
+    const focusVector = await measureStage('build_focus', () => this.buildRecentFocusVector({
       channelId: options.channelId,
       userId: options.userId,
-    })
-    const intent = await this.classifyQueryIntent(clean, queryVector)
+    }))
+    const intent = await measureStage('classify_intent', () => this.classifyQueryIntent(clean, queryVector))
     const topTaskHint = this.db.prepare(`
       SELECT workstream
       FROM tasks
@@ -3196,7 +3174,7 @@ export class MemoryStore {
       return `<hint ${attrs.join(' ')}>${text}</hint>`
     }
 
-    const coreMemory = await this.getCoreMemoryItems(clean, intent, queryVector)
+    const coreMemory = await measureStage('core_memory', () => this.getCoreMemoryItems(clean, intent, queryVector))
     if (coreMemory.length > 0) {
       for (const item of coreMemory) {
         lines.push(formatHint(item))
@@ -3204,20 +3182,20 @@ export class MemoryStore {
     }
 
     if (intent.primary === 'task') {
-      const priorityTasks = await this.getPriorityTasks(clean, {
+      const priorityTasks = await measureStage('priority_tasks', () => this.getPriorityTasks(clean, {
         channelId: options.channelId,
         userId: options.userId,
         focusVector,
         workstreamHint: topTaskHint,
         limit: 3,
-      })
+      }))
       if (priorityTasks.length > 0) {
         for (const task of priorityTasks) {
           const detail = task.details ? ` — ${task.details}` : ''
           lines.push(formatHint(task, { type: 'task', text: `${task.title}${detail}` }))
         }
       }
-    } else if (intent.primary === 'decision') {
+    } else if (intent.primary === 'decision' || intent.primary === 'policy' || intent.primary === 'security') {
       const decisions = this.db.prepare(`
         SELECT fact_type, text, confidence, last_seen
         FROM facts
@@ -3233,16 +3211,16 @@ export class MemoryStore {
       }
     }
 
-    let relevant = await this.searchRelevantHybrid(clean, limit, {
+    let relevant = await measureStage('hybrid_search', () => this.searchRelevantHybrid(clean, limit, {
       queryVector,
       intent,
       focusVector,
       channelId: options.channelId,
       userId: options.userId,
-    })
+    }))
     // typeCaps in combineRetrievalResults already controls type distribution per intent
     // only apply minimal filtering for strongest-signal intents
-    if (intent.primary === 'preference') {
+    if (intent.primary === 'profile') {
       relevant = relevant.filter(item => item.type === 'fact' || item.type === 'signal')
     }
     relevant = relevant.slice(0, Math.max(3, limit - 1))
@@ -3253,7 +3231,7 @@ export class MemoryStore {
         lines.push(formatHint(item))
       }
 
-      const hasSignal = intent.primary === 'preference' && relevant.some(item => item.type === 'signal')
+      const hasSignal = intent.primary === 'profile' && relevant.some(item => item.type === 'signal')
       if (hasSignal) {
         const seenSignals = new Set(
           relevant
@@ -3354,6 +3332,10 @@ export class MemoryStore {
 
     if (lines.length === 0) return ''
     const ctx = `<memory-context>\n${lines.join('\n')}\n</memory-context>`
+    const totalMs = Date.now() - totalStartedAt
+    process.stderr.write(
+      `[memory-timing] q="${clean.slice(0, 40)}" total=${totalMs}ms ${stageTimings.join(' ')}\n`,
+    )
     process.stderr.write(`[memory] recall q="${clean.slice(0, 40)}" intent=${intent.primary} hints=${lines.filter(l => l.startsWith('<hint ')).length}\n`)
     return ctx
   }

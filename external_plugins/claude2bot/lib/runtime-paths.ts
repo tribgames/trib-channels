@@ -121,7 +121,7 @@ function looksLikeClaude2BotServer(pid: number): boolean {
       const out = execFileSync('tasklist', ['/FI', `PID eq ${pidStr}`, '/FO', 'CSV', '/NH'], { encoding: 'utf8' }).trim()
       if (!out || out.includes('No tasks')) return false
       const lower = out.toLowerCase()
-      return lower.includes('node') || lower.includes('tsx') || lower.includes('claude2bot')
+      return lower.includes('server.ts') && (lower.includes('node') || lower.includes('tsx') || lower.includes('claude2bot'))
     } catch {
       return true // tasklist failed — assume it's ours to be safe
     }
@@ -130,11 +130,11 @@ function looksLikeClaude2BotServer(pid: number): boolean {
     const cmd = execFileSync('ps', ['-o', 'command=', '-p', pidStr], { encoding: 'utf8' }).trim()
     if (!cmd) return false
     const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT ?? ''
+    if (!cmd.includes('server.ts')) return false
     return (
       cmd.includes('claude2bot') ||
       (pluginRoot && cmd.includes(pluginRoot)) ||
       cmd.includes('tsx server.ts') ||
-      cmd.includes('server.ts') ||
       (cmd.includes('node') && cmd.includes('server'))
     )
   } catch {
@@ -165,21 +165,9 @@ function killSinglePid(pid: number): void {
       console.warn(`[singleton] taskkill failed for PID ${pid}:`, (err as Error).message)
     }
   } else {
-    let groupKilled = false
-    try {
-      process.kill(-pid, 'SIGTERM')
-      groupKilled = true
-    } catch {
-      try { process.kill(pid, 'SIGTERM') } catch { /* ignore */ }
-    }
+    try { process.kill(pid, 'SIGTERM') } catch { /* ignore */ }
     if (!waitForExit(pid, 2000)) {
-      try {
-        if (groupKilled) {
-          process.kill(-pid, 'SIGKILL')
-        } else {
-          process.kill(pid, 'SIGKILL')
-        }
-      } catch { /* ignore */ }
+      try { process.kill(pid, 'SIGKILL') } catch { /* ignore */ }
       if (!waitForExit(pid, 1000)) {
         console.warn(`[singleton] failed to kill previous server PID ${pid}`)
       }
@@ -213,10 +201,12 @@ function findAllClaude2BotServerPids(): number[] {
         const cmd = trimmed.slice(spaceIdx + 1)
         const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT ?? ''
         if (
+          cmd.includes('server.ts') && (
           cmd.includes('claude2bot') ||
           (pluginRoot && cmd.includes(pluginRoot)) ||
           cmd.includes('tsx server.ts') ||
-          (cmd.includes('server.ts') && (cmd.includes('node') || cmd.includes('tsx')))
+          (cmd.includes('node') && cmd.includes('server'))
+          )
         ) {
           pids.push(pid)
         }

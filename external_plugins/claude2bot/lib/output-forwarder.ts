@@ -179,6 +179,7 @@ export class OutputForwarder {
   private idleTimer: ReturnType<typeof setTimeout> | null = null
   private onIdleCallback: (() => void) | null = null
   private inExplorerSequence = false
+  private inRecallSequence = false
   private hasSeenAssistant = false
   private sending = false
   private mainSessionId = ''
@@ -221,6 +222,7 @@ export class OutputForwarder {
     this.sentCount = 0
     this.lastHash = ''
     this.inExplorerSequence = false
+    this.inRecallSequence = false
     this.hasSeenAssistant = false
     this.turnTextBuffer = ''
     if (this.idleTimer) { clearTimeout(this.idleTimer); this.idleTimer = null }
@@ -249,8 +251,9 @@ export class OutputForwarder {
     }
   }
 
-  /** Track last tool_use name for matching with tool_result */
+  /** Track last tool_use name and file path for matching with tool_result */
   private lastToolName = ''
+  private lastToolFilePath = ''
 
   /** Extract new assistant text + tool logs from transcript since lastFileSize */
   private extractNewText(): string {
@@ -271,7 +274,11 @@ export class OutputForwarder {
 
         // tool_result: show Edit diff from toolUseResult, skip the rest
         if (entry.type === 'user' && entry.message?.content?.some((c: any) => c.type === 'tool_result')) {
-          if (this.lastToolName === 'Edit' && entry.toolUseResult) {
+          // Skip recall_memory tool results entirely
+          if (OutputForwarder.isRecallMemory(this.lastToolName)) {
+            continue
+          }
+          if (this.lastToolName === 'Edit' && entry.toolUseResult && !OutputForwarder.isMemoryFile(this.lastToolFilePath)) {
             const old = entry.toolUseResult.oldString || ''
             const nw = entry.toolUseResult.newString || ''
             if (old || nw) {
@@ -295,11 +302,13 @@ export class OutputForwarder {
 
           for (const c of entry.message.content) {
             if (c.type === 'text' && c.text?.trim()) {
-              // Plain text resets the Explorer grouping sequence.
+              // Plain text resets grouping sequences.
               this.inExplorerSequence = false
+              this.inRecallSequence = false
               parts.push(c.text.trim())
             } else if (c.type === 'tool_use') {
               this.lastToolName = c.name || ''
+              this.lastToolFilePath = c.input?.file_path || ''
               if (OutputForwarder.isHidden(c.name)) continue
 
               // Show only the first Read/Grep/Glob item in a grouped sequence.
@@ -317,8 +326,19 @@ export class OutputForwarder {
                 continue
               }
 
-              // Non-search tools end the Explorer grouping sequence.
+              // Show only the first recall_memory in a grouped sequence.
+              if (OutputForwarder.isRecallMemory(c.name)) {
+                if (!this.inRecallSequence) {
+                  this.inRecallSequence = true
+                  if (parts.length > 0) parts.push('\u3164')
+                  parts.push('● **recall_memory**')
+                }
+                continue
+              }
+
+              // Non-search tools end the Explorer and recall grouping sequences.
               this.inExplorerSequence = false
+              this.inRecallSequence = false
               const toolLine = OutputForwarder.buildToolLine(c.name, c.input)
               if (toolLine) {
                 if (parts.length > 0) parts.push('\u3164')
@@ -439,11 +459,25 @@ export class OutputForwarder {
     'TaskUpdate', 'TaskList', 'TaskGet',
   ])
 
+  /** Check if a tool name is recall_memory */
+  static isRecallMemory(name: string): boolean {
+    return name === 'recall_memory' || name === 'mcp__plugin_claude2bot_claude2bot__recall_memory'
+  }
+
+  /** Check if a file path points to a memory file */
+  static isMemoryFile(filePath: string): boolean {
+    if (!filePath) return false
+    const normalized = filePath.replace(/\\/g, '/')
+    if (normalized.includes('.claude/projects/') && normalized.includes('/memory/')) return true
+    if (basename(normalized) === 'MEMORY.md') return true
+    return false
+  }
+
   /** Check if a tool should be hidden */
   static isHidden(name: string): boolean {
     if (OutputForwarder.HIDDEN_TOOLS.has(name)) return true
     // Hide claude2bot's own MCP tools from mirrored output.
-    if (name.includes('plugin_claude2bot') || name === 'reply' || name === 'react'
+    if ((name.includes('plugin_claude2bot') && !name.endsWith('recall_memory')) || name === 'reply' || name === 'react'
       || name === 'edit_message' || name === 'fetch_messages' || name === 'download_attachment') return true
     return false
   }

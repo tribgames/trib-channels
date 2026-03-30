@@ -1,10 +1,22 @@
 #!/usr/bin/env node
 
 import { getMemoryStore } from '../lib/memory.mjs'
+import { configureEmbedding } from '../lib/embedding-provider.mjs'
+import { readFileSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 
 const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA || join(homedir(), '.claude', 'plugins', 'data', 'claude2bot-claude2bot')
+try {
+  const config = JSON.parse(readFileSync(join(DATA_DIR, 'config.json'), 'utf8'))
+  const embeddingConfig = config?.embedding ?? {}
+  if (embeddingConfig.provider || embeddingConfig.ollamaModel) {
+    configureEmbedding({
+      provider: embeddingConfig.provider,
+      ollamaModel: embeddingConfig.ollamaModel,
+    })
+  }
+} catch {}
 
 const queries = [
   'What is the current SQLite long-term memory structure and its key decisions?',

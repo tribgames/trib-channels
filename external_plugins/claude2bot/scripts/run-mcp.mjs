@@ -1,12 +1,10 @@
 #!/usr/bin/env node
 
-import { mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } from 'fs'
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { copyFile, access } from 'fs/promises'
 import { constants } from 'fs'
 import { join } from 'path'
 import { spawn, spawnSync } from 'child_process'
-import { homedir } from 'os'
-
 const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT
 const pluginData = process.env.CLAUDE_PLUGIN_DATA
 
@@ -18,12 +16,6 @@ if (!pluginRoot) {
 if (!pluginData) {
   process.stderr.write('run-mcp: CLAUDE_PLUGIN_DATA is required\n')
   process.exit(1)
-}
-
-// If cache version exists, defer to it (marketplace source should not run MCP directly)
-const cacheMarker = join(homedir(), '.claude', 'plugins', 'cache', 'claude2bot', 'claude2bot')
-if (existsSync(cacheMarker) && !pluginRoot.replace(/\\/g, '/').includes('/cache/')) {
-  process.exit(0)
 }
 
 const manifestPath = join(pluginRoot, 'package.json')
@@ -162,4 +154,3 @@ process.on('SIGTERM', () => relayShutdown('SIGTERM'))
 process.on('SIGINT', () => relayShutdown(process.platform === 'win32' ? 'SIGTERM' : 'SIGINT'))
 process.on('SIGHUP', () => relayShutdown('SIGTERM'))
 process.on('disconnect', () => relayShutdown('SIGTERM'))
-process.on('beforeExit', () => relayShutdown('SIGTERM'))
