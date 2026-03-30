@@ -259,10 +259,12 @@ export interface PluginConfig {
   /** Memory cycle configuration */
   memory?: {
     cycle1?: {
+      /** Extraction interval: "immediate", "5m", "10m", "30m", "1h" */
       interval?: string
       timeout?: number
       maxCandidatesPerBatch?: number
       maxBatches?: number
+      /** LLM provider for extraction */
       provider?: {
         connection: 'codex' | 'cli' | 'ollama' | 'api'
         model?: string
@@ -270,6 +272,30 @@ export interface PluginConfig {
         fast?: boolean
         baseUrl?: string
       }
+    }
+    cycle2?: {
+      /** Time of day to run consolidation "HH:MM" (e.g. "03:00") */
+      schedule?: string
+      /** Auto-trigger consolidation when pending candidates exceed this count */
+      maxCandidates?: number
+      /** LLM provider for consolidation */
+      provider?: {
+        connection: 'codex' | 'cli' | 'ollama' | 'api'
+        model?: string
+        effort?: string
+        fast?: boolean
+        baseUrl?: string
+      }
+    }
+    cycle3?: {
+      /** Time of day to run weekly decay "HH:MM" (e.g. "03:00") */
+      schedule?: string
+      /** Day of week: "monday" | "tuesday" | ... | "sunday" */
+      day?: string
+      /** Heat score threshold below which items are deprecated (default: 0.3) */
+      threshold?: number
+      /** Days to keep deprecated items before hard delete (default: 30) */
+      graceDays?: number
     }
   }
 }

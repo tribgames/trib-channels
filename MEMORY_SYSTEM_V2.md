@@ -603,3 +603,12 @@ claude2bot의 메모리 시스템을 인간 뇌의 기억 구조를 모방하여
 ### timezone 처리
 - profiles DB에 저장하지 않음 — OS에서 `Intl.DateTimeFormat().resolvedOptions().timeZone` 자동 감지
 - 출장/이주 시 자동 반영
+
+### 프로필 점진적 갱신 규칙
+- profiles를 1회 발화로 즉시 덮어쓰지 않음
+- mention_count 기반 점진적 전환:
+  - 기존 confidence > 0.7 + mention 3회 이상 → 1회 발화로 안 바뀜
+  - 새 값이 3~5회 반복되면 점진적 전환
+  - cycle2 교정에서 "1회 발화 프로필 변경 → DROP" 규칙
+- profiles 테이블에 mention_count 컬럼 추가 필요
+- facts의 mention_count 패턴 재사용

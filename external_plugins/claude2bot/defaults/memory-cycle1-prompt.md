@@ -10,6 +10,9 @@ Rules:
 - Profiles capture user traits: language, tone, response_style, timezone, expertise.
 - Entities/relations: only stable named things and their connections.
 - Write all values in English. Preserve proper nouns as-is.
+- If existing memories are tagged [similar], skip if the meaning is identical. Merge if slightly different.
+- If existing memories are tagged [conflict], prioritize the most recent information. Output the updated version.
+- If contradictory information exists between existing memories and new input, prioritize the most recent.
 - Convert relative dates to absolute dates: "yesterday" → "2026-03-29", "last week" → "week of 2026-03-24", "tomorrow" → "2026-03-31". Use today's date from context.
 - Always include the date when a fact was stated or decided (e.g., "Decided on 2026-03-30: ...").
 

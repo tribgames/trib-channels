@@ -847,6 +847,9 @@ export class MemoryStore {
       this.db.exec(`ALTER TABLE profiles ADD COLUMN status TEXT NOT NULL DEFAULT 'active';`)
     } catch { /* already present */ }
     try {
+      this.db.exec(`ALTER TABLE profiles ADD COLUMN mention_count INTEGER NOT NULL DEFAULT 1;`)
+    } catch { /* already present */ }
+    try {
       this.db.exec(`ALTER TABLE signals ADD COLUMN status TEXT NOT NULL DEFAULT 'active';`)
     } catch { /* already present */ }
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_facts_slot ON facts(slot);`)
@@ -901,11 +904,12 @@ export class MemoryStore {
         updated_at = unixepoch()
     `)
     this.upsertProfileStmt = this.db.prepare(`
-      INSERT INTO profiles (key, value, confidence, first_seen, last_seen, source_episode_id)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO profiles (key, value, confidence, first_seen, last_seen, source_episode_id, mention_count)
+      VALUES (?, ?, ?, ?, ?, ?, 1)
       ON CONFLICT(key) DO UPDATE SET
-        value = excluded.value,
-        confidence = MAX(profiles.confidence, excluded.confidence),
+        mention_count = profiles.mention_count + 1,
+        value = CASE WHEN profiles.mention_count + 1 >= 3 THEN excluded.value ELSE profiles.value END,
+        confidence = CASE WHEN profiles.mention_count + 1 >= 3 THEN MAX(profiles.confidence, excluded.confidence) ELSE profiles.confidence END,
         last_seen = excluded.last_seen,
         source_episode_id = COALESCE(excluded.source_episode_id, profiles.source_episode_id)
     `)
@@ -1576,8 +1580,9 @@ export class MemoryStore {
     return { stage, evidenceLevel, status }
   }
 
-  async upsertFacts(facts = [], seenAt = null, sourceEpisodeId = null) {
+  async upsertFacts(facts = [], seenAt = null, sourceEpisodeId = null, options = {}) {
     const model = getEmbeddingModelId()
+    const deprecateOnHighSimilarity = Boolean(options.deprecateOnHighSimilarity)
     for (const fact of facts) {
       const text = cleanMemoryText(fact?.text)
       const factType = normalizeFactType(fact?.type)
@@ -1602,22 +1607,27 @@ export class MemoryStore {
               const existingVector = JSON.parse(existing.vector_json)
               const similarity = cosineSimilarity(newVector, existingVector)
               if (similarity >= 0.85) {
-                // Merge: update existing fact if new one has higher confidence, bump mention
-                if (confidence > existing.confidence) {
-                  this.db.prepare(`
-                    UPDATE facts SET text = ?, confidence = ?, last_seen = ?, source_episode_id = COALESCE(?, source_episode_id), mention_count = mention_count + 1
-                    WHERE id = ?
-                  `).run(text, confidence, seenAt, sourceEpisodeId, existing.id)
-                  this.deleteFactFtsStmt.run(existing.id)
-                  this.insertFactFtsStmt.run(existing.id, text)
+                if (deprecateOnHighSimilarity) {
+                  // Deprecate mode: mark old fact as deprecated, insert new one below
+                  this.db.prepare(`UPDATE facts SET status = 'deprecated', superseded_by = NULL WHERE id = ?`).run(existing.id)
                 } else {
-                  this.db.prepare(`
-                    UPDATE facts SET last_seen = ?, mention_count = mention_count + 1
-                    WHERE id = ?
-                  `).run(seenAt, existing.id)
+                  // Merge: update existing fact if new one has higher confidence, bump mention
+                  if (confidence > existing.confidence) {
+                    this.db.prepare(`
+                      UPDATE facts SET text = ?, confidence = ?, last_seen = ?, source_episode_id = COALESCE(?, source_episode_id), mention_count = mention_count + 1
+                      WHERE id = ?
+                    `).run(text, confidence, seenAt, sourceEpisodeId, existing.id)
+                    this.deleteFactFtsStmt.run(existing.id)
+                    this.insertFactFtsStmt.run(existing.id, text)
+                  } else {
+                    this.db.prepare(`
+                      UPDATE facts SET last_seen = ?, mention_count = mention_count + 1
+                      WHERE id = ?
+                    `).run(seenAt, existing.id)
+                  }
+                  merged = true
+                  break
                 }
-                merged = true
-                break
               }
             } catch { /* ignore parse errors */ }
           }
@@ -1911,7 +1921,13 @@ export class MemoryStore {
       parts.push('## Bot')
       if (botContent) parts.push(botContent)
       if (toneSignals.length) {
-        parts.push(toneSignals.map(s => `- ${s.kind}: ${s.value}`).join('\n'))
+        const seen = new Set()
+        const dedupedSignals = toneSignals.filter(s => {
+          if (seen.has(s.kind)) return false
+          seen.add(s.kind)
+          return true
+        })
+        parts.push(dedupedSignals.map(s => `- ${s.kind}: ${s.value}`).join('\n'))
       }
     }
 
@@ -2997,8 +3013,6 @@ export class MemoryStore {
         this.bumpSummaryRetrievalStmt.run(now, entityId)
       } else if (item.type === 'signal') {
         this.bumpSignalRetrievalStmt.run(now, entityId)
-      } else if (item.type === 'profile') {
-        this.bumpProfileRetrievalStmt.run(now, String(item.subtype))
       }
     }
   }
@@ -3007,12 +3021,7 @@ export class MemoryStore {
     const queryTokens = new Set(tokenizeMemoryText(query))
     const primaryIntent = intent?.primary ?? 'decision'
     const vector = query ? (queryVector ?? await embedText(query)) : null
-    const profileRows = this.db.prepare(`
-      SELECT 'profile' AS type, key AS subtype, value AS content, confidence, last_seen
-      FROM profiles
-      ORDER BY confidence DESC, retrieval_count DESC, last_seen DESC
-      LIMIT 8
-    `).all()
+    // Profile hints removed — profiles are injected once at session start via context.md
 
     const coreFacts = this.db.prepare(`
       SELECT 'fact' AS type, fact_type AS subtype, text AS content, confidence, last_seen
@@ -3038,7 +3047,7 @@ export class MemoryStore {
 
     const dedupe = new Set()
     const items = []
-    const combined = [...profileRows, ...coreFacts, ...coreSignals]
+    const combined = [...coreFacts, ...coreSignals]
     const semanticScores = vector
       ? await Promise.all(combined.map(async item => {
           const itemVector = await embedText(`${item.subtype} ${item.content}`.slice(0, 320))
@@ -3054,9 +3063,7 @@ export class MemoryStore {
       const contentTokens = tokenizeMemoryText(`${item.subtype} ${item.content}`)
       const overlapCount = contentTokens.reduce((count, token) => count + (queryTokens.has(token) ? 1 : 0), 0)
       const typeBoost =
-        item.type === 'profile'
-          ? 3
-          : item.type === 'signal'
+        item.type === 'signal'
           ? (item.subtype === 'language' || item.subtype === 'tone' ? 2 : 1)
           : item.subtype === 'preference'
             ? 2
@@ -3082,8 +3089,6 @@ export class MemoryStore {
       2
     return items
       .filter(item => {
-        // profiles always pass (language, tone, etc.)
-        if (item.type === 'profile') return true
         // preference intent: all core memory relevant
         if (primaryIntent === 'preference') return true
         // others: require keyword overlap or semantic relevance

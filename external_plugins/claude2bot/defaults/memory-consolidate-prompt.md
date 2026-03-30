@@ -45,6 +45,14 @@ Rules:
 - Do not extract ephemeral entities or trivial relationships.
 - Write all JSON string values in English. Preserve proper nouns, product names, and identifiers as-is.
 - Do not leave Korean or Hangul in natural-language strings unless it is part of an exact proper noun or identifier that must remain unchanged.
+- If an "Existing memories" section is provided at the end, use it to avoid duplicates and detect changes.
+- Existing memories may be tagged [similar] or [conflict]:
+  - [similar]: High semantic overlap with new candidates. Skip if the meaning is identical. If slightly different, merge into one updated fact.
+  - [conflict]: Same topic/slot but contradictory value. Prioritize the most recent information. Output the updated version as a new fact (the system will handle deprecation of the old one).
+- Skip any candidate that is already covered by an existing memory with the same meaning.
+- If a candidate updates or contradicts an existing memory, output the updated version as a new fact (the system will handle deprecation).
+- If two or more similar existing facts can be combined into one without losing information, output a single merged fact that covers both. The system will deprecate the originals.
+- Mark updated facts clearly when they supersede existing ones.
 
 Return this exact shape:
 {

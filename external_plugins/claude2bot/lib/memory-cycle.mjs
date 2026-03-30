@@ -15,6 +15,31 @@ const PLUGIN_DATA_DIR = process.env.CLAUDE_PLUGIN_DATA || join(homedir(), '.clau
 const HISTORY_DIR = join(PLUGIN_DATA_DIR, 'history')
 const CONFIG_PATH = join(PLUGIN_DATA_DIR, 'memory-cycle.json')
 
+// ── Cycle State (waterfall chaining) ──
+const CYCLE_STATE_PATH = join(tmpdir(), 'claude2bot', 'cycle-state.json')
+
+const DEFAULT_CYCLE_STATE = {
+  cycle1: { lastRunAt: null, interval: '10m' },
+  cycle2: { lastRunAt: null, schedule: '03:00' },
+  cycle3: { lastRunAt: null, schedule: 'sunday 03:00' },
+}
+
+export function loadCycleState() {
+  try {
+    const raw = readFileSync(CYCLE_STATE_PATH, 'utf8')
+    const parsed = JSON.parse(raw)
+    return { ...DEFAULT_CYCLE_STATE, ...parsed }
+  } catch {
+    return { ...DEFAULT_CYCLE_STATE }
+  }
+}
+
+export function saveCycleState(state) {
+  const dir = join(tmpdir(), 'claude2bot')
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(CYCLE_STATE_PATH, JSON.stringify(state, null, 2) + '\n', 'utf8')
+}
+
 const claudeCmd = process.platform === 'win32' ? 'claude.cmd' : 'claude'
 const MAX_MEMORY_CONSOLIDATE_DAYS = 2
 const MAX_MEMORY_CANDIDATES_PER_DAY = 40
@@ -60,10 +85,10 @@ function execClaudePrompt(prompt, options = {}) {
   mkdirSync(join(tmpdir(), 'claude2bot-noplugin'), { recursive: true })
   return execFileSync(claudeCmd, [
     ...claudeMemoryPromptArgs(),
-    '--cwd', options.cwd ?? process.cwd(),
     '--timeout-ms', String(Number(options.timeout ?? 120000)),
     '--prompt', prompt,
   ], {
+    cwd: options.cwd ?? process.cwd(),
     encoding: 'utf8',
     timeout: Number(options.timeout ?? 120000) + 2000,
     env: { ...process.env, CLAUDE2BOT_NO_CONNECT: '1', TRIB_SEARCH_SPAWNED: '1' },
@@ -74,7 +99,6 @@ function spawnClaudePrompt(input, options = {}) {
   mkdirSync(join(tmpdir(), 'claude2bot-noplugin'), { recursive: true })
   return spawnSync(claudeCmd, [
     ...claudeMemoryPromptArgs(),
-    '--cwd', options.cwd ?? process.cwd(),
     '--timeout-ms', String(Number(options.timeout ?? 600000)),
   ], {
     cwd: options.cwd,
@@ -124,6 +148,48 @@ function cosineSimilarity(a, b) {
   for (let i = 0; i < a.length; i++) { dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i] }
   if (!na || !nb) return 0
   return dot / (Math.sqrt(na) * Math.sqrt(nb))
+}
+
+function detectSlotConflict(existingMem, candidateTexts) {
+  const memText = String(existingMem.content || existingMem.text || '').toLowerCase()
+  const memSubtype = String(existingMem.subtype || '').toLowerCase()
+  for (const ct of candidateTexts) {
+    const candLower = ct.toLowerCase()
+    // Same subtype/slot with different value → conflict
+    if (memSubtype && candLower.includes(memSubtype)) {
+      // Check if the value portion differs
+      const memValue = memText.replace(new RegExp(`.*${memSubtype}[:\\s]*`, 'i'), '').trim()
+      const candValue = candLower.replace(new RegExp(`.*${memSubtype}[:\\s]*`, 'i'), '').trim()
+      if (memValue && candValue && memValue !== candValue) return true
+    }
+    // Entity overlap with different value: same subject but contradicting statement
+    const memWords = new Set(memText.split(/\s+/).filter(w => w.length > 3))
+    const candWords = new Set(candLower.split(/\s+/).filter(w => w.length > 3))
+    const overlap = [...memWords].filter(w => candWords.has(w)).length
+    const overlapRatio = memWords.size > 0 ? overlap / memWords.size : 0
+    // High word overlap (same entity) but not identical text → potential conflict
+    if (overlapRatio > 0.5 && memText !== candLower) {
+      const score = existingMem.score ?? 0
+      if (score >= 0.6 && score < 0.85) return true
+    }
+  }
+  return false
+}
+
+function tagExistingMemories(existingMemories, candidateTexts) {
+  return existingMemories.map(m => {
+    const score = m.score ?? 0
+    const text = m.content || m.text || ''
+    const isConflict = detectSlotConflict(m, candidateTexts)
+    let tag = ''
+    if (isConflict) {
+      tag = '[conflict]'
+    } else if (score >= 0.7) {
+      tag = '[similar]'
+    }
+    const suffix = isConflict ? ' — may conflict with newer input' : ''
+    return { ...m, tag, formatted: tag ? `${tag} "${text}" (score: ${score.toFixed(2)})${suffix}` : `"${text}" (score: ${score.toFixed(2)})` }
+  })
 }
 
 function percentile(values, p) {
@@ -202,9 +268,26 @@ export async function consolidateCandidateDay(dayKey, ws, options = {}) {
     const candidates = await prepareConsolidationCandidates(store.getCandidatesForDate(dayKey), maxPerBatch, dayEpisodes)
     if (candidates.length === 0) break
     const candidateText = candidates.map((item, i) => `#${i + 1} [${item.role}] score=${item.score}\nCandidate:\n${String(item.content).slice(0, 300)}\nContext:\n${String(item.span_content).slice(0, 800)}`).join('\n\n')
-    const prompt = template.replace('{{DATE}}', dayKey).replace('{{CANDIDATES}}', candidateText)
+
+    // Inject existing related memories with [similar]/[conflict] tags
+    let existingMemorySection = ''
     try {
-      const raw = execClaudePrompt(prompt, { cwd: ws, timeout: 180000 })
+      const searchQuery = candidates.map(c => String(c.content).slice(0, 80)).join(' ')
+      const existingMemories = await store.searchRelevantHybrid(searchQuery, 5)
+      if (existingMemories && existingMemories.length > 0) {
+        const candidateTexts = candidates.map(c => String(c.content).slice(0, 300))
+        const tagged = tagExistingMemories(existingMemories, candidateTexts)
+        const memLines = tagged.map((m, i) => `${i + 1}. [${m.type}] ${m.formatted}`).join('\n')
+        existingMemorySection = `\n\nExisting memories (skip duplicates, note changes):\n${memLines}\nNote: If contradictory information exists, prioritize the most recent.\n`
+      }
+    } catch { /* best effort */ }
+
+    const prompt = template.replace('{{DATE}}', dayKey).replace('{{CANDIDATES}}', candidateText + existingMemorySection)
+    try {
+      const provider = options.provider ?? null
+      const raw = provider
+        ? await callLLM(prompt, provider, { timeout: 180000, cwd: ws })
+        : execClaudePrompt(prompt, { cwd: ws, timeout: 180000 })
       const parsed = extractJsonObject(raw)
       if (!parsed) { process.stderr.write(`[memory-cycle] consolidate ${dayKey}: invalid JSON\n`); break }
       const srcEp = candidates[0]?.episode_id ?? null
@@ -253,20 +336,28 @@ async function refreshEmbeddings(ws) {
   process.stderr.write(`[memory-cycle] embeddings refreshed: ${updated}\n`)
 }
 
+export function readMainConfig() {
+  const mainConfigPath = join(PLUGIN_DATA_DIR, 'config.json')
+  try { return JSON.parse(readFileSync(mainConfigPath, 'utf8')) } catch { return {} }
+}
+
 export async function sleepCycle(ws) {
   const store = getStore()
   const now = Date.now()
 
   const config = readCycleConfig()
+  const mainConfig = readMainConfig()
+  const cycle2Config = mainConfig?.memory?.cycle2 ?? {}
   const isFirstRun = !config.lastSleepAt && !existsSync(join(HISTORY_DIR, 'lifetime.md'))
 
   process.stderr.write(`[memory-cycle] Starting.${isFirstRun ? ' (FIRST RUN)' : ''}\n`)
   store.backfillProject(ws, { limit: 120 })
 
-  // 1. Consolidation
+  // 1. Consolidation (pass cycle2 provider if configured)
   const MAX_DAYS = 7
   const pendingDays = store.getPendingCandidateDays(MAX_DAYS, 1).map(d => d.day_key).sort()
-  await consolidateRecent(pendingDays, ws)
+  const consolidateOpts = cycle2Config.provider ? { provider: cycle2Config.provider } : {}
+  await consolidateRecent(pendingDays, ws, consolidateOpts)
 
   // 2. Sync + embeddings + context
   store.syncHistoryFromFiles()
@@ -275,6 +366,23 @@ export async function sleepCycle(ws) {
 
   // 3. Save timestamp
   writeCycleConfig({ ...config, lastSleepAt: now })
+
+  // Update cycle state + waterfall chain to cycle3
+  const cycleState = loadCycleState()
+  cycleState.cycle2.lastRunAt = new Date().toISOString()
+  saveCycleState(cycleState)
+
+  // Waterfall: trigger cycle3 if never ran or if it's the right day
+  const mainConfigForCycle3 = readMainConfig()
+  if (!cycleState.cycle3.lastRunAt || shouldRunCycle3(mainConfigForCycle3)) {
+    process.stderr.write('[memory-cycle] triggering cycle3 from cycle2 waterfall\n')
+    try {
+      await runCycle3(ws)
+    } catch (e) {
+      process.stderr.write(`[memory-cycle] waterfall cycle3 failed: ${e instanceof Error ? e.message : String(e)}\n`)
+    }
+  }
+
   process.stderr.write('[memory-cycle] Cycle complete.\n')
 }
 
@@ -297,7 +405,9 @@ export async function memoryFlush(ws, options = {}) {
   const pendingDays = store.getPendingCandidateDays(maxDays * 3, minPending)
   if (!pendingDays.length) { process.stderr.write('[memory-cycle] no flushable batches.\n'); return }
   const targets = pendingDays.map(d => d.day_key).sort().slice(0, maxDays)
-  for (const dayKey of targets) await consolidateCandidateDay(dayKey, ws, { maxCandidatesPerBatch: maxPerBatch, maxBatches })
+  const consolidateOpts = { maxCandidatesPerBatch: maxPerBatch, maxBatches }
+  if (options.provider) consolidateOpts.provider = options.provider
+  for (const dayKey of targets) await consolidateCandidateDay(dayKey, ws, consolidateOpts)
   await refreshEmbeddings(ws)
   store.writeContextFile()
 }
@@ -350,6 +460,8 @@ export async function autoFlush(ws) {
   if (_flushLock) return { flushed: false, reason: 'locked' }
   const store = getStore()
   const config = readCycleConfig()
+  const mainConfig = readMainConfig()
+  const cycle2MaxCandidates = Number(mainConfig?.memory?.cycle2?.maxCandidates ?? 0)
   const now = Date.now()
   const lastFlushAt = config.lastFlushAt ?? 0
   const pending = store.getPendingCandidateDays(100, 1)
@@ -357,14 +469,20 @@ export async function autoFlush(ws) {
   if (totalPending === 0) return { flushed: false, candidates: 0 }
 
   const elapsed = now - lastFlushAt
-  if (totalPending < AUTO_FLUSH_THRESHOLD && elapsed < AUTO_FLUSH_INTERVAL_MS) {
+  // Check cycle2 maxCandidates threshold (auto-trigger regardless of interval)
+  const exceedsMaxCandidates = cycle2MaxCandidates > 0 && totalPending >= cycle2MaxCandidates
+  if (!exceedsMaxCandidates && totalPending < AUTO_FLUSH_THRESHOLD && elapsed < AUTO_FLUSH_INTERVAL_MS) {
     return { flushed: false, candidates: totalPending }
   }
 
   _flushLock = true
   try {
-    process.stderr.write(`[auto-flush] triggered: ${totalPending} pending, ${Math.round(elapsed / 60000)}min elapsed\n`)
-    await memoryFlush(ws, { maxDays: 1, maxCandidatesPerBatch: 20, maxBatches: 2 })
+    const reason = exceedsMaxCandidates ? `maxCandidates(${cycle2MaxCandidates})` : 'threshold'
+    process.stderr.write(`[auto-flush] triggered: ${totalPending} pending, ${Math.round(elapsed / 60000)}min elapsed, reason=${reason}\n`)
+    const cycle2Provider = mainConfig?.memory?.cycle2?.provider ?? null
+    const flushOpts = { maxDays: 1, maxCandidatesPerBatch: 20, maxBatches: 2 }
+    if (cycle2Provider) flushOpts.provider = cycle2Provider
+    await memoryFlush(ws, flushOpts)
     writeCycleConfig({ ...readCycleConfig(), lastFlushAt: now })
     return { flushed: true, candidates: totalPending }
   } finally {
@@ -374,13 +492,22 @@ export async function autoFlush(ws) {
 
 export function getCycleStatus() {
   const config = readCycleConfig()
+  const mainConfig = readMainConfig()
   const store = getStore()
   const pending = store.getPendingCandidateDays(100, 1)
+  const cycleState = loadCycleState()
+  const memoryConfig = mainConfig?.memory ?? {}
   return {
     lastSleepAt: config.lastSleepAt ? new Date(config.lastSleepAt).toISOString() : null,
     lastCycle1At: config.lastCycle1At ? new Date(config.lastCycle1At).toISOString() : null,
     pendingDays: pending.length,
     pendingCandidates: pending.reduce((sum, d) => sum + d.n, 0),
+    cycleState,
+    memoryConfig: {
+      cycle1: { interval: memoryConfig.cycle1?.interval ?? '10m', provider: memoryConfig.cycle1?.provider?.connection ?? 'codex' },
+      cycle2: { schedule: memoryConfig.cycle2?.schedule ?? '03:00', maxCandidates: memoryConfig.cycle2?.maxCandidates ?? null, provider: memoryConfig.cycle2?.provider?.connection ?? 'cli' },
+      cycle3: { schedule: memoryConfig.cycle3?.schedule ?? '03:00', day: memoryConfig.cycle3?.day ?? 'sunday', threshold: memoryConfig.cycle3?.threshold ?? CYCLE3_HEAT_THRESHOLD, graceDays: memoryConfig.cycle3?.graceDays ?? CYCLE3_DEPRECATED_GRACE_DAYS },
+    },
   }
 }
 
@@ -448,14 +575,16 @@ export async function runCycle1(ws, config) {
       .map((c, i) => `#${i + 1} [${c.role}]: ${c.content.slice(0, 300)}`)
       .join('\n\n')
 
-    // Inject existing related memories for dedup/change detection
+    // Inject existing related memories with [similar]/[conflict] tags
     let existingMemorySection = ''
     try {
       const searchQuery = candidates.map(c => c.content.slice(0, 80)).join(' ')
       const existingMemories = await store.searchRelevantHybrid(searchQuery, 5)
       if (existingMemories && existingMemories.length > 0) {
-        const memLines = existingMemories.map((m, i) => `${i + 1}. [${m.type}] ${m.content || m.text || ''}`).join('\n')
-        existingMemorySection = `\n\nExisting memories (skip duplicates, note changes):\n${memLines}\n`
+        const candidateTexts = candidates.map(c => c.content.slice(0, 300))
+        const tagged = tagExistingMemories(existingMemories, candidateTexts)
+        const memLines = tagged.map((m, i) => `${i + 1}. [${m.type}] ${m.formatted}`).join('\n')
+        existingMemorySection = `\n\nExisting memories (skip duplicates, note changes):\n${memLines}\nNote: If contradictory information exists, prioritize the most recent.\n`
       }
     } catch { /* best effort */ }
 
@@ -498,6 +627,20 @@ export async function runCycle1(ws, config) {
   store.writeContextFile()
   writeCycleConfig({ ...cycleConfig, lastCycle1At: Date.now() })
 
+  // Update cycle state + waterfall chain to cycle2
+  const cycleState = loadCycleState()
+  cycleState.cycle1.lastRunAt = new Date().toISOString()
+  saveCycleState(cycleState)
+
+  if (!cycleState.cycle2.lastRunAt) {
+    process.stderr.write('[memory-cycle1] cycle2 never ran — triggering waterfall chain\n')
+    try {
+      await sleepCycle(ws)
+    } catch (e) {
+      process.stderr.write(`[memory-cycle1] waterfall cycle2 failed: ${e instanceof Error ? e.message : String(e)}\n`)
+    }
+  }
+
   const result = {
     extracted: totalExtracted,
     facts: totalFacts,
@@ -511,9 +654,167 @@ export async function runCycle1(ws, config) {
 }
 
 export function parseInterval(s) {
+  if (String(s).toLowerCase() === 'immediate') return 0
   const match = String(s).match(/^(\d+)(s|m|h)$/)
   if (!match) return 600000 // default 10m
   const [, num, unit] = match
   const multiplier = { s: 1000, m: 60000, h: 3600000 }
   return Number(num) * multiplier[unit]
+}
+
+const WEEKDAY_MAP = { sunday: 0, monday: 1, tuesday: 2, wednesday: 3, thursday: 4, friday: 5, saturday: 6 }
+
+export function parseCycle3Day(day) {
+  if (!day) return 0 // default sunday
+  return WEEKDAY_MAP[String(day).toLowerCase()] ?? 0
+}
+
+// ── Cycle3: Weekly gradual decay ──
+
+const CYCLE3_HEAT_THRESHOLD = 0.3
+const CYCLE3_DEPRECATED_GRACE_DAYS = 30
+
+function computeHeatScore(row) {
+  const mentionCount = Number(row.mention_count ?? 0)
+  const retrievalCount = Number(row.retrieval_count ?? 0)
+  const lastSeen = row.last_seen ? new Date(row.last_seen).getTime() : 0
+  const daysSinceLastSeen = lastSeen ? Math.max(0, (Date.now() - lastSeen) / 86400000) : 999
+  const recencyBonus = Math.max(0, 30 - daysSinceLastSeen) / 30
+  return (mentionCount * 2) + (retrievalCount * 3) + recencyBonus
+}
+
+export async function runCycle3(ws, options = {}) {
+  const store = getStore()
+  const mainConfig = readMainConfig()
+  const cycle3Config = mainConfig?.memory?.cycle3 ?? {}
+  const threshold = Number(cycle3Config.threshold ?? options.threshold ?? CYCLE3_HEAT_THRESHOLD)
+  const graceDays = Number(cycle3Config.graceDays ?? options.graceDays ?? CYCLE3_DEPRECATED_GRACE_DAYS)
+  const now = new Date()
+  const nowISO = now.toISOString()
+
+  process.stderr.write(`[memory-cycle3] Starting decay cycle (threshold=${threshold}, graceDays=${graceDays})\n`)
+
+  let deprecatedFacts = 0, deprecatedTasks = 0, deprecatedSignals = 0
+  let deletedFacts = 0, deletedTasks = 0, deletedSignals = 0
+
+  // Phase 1: Compute heat scores and deprecate cold items
+  // Facts
+  const activeFacts = store.db.prepare(
+    `SELECT id, mention_count, retrieval_count, last_seen FROM facts WHERE status = 'active'`
+  ).all()
+  for (const row of activeFacts) {
+    const heat = computeHeatScore(row)
+    if (heat < threshold) {
+      store.db.prepare(`UPDATE facts SET status = 'deprecated', last_seen = ? WHERE id = ?`).run(nowISO, row.id)
+      deprecatedFacts++
+    }
+  }
+
+  // Tasks
+  const activeTasks = store.db.prepare(
+    `SELECT id, retrieval_count, last_seen FROM tasks WHERE status = 'active'`
+  ).all()
+  for (const row of activeTasks) {
+    const heat = computeHeatScore(row)
+    if (heat < threshold) {
+      store.db.prepare(`UPDATE tasks SET status = 'deprecated', last_seen = ? WHERE id = ?`).run(nowISO, row.id)
+      deprecatedTasks++
+    }
+  }
+
+  // Signals
+  const activeSignals = store.db.prepare(
+    `SELECT id, retrieval_count, last_seen FROM signals WHERE status = 'active'`
+  ).all()
+  for (const row of activeSignals) {
+    const heat = computeHeatScore(row)
+    if (heat < threshold) {
+      store.db.prepare(`UPDATE signals SET status = 'deprecated', last_seen = ? WHERE id = ?`).run(nowISO, row.id)
+      deprecatedSignals++
+    }
+  }
+
+  // Phase 2: Hard delete deprecated items past grace period
+  const graceThreshold = new Date(Date.now() - graceDays * 86400000).toISOString()
+
+  const staleFactIds = store.db.prepare(
+    `SELECT id FROM facts WHERE status = 'deprecated' AND last_seen < ?`
+  ).all(graceThreshold).map(r => r.id)
+  if (staleFactIds.length > 0) {
+    for (const id of staleFactIds) {
+      try { store.db.prepare(`DELETE FROM facts_fts WHERE rowid = ?`).run(id) } catch { /* ok */ }
+      try { store.db.prepare(`DELETE FROM memory_vectors WHERE entity_type = 'fact' AND entity_id = ?`).run(id) } catch { /* ok */ }
+    }
+    const placeholders = staleFactIds.map(() => '?').join(',')
+    store.db.prepare(`DELETE FROM facts WHERE id IN (${placeholders})`).run(...staleFactIds)
+    deletedFacts = staleFactIds.length
+  }
+
+  const staleTaskIds = store.db.prepare(
+    `SELECT id FROM tasks WHERE status = 'deprecated' AND last_seen < ?`
+  ).all(graceThreshold).map(r => r.id)
+  if (staleTaskIds.length > 0) {
+    for (const id of staleTaskIds) {
+      try { store.db.prepare(`DELETE FROM tasks_fts WHERE rowid = ?`).run(id) } catch { /* ok */ }
+      try { store.db.prepare(`DELETE FROM memory_vectors WHERE entity_type = 'task' AND entity_id = ?`).run(id) } catch { /* ok */ }
+      try { store.db.prepare(`DELETE FROM task_events WHERE task_id = ?`).run(id) } catch { /* ok */ }
+    }
+    const placeholders = staleTaskIds.map(() => '?').join(',')
+    store.db.prepare(`DELETE FROM tasks WHERE id IN (${placeholders})`).run(...staleTaskIds)
+    deletedTasks = staleTaskIds.length
+  }
+
+  const staleSignalIds = store.db.prepare(
+    `SELECT id FROM signals WHERE status = 'deprecated' AND last_seen < ?`
+  ).all(graceThreshold).map(r => r.id)
+  if (staleSignalIds.length > 0) {
+    for (const id of staleSignalIds) {
+      try { store.db.prepare(`DELETE FROM signals_fts WHERE rowid = ?`).run(id) } catch { /* ok */ }
+      try { store.db.prepare(`DELETE FROM memory_vectors WHERE entity_type = 'signal' AND entity_id = ?`).run(id) } catch { /* ok */ }
+    }
+    const placeholders = staleSignalIds.map(() => '?').join(',')
+    store.db.prepare(`DELETE FROM signals WHERE id IN (${placeholders})`).run(...staleSignalIds)
+    deletedSignals = staleSignalIds.length
+  }
+
+  // Phase 3: Optional vacuum
+  if (deletedFacts + deletedTasks + deletedSignals > 0) {
+    try { store.db.exec('VACUUM') } catch { /* ok */ }
+  }
+
+  // Phase 4: Refresh context
+  store.writeContextFile()
+
+  // Phase 5: Update cycle state
+  const cycleState = loadCycleState()
+  cycleState.cycle3.lastRunAt = nowISO
+  saveCycleState(cycleState)
+
+  const result = {
+    deprecated: { facts: deprecatedFacts, tasks: deprecatedTasks, signals: deprecatedSignals },
+    deleted: { facts: deletedFacts, tasks: deletedTasks, signals: deletedSignals },
+  }
+
+  process.stderr.write(
+    `[memory-cycle3] deprecated: facts=${deprecatedFacts} tasks=${deprecatedTasks} signals=${deprecatedSignals} | ` +
+    `deleted: facts=${deletedFacts} tasks=${deletedTasks} signals=${deletedSignals}\n`
+  )
+
+  return result
+}
+
+export function shouldRunCycle3(config) {
+  const cycle3Config = config?.memory?.cycle3 ?? {}
+  const targetDay = parseCycle3Day(cycle3Config.day)
+  const today = new Date()
+  const todayDay = today.getDay()
+  if (todayDay !== targetDay) return false
+
+  const cycleState = loadCycleState()
+  if (!cycleState.cycle3.lastRunAt) return true
+
+  // Check if lastRunAt is before this week's target day
+  const lastRun = new Date(cycleState.cycle3.lastRunAt)
+  const daysSinceLastRun = (today.getTime() - lastRun.getTime()) / 86400000
+  return daysSinceLastRun >= 6 // at least ~6 days since last run
 }

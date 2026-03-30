@@ -115,27 +115,91 @@ const SERVER_PID_FILE = join(
 )
 
 function looksLikeClaude2BotServer(pid: number): boolean {
-  if (process.platform === 'win32') return true
+  const pidStr = String(pid)
+  if (process.platform === 'win32') {
+    try {
+      const out = execFileSync('tasklist', ['/FI', `PID eq ${pidStr}`, '/FO', 'CSV', '/NH'], { encoding: 'utf8' }).trim()
+      if (!out || out.includes('No tasks')) return false
+      const lower = out.toLowerCase()
+      return lower.includes('node') || lower.includes('tsx') || lower.includes('claude2bot')
+    } catch {
+      return true // tasklist failed — assume it's ours to be safe
+    }
+  }
   try {
-    const cmd = execFileSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8' }).trim()
+    const cmd = execFileSync('ps', ['-o', 'command=', '-p', pidStr], { encoding: 'utf8' }).trim()
+    if (!cmd) return false
     const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT ?? ''
-    return Boolean(cmd) && (
+    return (
       cmd.includes('claude2bot') ||
       (pluginRoot && cmd.includes(pluginRoot)) ||
-      cmd.includes('tsx server.ts')
+      cmd.includes('tsx server.ts') ||
+      cmd.includes('server.ts') ||
+      (cmd.includes('node') && cmd.includes('server'))
     )
   } catch {
     return false
   }
 }
 
+function waitForExit(pid: number, timeoutMs: number): boolean {
+  const start = Date.now()
+  while (Date.now() - start < timeoutMs) {
+    try {
+      process.kill(pid, 0)
+    } catch {
+      return true // process gone
+    }
+    const wait = 100
+    const end = Date.now() + wait
+    while (Date.now() < end) { /* busy-wait ~100ms */ }
+  }
+  return false
+}
+
 export function killPreviousServer(): void {
   try {
     const oldPid = parseInt(readFileSync(SERVER_PID_FILE, 'utf8').trim(), 10)
-    if (oldPid && oldPid !== process.pid) {
-      try { process.kill(oldPid, 0) } catch { return }
-      if (!looksLikeClaude2BotServer(oldPid)) return
-      try { process.kill(oldPid, 'SIGTERM') } catch { /* ignore */ }
+    if (!oldPid || oldPid === process.pid) return
+
+    // Check if process is alive
+    try { process.kill(oldPid, 0) } catch { return }
+
+    if (!looksLikeClaude2BotServer(oldPid)) return
+
+    if (process.platform === 'win32') {
+      // Windows: taskkill /F /T kills process tree
+      try {
+        execFileSync('taskkill', ['/F', '/T', '/PID', String(oldPid)], { encoding: 'utf8', timeout: 5000 })
+      } catch (err) {
+        console.warn(`[singleton] taskkill failed for PID ${oldPid}:`, (err as Error).message)
+      }
+    } else {
+      // Unix: try process group kill first (negative PID)
+      let groupKilled = false
+      try {
+        process.kill(-oldPid, 'SIGTERM')
+        groupKilled = true
+      } catch {
+        // process group kill failed — fall back to single PID
+        try { process.kill(oldPid, 'SIGTERM') } catch { /* ignore */ }
+      }
+
+      // Wait up to 2s for graceful exit
+      if (!waitForExit(oldPid, 2000)) {
+        // Still alive — escalate to SIGKILL
+        try {
+          if (groupKilled) {
+            process.kill(-oldPid, 'SIGKILL')
+          } else {
+            process.kill(oldPid, 'SIGKILL')
+          }
+        } catch { /* ignore */ }
+
+        if (!waitForExit(oldPid, 1000)) {
+          console.warn(`[singleton] failed to kill previous server PID ${oldPid}`)
+        }
+      }
     }
   } catch { /* no pid file = first run */ }
 }
