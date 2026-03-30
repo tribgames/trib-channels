@@ -556,3 +556,32 @@ claude2bot의 메모리 시스템을 인간 뇌의 기억 구조를 모방하여
 - 셀프호스팅 복잡도 → SQLite + 로컬 embedding
 - 세션 상태 손상 → episodes DB + source FK
 - event loop 충돌 → 단순 아키텍처
+
+### ReMe 심층 비교 (2026-03-30)
+- LoCoMo 86.23% (벤치 1위였으나 CORE memory 88.24%에 추월됨)
+- 벤치마크 재현 불가 이슈 (GitHub #123)
+- ES 메모리 중복 버그 (GitHub #183, 2026-03-30)
+- LLM 과의존: 매 턴 ReActAgent 2회 호출 (compactor + summarizer)
+- 전처리 없음: 원본 텍스트 그대로 저장/검색
+
+### claude2bot vs ReMe
+- 전처리: 5레이어 (claude2bot) vs 없음 (ReMe)
+- LLM 호출: cycle1 주기적 1회 vs 매 턴 2회
+- 중복 방지: 코드 기반 dedup vs LLM 판단
+- 프로필: profiles+signals 분리+confidence vs 뭉뚱그림
+- 프로덕션: Discord 봇 실운영 vs 학술 벤치마크만
+
+### CORE memory (88.24%)
+- ReMe 86.23%를 추월한 최신 프로젝트 (dev.to 게시글)
+- LoCoMo 벤치마크 자체의 방법론 결함 지적 (Reddit r/AIMemory)
+- 벤치마크 점수보다 실사용 품질이 중요
+
+### 업계 프로덕션 이슈 종합
+| 프로젝트 | 핵심 문제 |
+|---------|---------|
+| Mem0 | 97.8% junk, 환각 프로필, DELETE 정보 손실 |
+| Letta | 극심한 느림, archival memory 실패 |
+| Zep/Graphiti | Event loop 충돌 (치명적), Neo4j 의존 |
+| ReMe | 벤치마크 재현 불가, LLM 과의존, 전처리 없음 |
+| OpenClaw | 세션 상태 손상, 메모리 리콜 신뢰 불가 |
+| 공통 | 모든 프로젝트에서 사용자가 자체 메모리 시스템 구축 |

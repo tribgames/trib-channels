@@ -843,6 +843,12 @@ export class MemoryStore {
     try {
       this.db.exec(`ALTER TABLE memory_vectors ADD COLUMN content_hash TEXT;`)
     } catch { /* already present */ }
+    try {
+      this.db.exec(`ALTER TABLE profiles ADD COLUMN status TEXT NOT NULL DEFAULT 'active';`)
+    } catch { /* already present */ }
+    try {
+      this.db.exec(`ALTER TABLE signals ADD COLUMN status TEXT NOT NULL DEFAULT 'active';`)
+    } catch { /* already present */ }
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_facts_slot ON facts(slot);`)
 
     this.insertEpisodeStmt = this.db.prepare(`
