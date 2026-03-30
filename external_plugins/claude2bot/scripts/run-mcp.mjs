@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import { mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } from 'fs'
 import { copyFile, access } from 'fs/promises'
 import { constants } from 'fs'
 import { join } from 'path'
 import { spawn, spawnSync } from 'child_process'
+import { homedir } from 'os'
 
 const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT
 const pluginData = process.env.CLAUDE_PLUGIN_DATA
@@ -17,6 +18,12 @@ if (!pluginRoot) {
 if (!pluginData) {
   process.stderr.write('run-mcp: CLAUDE_PLUGIN_DATA is required\n')
   process.exit(1)
+}
+
+// If cache version exists, defer to it (marketplace source should not run MCP directly)
+const cacheMarker = join(homedir(), '.claude', 'plugins', 'cache', 'claude2bot', 'claude2bot')
+if (existsSync(cacheMarker) && !pluginRoot.replace(/\\/g, '/').includes('/cache/')) {
+  process.exit(0)
 }
 
 const manifestPath = join(pluginRoot, 'package.json')
@@ -101,18 +108,24 @@ async function syncDependenciesIfNeeded() {
 
 await syncDependenciesIfNeeded()
 
-log(`exec ${tsxBin} ${join(pluginRoot, 'server.ts')}`)
+const serverTs = join(pluginRoot, 'server.ts')
+const spawnEnv = {
+  ...process.env,
+  NODE_PATH: process.env.NODE_PATH
+    ? `${dataNodeModules}${process.platform === 'win32' ? ';' : ':'}${process.env.NODE_PATH}`
+    : dataNodeModules,
+}
 
-const child = spawn(tsxBin, [join(pluginRoot, 'server.ts')], {
-  cwd: pluginRoot,
-  stdio: 'inherit',
-  env: {
-    ...process.env,
-    NODE_PATH: process.env.NODE_PATH
-      ? `${dataNodeModules}${process.platform === 'win32' ? ';' : ':'}${process.env.NODE_PATH}`
-      : dataNodeModules,
-  },
-})
+const child = process.platform === 'win32'
+  ? (() => {
+      const tsxCliPath = join(dataNodeModules, 'tsx', 'dist', 'cli.mjs')
+      log(`exec node ${tsxCliPath} ${serverTs}`)
+      return spawn('node', [tsxCliPath, serverTs], { cwd: pluginRoot, stdio: 'inherit', env: spawnEnv })
+    })()
+  : (() => {
+      log(`exec ${tsxBin} ${serverTs}`)
+      return spawn(tsxBin, [serverTs], { cwd: pluginRoot, stdio: 'inherit', env: spawnEnv })
+    })()
 
 child.on('exit', (code, signal) => {
   log(`child exit code=${code ?? 'null'} signal=${signal ?? 'null'}`)

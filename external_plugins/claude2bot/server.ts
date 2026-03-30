@@ -22,33 +22,15 @@ import { loadSettings, tryRead } from './lib/settings.js'
 import { Scheduler } from './lib/scheduler.js'
 import { WebhookServer } from './lib/webhook.js'
 import { EventPipeline } from './lib/event-pipeline.js'
-import { handleSlashCommand, type SlashCommandContext } from './lib/slash-commands.js'
-import {
-  runBotCommand,
-  runProfileCommand,
-  type CommandContext,
-  type CommandResult,
-} from './lib/custom-commands.js'
-import { OutputForwarder, discoverSessionBoundTranscript } from './lib/output-forwarder.js'
+import { OutputForwarder, discoverSessionBoundTranscript, cwdToProjectSlug } from './lib/output-forwarder.js'
 import { controlClaudeSession } from './lib/session-control.js'
-import { detectRuntimeMode } from './lib/runtime-mode.js'
 import { JsonStateFile, ensureDir, removeFileIfExists, writeTextFile, type StatusState } from './lib/state-file.js'
 import { getMemoryStore } from './lib/memory.mjs'
-import { sleepCycle, memoryFlush, rebuildRecent, pruneToRecent, getCycleStatus } from './lib/memory-cycle.mjs'
+import { configureEmbedding } from './lib/embedding-provider.mjs'
+import { sleepCycle, memoryFlush, rebuildRecent, pruneToRecent, getCycleStatus, autoFlush } from './lib/memory-cycle.mjs'
 import {
-  buildActivityAddPanel,
-  buildAutotalkFrequencyPanel,
-  buildQuietHoursPanel,
-  buildScheduleAddPanel,
-  buildScheduleEditPanel,
-  type InteractionPanel,
-} from './lib/interaction-panels.js'
-import {
-  buildModalExecutionPlan,
   buildModalRequestSpec,
-  getPendingSelectUpdate,
   PendingInteractionStore,
-  type CommandInvocation,
 } from './lib/interaction-workflows.js'
 import {
   ensureRuntimeDirs,
@@ -65,7 +47,6 @@ import {
   clearActiveInstance,
 } from './lib/runtime-paths.js'
 import type { InboundMessage } from './backends/types.js'
-import type { ChatInputCommandInteraction } from 'discord.js'
 import { PLUGIN_ROOT } from './lib/config.js'
 
 const DEFAULT_PLUGIN_VERSION = '0.0.1'
@@ -118,6 +99,17 @@ if (process.env.CLAUDE2BOT_NO_CONNECT) {
 
 let config = loadConfig()
 let botConfig = loadBotConfig()
+
+// Apply embedding config from config.json (overrides env vars)
+const embeddingConfig = config?.embedding
+if (embeddingConfig?.provider || embeddingConfig?.ollamaModel) {
+  configureEmbedding({
+    provider: embeddingConfig.provider,
+    ollamaModel: embeddingConfig.ollamaModel,
+  })
+  process.stderr.write(`[embed] configured: provider=${embeddingConfig.provider ?? 'default'}, model=${embeddingConfig.ollamaModel ?? 'default'}\n`)
+}
+
 const backend = createBackend(config)
 const settings = loadSettings(config.contextFiles)
 const INSTANCE_ID = makeInstanceId()
@@ -191,68 +183,6 @@ type BackendInteraction = {
 }
 
 const pendingSetup = new PendingInteractionStore()
-
-function makeCommandContext(channelId: string, userId: string, lang: 'ko' | 'en' = 'ko'): CommandContext {
-  return {
-    scheduler,
-    channelId,
-    userId,
-    lang,
-    reloadRuntimeConfig,
-  }
-}
-
-async function editCommandResult(
-  channelId: string,
-  messageId: string | undefined,
-  result: CommandResult | null,
-): Promise<void> {
-  if (!messageId || !channelId || (!result?.text && !result?.embeds?.length)) return
-  await backend.editMessage(channelId, messageId, result.text ?? '', {
-    embeds: result.embeds as any,
-    components: result.components as any,
-  })
-}
-
-async function editInteractionPanel(
-  channelId: string,
-  messageId: string | undefined,
-  panel: InteractionPanel,
-): Promise<void> {
-  if (!messageId || !channelId) return
-  await backend.editMessage(channelId, messageId, '', {
-    embeds: panel.embeds as any,
-    components: panel.components as any,
-  })
-}
-
-async function showBotPanel(
-  interaction: BackendInteraction,
-  args: string[],
-  params: Record<string, string> = {},
-  messageId = interaction.message?.id,
-): Promise<void> {
-  const result = await runBotCommand(args, params, makeCommandContext(interaction.channelId, interaction.userId))
-  await editCommandResult(interaction.channelId, messageId, result)
-}
-
-async function applyBotCommand(
-  interaction: BackendInteraction,
-  args: string[],
-  params: Record<string, string> = {},
-): Promise<CommandResult> {
-  return runBotCommand(args, params, makeCommandContext(interaction.channelId, interaction.userId))
-}
-
-async function runInteractionCommand(
-  invocation: CommandInvocation,
-  ctx: CommandContext,
-): Promise<CommandResult> {
-  if (invocation.target === 'profile') {
-    return runProfileCommand(invocation.args, invocation.params, ctx)
-  }
-  return runBotCommand(invocation.args, invocation.params, ctx)
-}
 
 function startServerTyping(channelId: string): void {
   if (typingChannelId && typingChannelId !== channelId) {
@@ -362,6 +292,7 @@ function applyTranscriptBinding(
   forwarder.setContext(channelId, transcriptPath, { replayFromStart: options.replayFromStart })
   forwarder.startWatch()
   memoryStore.ingestTranscriptFile(transcriptPath)
+  autoFlush(process.cwd()).catch(e => process.stderr.write(`[auto-flush] ${e.message}\n`))
   refreshActiveInstance(INSTANCE_ID, { channelId, transcriptPath })
   if (options.persistStatus !== false) {
     statusState.update(state => {
@@ -441,7 +372,6 @@ const eventPipeline = new EventPipeline(config.events, config.channelsConfig)
 function reloadRuntimeConfig(): void {
   config = loadConfig()
   botConfig = loadBotConfig()
-  slashCtx.config = config
   scheduler.reloadConfig(
     config.nonInteractive ?? [],
     config.interactive ?? [],
@@ -695,55 +625,6 @@ backend.onInteraction = (interaction: BackendInteraction) => {
     process.stderr.write(`claude2bot: notification failed: ${e}\n`)
   })
 }
-
-// ── Slash command handling ────────────────────────────────────────────
-
-async function refreshSlashSessionContext(
-  channelId: string,
-  mode: 'same' | 'new' = 'same',
-): Promise<void> {
-  const previousPath = getPersistedTranscriptPath()
-  await rebindTranscriptContext(channelId, {
-    previousPath,
-    mode,
-    catchUp: false,
-    persistStatus: true,
-  })
-}
-
-const slashCtx: SlashCommandContext = {
-  config,
-  scheduler,
-  instanceId: INSTANCE_ID,
-  turnEndFile: TURN_END_FILE,
-  runtimeMode: detectRuntimeMode(),
-  reloadRuntimeConfig,
-  refreshSessionContext: refreshSlashSessionContext,
-  notify: (channelId: string, user: string, text: string) => {
-    void mcp.notification({
-      method: 'notifications/claude/channel',
-      params: {
-        content: text,
-        meta: {
-          chat_id: channelId,
-          user,
-          user_id: 'system',
-          ts: new Date().toISOString(),
-        },
-      },
-    }).catch(e => {
-      process.stderr.write(`claude2bot: notification failed: ${e}\n`)
-    })
-  },
-  serverProcess: process,
-}
-
-backend.onSlashCommand = (interaction) => {
-  scheduler.noteActivity()
-  void handleSlashCommand(interaction as ChatInputCommandInteraction, slashCtx)
-}
-
-
 
 // ── Voice transcription ───────────────────────────────────────────────
 
@@ -1133,8 +1014,11 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         break
       }
       case 'fetch_messages': {
+        let channelId = args.channel as string
+        const channelEntry = config.channelsConfig?.channels?.[channelId]
+        if (channelEntry) channelId = channelEntry.id
         const msgs = await backend.fetchMessages(
-          args.channel as string,
+          channelId,
           (args.limit as number) ?? 20,
         )
         const text =
@@ -1382,7 +1266,7 @@ backend.onMessage = (msg) => {
   } else {
     // Fallback: find most recent transcript file for this project
     try {
-      const projectDir = path.join(require('os').homedir(), '.claude', 'projects', process.cwd().replace(/\//g, '-'))
+      const projectDir = path.join(require('os').homedir(), '.claude', 'projects', cwdToProjectSlug(process.cwd()))
       const files = fs.readdirSync(projectDir)
         .filter((f: string) => f.endsWith('.jsonl') && !f.startsWith('agent-'))
         .map((f: string) => ({ path: path.join(projectDir, f), mtime: fs.statSync(path.join(projectDir, f)).mtimeMs }))

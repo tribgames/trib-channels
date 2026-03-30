@@ -5,7 +5,7 @@
 
 import { readFileSync, existsSync, statSync, watch, openSync, readSync, closeSync, type FSWatcher } from 'fs'
 import { execFileSync } from 'child_process'
-import { join, resolve } from 'path'
+import { basename, join, resolve } from 'path'
 import { homedir } from 'os'
 import { createHash } from 'crypto'
 import { formatForDiscord, chunk, safeCodeBlock } from './format.js'
@@ -31,10 +31,10 @@ type SessionMeta = {
   cwd?: string
 }
 
-function cwdToProjectSlug(cwd: string): string {
+export function cwdToProjectSlug(cwd: string): string {
   return resolve(cwd)
     .replace(/\\/g, '/')
-    .replace(/^([A-Za-z]):/, '$1')
+    .replace(/^([A-Za-z]):/, '$1-')
     .replace(/\//g, '-')
 }
 
@@ -247,7 +247,7 @@ export class OutputForwarder {
                 if (!this.inExplorerSequence) {
                   this.inExplorerSequence = true
                   let target = ''
-                  if (c.name === 'Read') target = (c.input?.file_path || '').split('/').pop() || ''
+                  if (c.name === 'Read') target = c.input?.file_path ? basename(c.input.file_path) : ''
                   else if (c.name === 'Grep') target = '"' + (c.input?.pattern || '').substring(0, 25) + '"'
                   else if (c.name === 'Glob') target = (c.input?.pattern || '').substring(0, 25)
                   if (parts.length > 0) parts.push('\u3164')
@@ -407,7 +407,7 @@ export class OutputForwarder {
         break
       }
       case 'Read':
-        summary = input?.file_path?.split('/').pop() || ''
+        summary = input?.file_path ? basename(input.file_path) : ''
         break
       case 'Grep':
         summary = '"' + (input?.pattern || '').substring(0, 25) + '"'
@@ -417,7 +417,7 @@ export class OutputForwarder {
         break
       case 'Edit':
       case 'Write':
-        summary = input?.file_path?.split('/').pop() || ''
+        summary = input?.file_path ? basename(input.file_path) : ''
         detail = input?.file_path || ''
         break
       case 'Agent': {

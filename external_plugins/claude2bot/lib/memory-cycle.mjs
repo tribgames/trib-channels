@@ -1,11 +1,11 @@
 /**
  * memory-cycle.mjs — Memory consolidation, compression, and summarize cycle.
- * Extracted from launcher.mjs to remove launcher dependency.
+ * Standalone memory consolidation module.
  */
 
 import { execFileSync, spawnSync } from 'child_process'
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'fs'
-import { homedir } from 'os'
+import { homedir, tmpdir } from 'os'
 import { join } from 'path'
 import { cleanMemoryText, getMemoryStore } from './memory.mjs'
 import { embedText } from './embedding-provider.mjs'
@@ -14,6 +14,7 @@ const PLUGIN_DATA_DIR = process.env.CLAUDE_PLUGIN_DATA || join(homedir(), '.clau
 const HISTORY_DIR = join(PLUGIN_DATA_DIR, 'history')
 const CONFIG_PATH = join(PLUGIN_DATA_DIR, 'memory-cycle.json')
 
+const claudeCmd = process.platform === 'win32' ? 'claude.cmd' : 'claude'
 const MAX_MEMORY_CONSOLIDATE_DAYS = 2
 const MAX_MEMORY_CANDIDATES_PER_DAY = 40
 const MAX_MEMORY_CONSOLIDATE_BATCHES_PER_DAY = 4
@@ -22,6 +23,10 @@ const MEMORY_FLUSH_DEFAULT_MAX_DAYS = 1
 const MEMORY_FLUSH_DEFAULT_MAX_CANDIDATES = 20
 const MEMORY_FLUSH_DEFAULT_MAX_BATCHES = 1
 const MEMORY_FLUSH_DEFAULT_MIN_PENDING = 8
+
+// Tier 2 (Auto-flush) thresholds
+const AUTO_FLUSH_THRESHOLD = 15
+const AUTO_FLUSH_INTERVAL_MS = 2 * 60 * 60 * 1000  // 2 hours
 
 function getStore() {
   return getMemoryStore(PLUGIN_DATA_DIR)
@@ -44,15 +49,15 @@ function claudeMemoryPromptArgs() {
     '-p',
     '--dangerously-skip-permissions',
     '--no-session-persistence',
-    '--plugin-dir', '/tmp/claude2bot-noplugin',
+    '--plugin-dir', join(tmpdir(), 'claude2bot-noplugin'),
     '--model', 'sonnet',
     '--effort', 'medium',
   ]
 }
 
 function execClaudePrompt(prompt, options = {}) {
-  mkdirSync('/tmp/claude2bot-noplugin', { recursive: true })
-  return execFileSync(process.execPath === 'node' ? 'claude' : process.execPath, [
+  mkdirSync(join(tmpdir(), 'claude2bot-noplugin'), { recursive: true })
+  return execFileSync(claudeCmd, [
     ...claudeMemoryPromptArgs(),
     '--cwd', options.cwd ?? process.cwd(),
     '--timeout-ms', String(Number(options.timeout ?? 120000)),
@@ -65,8 +70,8 @@ function execClaudePrompt(prompt, options = {}) {
 }
 
 function spawnClaudePrompt(input, options = {}) {
-  mkdirSync('/tmp/claude2bot-noplugin', { recursive: true })
-  return spawnSync(process.execPath === 'node' ? 'claude' : process.execPath, [
+  mkdirSync(join(tmpdir(), 'claude2bot-noplugin'), { recursive: true })
+  return spawnSync(claudeCmd, [
     ...claudeMemoryPromptArgs(),
     '--cwd', options.cwd ?? process.cwd(),
     '--timeout-ms', String(Number(options.timeout ?? 600000)),
@@ -431,6 +436,10 @@ export async function summarizeOnly(ws) {
       process.stderr.write(`[memory-cycle] summarized ${date}\n`)
     } catch (e) { process.stderr.write(`[memory-cycle] summarize failed: ${e.message}\n`) }
   }
+  // Consolidate candidates extracted during summarization
+  const candidateDays = store.getPendingCandidateDays(3, 1).map(d => d.day_key).sort()
+  if (candidateDays.length > 0) await consolidateRecent(candidateDays, ws)
+  await refreshEmbeddings(ws)
   store.syncHistoryFromFiles()
   store.writeContextFile()
 }
@@ -489,6 +498,34 @@ export async function pruneToRecent(ws, options = {}) {
   await refreshEmbeddings(ws)
   store.writeContextFile()
   process.stderr.write(`[memory-cycle] pruned to ${dayKeys.join(', ')}.\n`)
+}
+
+let _flushLock = false
+
+export async function autoFlush(ws) {
+  if (_flushLock) return { flushed: false, reason: 'locked' }
+  const store = getStore()
+  const config = readCycleConfig()
+  const now = Date.now()
+  const lastFlushAt = config.lastFlushAt ?? 0
+  const pending = store.getPendingCandidateDays(100, 1)
+  const totalPending = pending.reduce((sum, d) => sum + d.n, 0)
+  if (totalPending === 0) return { flushed: false, candidates: 0 }
+
+  const elapsed = now - lastFlushAt
+  if (totalPending < AUTO_FLUSH_THRESHOLD && elapsed < AUTO_FLUSH_INTERVAL_MS) {
+    return { flushed: false, candidates: totalPending }
+  }
+
+  _flushLock = true
+  try {
+    process.stderr.write(`[auto-flush] triggered: ${totalPending} pending, ${Math.round(elapsed / 60000)}min elapsed\n`)
+    await memoryFlush(ws, { maxDays: 1, maxCandidatesPerBatch: 20, maxBatches: 2 })
+    writeCycleConfig({ ...readCycleConfig(), lastFlushAt: now })
+    return { flushed: true, candidates: totalPending }
+  } finally {
+    _flushLock = false
+  }
 }
 
 export function getCycleStatus() {

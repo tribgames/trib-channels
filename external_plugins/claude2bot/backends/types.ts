@@ -152,13 +152,6 @@ export interface ChannelBackend {
   onInteraction: ((interaction: { type: string; customId: string; userId: string; channelId: string; values?: string[]; message?: { id: string } }) => void) | null
 
   /**
-   * Callback invoked when a Discord slash command is received.
-   * Set by the MCP server to handle /claude subcommands.
-   * Only meaningful for Discord backend; other backends should set to null.
-   */
-  onSlashCommand: ((interaction: any) => void) | null
-
-  /**
    * Callback invoked when a functional command (/bot, /profile) is detected.
    * The replyFn sends the response back to the same channel.
    */
@@ -258,6 +251,11 @@ export interface PluginConfig {
   webhook?: WebhookConfig
   /** Event automation system */
   events?: EventsConfig
+  /** Embedding provider configuration */
+  embedding?: {
+    provider?: 'local' | 'ollama'
+    ollamaModel?: string
+  }
 }
 
 // ── Bot config (bot.json) ─────────────────────────────────────────────
@@ -283,6 +281,9 @@ export interface AutotalkConfig {
 export interface BotConfig {
   quiet?: QuietConfig
   autotalk?: AutotalkConfig
+  sleepEnabled?: boolean
+  sleepTime?: string
+  displayMode?: 'view' | 'hide'
 }
 
 // ── Profile config (profile.json) ────────────────────────────────────
@@ -395,7 +396,7 @@ export interface WebhookServerConfig {
   ngrokDomain?: string
 }
 
-// ── Webhook types (legacy, used by slash commands) ────────────────────
+// ── Webhook endpoint types ────────────────────────────────────────────
 
 export interface WebhookEndpoint {
   /** Built-in parser: 'github', 'sentry', 'generic', or omit for raw */

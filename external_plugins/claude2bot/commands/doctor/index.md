@@ -53,9 +53,9 @@ Run diagnostic checks and report issues with actionable fixes.
 - Fix: "Run /claude2bot setup to configure channels"
 
 ### 8. Voice transcription
-- Is `whisper` (or `whisper.cpp`) available in PATH?
 - Is `ffmpeg` available in PATH?
-- Fix: "Install whisper and ffmpeg for voice transcription"
+- Is voice transcription configured? (check config.json for voice settings or whisper API availability)
+- Fix: "Install ffmpeg for audio processing. Whisper API is used for transcription — no local binary needed."
 
 ### 9. Dependencies
 - Is `claude` CLI available in PATH?

@@ -23,6 +23,7 @@ export class WebhookServer {
   private config: WebhookConfig
   private server: http.Server | null = null
   private eventPipeline: EventPipeline | null = null
+  private boundPort: number = 0
 
   constructor(config: WebhookConfig, _channelsConfig: ChannelsConfig | null) {
     this.config = config
@@ -67,16 +68,29 @@ export class WebhookServer {
       res.end('Not Found')
     })
 
-    const port = this.config.port || 3333
-    this.server.listen(port, () => {
-      logWebhook(`listening on port ${port}`)
-    })
+    const basePort = this.config.port || 3333
+    const maxPort = basePort + 7
+    let currentPort = basePort
+
+    const tryListen = () => {
+      this.server!.listen(currentPort, () => {
+        this.boundPort = currentPort
+        logWebhook(`listening on port ${currentPort}`)
+      })
+    }
+
     this.server.on('error', (err: NodeJS.ErrnoException) => {
-      if (err.code === 'EADDRINUSE') {
-        logWebhook(`port ${port} already in use`)
+      if (err.code === 'EADDRINUSE' && currentPort < maxPort) {
+        logWebhook(`port ${currentPort} already in use, trying ${currentPort + 1}`)
+        currentPort++
+        tryListen()
+      } else if (err.code === 'EADDRINUSE') {
+        logWebhook(`all ports ${basePort}-${maxPort} in use — webhook server disabled`)
         this.server = null
       }
     })
+
+    tryListen()
   }
 
   stop(): void {
@@ -118,6 +132,6 @@ export class WebhookServer {
     if (this.config.ngrokDomain) {
       return `https://${this.config.ngrokDomain}/webhook/${name}`
     }
-    return `http://localhost:${this.config.port}/webhook/${name}`
+    return `http://localhost:${this.boundPort || this.config.port}/webhook/${name}`
   }
 }

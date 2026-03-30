@@ -1,5 +1,5 @@
 /**
- * Shared i18n module for slash-commands and custom-commands.
+ * Shared i18n module for custom-commands.
  *
  * Supports 4 languages: en, ko, ja, zh.
  * Fallback chain: requested lang → en → key itself.
@@ -45,45 +45,6 @@ export function getLang(locale: string): Lang {
 // ── Dictionary ──────────────────────────────────────────────────────
 
 const dict: Record<string, I18nEntry> = {
-  // -- slash-commands (4-lang) --
-  'session.command_forwarded': {
-    en: 'Forwarded `{command}` to the Claude session. The result will appear in the channel.',
-    ko: 'Claude 세션에 `{command}` 요청을 전달했습니다. 결과는 채널에 표시됩니다.',
-    ja: 'Claude セッションに`{command}`を転送しました。結果はチャンネルに表示されます。',
-    zh: '已将`{command}`转发到 Claude 会话。结果会显示在频道中。',
-  },
-  'model.switched': {
-    en: 'Model switch request: **{model}** (forwarded to session)',
-    ko: 'Model switch requested: **{model}** (forwarded to session)',
-    ja: 'モデル切替リクエスト: **{model}** (セッションに転送済み)',
-    zh: '模型切换请求: **{model}** (已转发到会话)',
-  },
-  'compact.forwarded': {
-    en: 'Compact request forwarded to session.',
-    ko: 'Context compact request forwarded to session.',
-    ja: '圧縮リクエストをセッションに転送しました。',
-    zh: '压缩请求已转发到会话。',
-  },
-  'clear.forwarded': {
-    en: 'Clear request forwarded to session.',
-    ko: 'Clear request forwarded to session.',
-    ja: 'クリアリクエストをセッションに転送しました。',
-    zh: '清除请求已转发到会话。',
-  },
-  'new.forwarded': {
-    en: 'New session request forwarded to session.',
-    ko: 'New session request forwarded to session.',
-    ja: '新しいセッションリクエストをセッションに転送しました。',
-    zh: '新建会话请求已转发到会话。',
-  },
-  'unknown_command': {
-    en: 'Unknown command: {cmd}',
-    ko: 'Unknown command: {cmd}',
-    ja: '不明なコマンド: {cmd}',
-    zh: '未知命令: {cmd}',
-  },
-
-  // -- custom-commands (2-lang, en fallback for ja/zh) --
   'schedule.empty': {
     ko: 'No schedules registered.',
     en: 'No schedules configured.',

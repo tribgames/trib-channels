@@ -8,16 +8,18 @@
     "start": "npx tsx server.ts"
   },
   "dependencies": {
-    "@discordjs/opus": "^0.10.0",
-    "@discordjs/voice": "^0.19.2",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@themaximalist/embeddings.js": "^0.1.3",
     "@xenova/transformers": "^2.17.2",
     "discord.js": "^14.14.0",
-    "prism-media": "^1.3.5",
-    "sodium-native": "^5.1.0",
     "sqlite-vec": "^0.1.7",
     "tsx": "^4.0.0"
+  },
+  "optionalDependencies": {
+    "@discordjs/opus": "^0.10.0",
+    "@discordjs/voice": "^0.19.2",
+    "prism-media": "^1.3.5",
+    "sodium-native": "^5.1.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

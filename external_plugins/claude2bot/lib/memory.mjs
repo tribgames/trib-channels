@@ -8,6 +8,7 @@ import {
   writeFileSync,
 } from 'fs'
 import { dirname, join, resolve } from 'path'
+import { homedir } from 'os'
 import { createHash } from 'crypto'
 import { embedText, getEmbeddingModelId, getEmbeddingDims, warmupEmbeddingProvider, configureEmbedding } from './embedding-provider.mjs'
 let sqliteVec = null
@@ -84,7 +85,7 @@ function ensureDir(dirPath) {
 function workspaceToProjectSlug(workspacePath) {
   return resolve(workspacePath)
     .replace(/\\/g, '/')
-    .replace(/^([A-Za-z]):/, '$1')
+    .replace(/^([A-Za-z]):/, '$1-')
     .replace(/\//g, '-')
 }
 
@@ -1859,7 +1860,7 @@ export class MemoryStore {
 
   backfillProject(workspacePath, options = {}) {
     const limit = Number(options.limit ?? 50)
-    const projectDir = join(process.env.HOME || '', '.claude', 'projects', workspaceToProjectSlug(workspacePath))
+    const projectDir = join(homedir(), '.claude', 'projects', workspaceToProjectSlug(workspacePath))
     if (!existsSync(projectDir)) return 0
     const files = readdirSync(projectDir)
       .filter(file => file.endsWith('.jsonl') && !file.startsWith('agent-'))
@@ -1918,20 +1919,6 @@ export class MemoryStore {
         lines.push(`### ${label}\n${values.map(value => `- ${value.text}`).join('\n')}`)
       }
       parts.push(`## Decisions\n${lines.join('\n\n')}`)
-    }
-
-    const workingTasks = this.db.prepare(`
-      SELECT title, details, status, stage, evidence_level
-      FROM tasks
-      WHERE status IN ('active', 'in_progress', 'paused')
-      ORDER BY last_seen DESC, retrieval_count DESC
-      LIMIT 4
-    `).all()
-    if (workingTasks.length > 0) {
-      parts.push(`## Working Set\n${workingTasks.map(task => {
-        const detail = task.details ? ` — ${task.details}` : ''
-        return `- [${task.status}/${task.stage}/${task.evidence_level}] ${task.title}${detail}`
-      }).join('\n')}`)
     }
 
     if (profileRows.length === 0 && coreFacts.length === 0 && durableFacts.length === 0) {

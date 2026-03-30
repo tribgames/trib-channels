@@ -3,6 +3,7 @@
  * and enqueues them for execution.
  */
 
+import { basename } from 'path'
 import type { EventRule, EventsConfig, ChannelsConfig } from '../backends/types.js'
 import { EventQueue, type QueueItem } from './event-queue.js'
 import { applyParser, evaluateFilter, applyTemplate, logEvent } from './executor.js'
@@ -93,7 +94,7 @@ export class EventPipeline {
       const data: Record<string, string> = {
         path: filePath,
         event: eventType,
-        filename: filePath.split('/').pop() ?? '',
+        filename: basename(filePath),
       }
 
       const prompt = applyTemplate(rule.execute, data)

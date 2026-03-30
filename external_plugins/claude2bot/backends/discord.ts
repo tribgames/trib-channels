@@ -1,5 +1,5 @@
 /**
- * Discord backend — forked from the official Claude Code Discord plugin.
+ * Discord backend for claude2bot.
  *
  * Implements ChannelBackend with full access control (pairing, allowlists,
  * guild-channel support with mention-triggering). Policy lives in config.json.
@@ -12,7 +12,6 @@ import {
   ChannelType,
   type Message,
   type Attachment,
-  type ChatInputCommandInteraction,
 } from 'discord.js'
 import { randomBytes } from 'crypto'
 import {
@@ -103,7 +102,6 @@ export class DiscordBackend implements ChannelBackend {
 
   onMessage: ((msg: InboundMessage) => void) | null = null
   onInteraction: ((interaction: { type: string; customId: string; userId: string; channelId: string; values?: string[]; fields?: Record<string, string>; message?: { id: string } }) => void) | null = null
-  onSlashCommand: ((interaction: ChatInputCommandInteraction) => void) | null = null
   onModalRequest: ((interaction: any) => void) | null = null
   onCustomCommand: ((text: string, channelId: string, userId: string, replyFn: (text: string, opts?: { embeds?: Record<string, unknown>[]; components?: Record<string, unknown>[] }) => Promise<void>) => void) | null = null
 
@@ -170,14 +168,6 @@ export class DiscordBackend implements ChannelBackend {
 
     this.client.on('interactionCreate', async (interaction) => {
       try {
-        // Slash commands — /claude stop, /claude status, etc.
-        if (interaction.isChatInputCommand()) {
-          if (this.onSlashCommand) {
-            this.onSlashCommand(interaction)
-          }
-          return
-        }
-
         // Modal submit handling
         if (interaction.isModalSubmit()) {
           if (this.onInteraction) {
@@ -236,14 +226,8 @@ export class DiscordBackend implements ChannelBackend {
       }
     })
 
-    this.client.on('ready', async c => {
+    this.client.on('ready', c => {
       process.stderr.write(`claude2bot discord: gateway connected as ${c.user.tag}\n`)
-      try {
-        const { registerSlashCommands } = await import('../lib/slash-commands.js')
-        await registerSlashCommands(this.client, this.token)
-      } catch (err) {
-        process.stderr.write(`claude2bot discord: slash command registration failed: ${err}\n`)
-      }
     })
 
     this.client.on('shardDisconnect', (ev, id) => {
@@ -263,7 +247,12 @@ export class DiscordBackend implements ChannelBackend {
     })
 
 
+    const readyPromise = new Promise<void>((resolve, reject) => {
+      this.client.once('ready', () => resolve())
+      setTimeout(() => reject(new Error('discord ready timeout (30s)')), 30_000)
+    })
     await this.client.login(this.token)
+    await readyPromise
 
     if (!this.isStatic) {
       this.approvalTimer = setInterval(() => this.checkApprovals(), 5000)

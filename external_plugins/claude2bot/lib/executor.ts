@@ -6,10 +6,11 @@
 import { spawn } from 'child_process'
 import { existsSync, mkdirSync, appendFileSync } from 'fs'
 import { join, normalize, extname } from 'path'
+import { tmpdir } from 'os'
 import { DATA_DIR } from './config.js'
 
 const SCRIPTS_DIR = join(DATA_DIR, 'scripts')
-const NOPLUGIN_DIR = '/tmp/claude2bot-noplugin'
+const NOPLUGIN_DIR = join(tmpdir(), 'claude2bot-noplugin')
 const EVENT_LOG = join(DATA_DIR, 'event.log')
 
 export function logEvent(msg: string): void {
