@@ -3,7 +3,7 @@
  * MCP server-centric output architecture. No hooks for text forwarding.
  */
 
-import { readFileSync, existsSync, statSync, watch, openSync, readSync, closeSync, type FSWatcher } from 'fs'
+import { readFileSync, readdirSync, existsSync, statSync, watch, openSync, readSync, closeSync, type FSWatcher } from 'fs'
 import { execFileSync } from 'child_process'
 import { basename, join, resolve } from 'path'
 import { homedir } from 'os'
@@ -90,6 +90,24 @@ export function discoverSessionBoundTranscript(): SessionBoundTranscript | null 
             exists: true,
           }
         }
+
+        // Fallback: find the most recently modified .jsonl in the sessionCwd-based project dir
+        const cwdProjectDir = join(projectsDir, cwdToProjectSlug(sessionCwd))
+        try {
+          const files = readdirSync(cwdProjectDir)
+            .filter(f => f.endsWith('.jsonl') && !f.startsWith('agent-'))
+            .map(f => ({ path: join(cwdProjectDir, f), mtime: statSync(join(cwdProjectDir, f)).mtimeMs }))
+            .sort((a, b) => b.mtime - a.mtime)
+          if (files.length > 0) {
+            return {
+              claudePid: pid,
+              sessionId: session.sessionId,
+              sessionCwd,
+              transcriptPath: files[0].path,
+              exists: true,
+            }
+          }
+        } catch { /* dir may not exist */ }
 
         return {
           claudePid: pid,
