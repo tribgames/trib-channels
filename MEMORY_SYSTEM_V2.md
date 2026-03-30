@@ -585,3 +585,21 @@ claude2bot의 메모리 시스템을 인간 뇌의 기억 구조를 모방하여
 | ReMe | 벤치마크 재현 불가, LLM 과의존, 전처리 없음 |
 | OpenClaw | 세션 상태 손상, 메모리 리콜 신뢰 불가 |
 | 공통 | 모든 프로젝트에서 사용자가 자체 메모리 시스템 구축 |
+
+### LoCoMo 벤치마크 상위 기법 참고 (2026-03-30)
+
+| 순위 | 시스템 | 점수 | 핵심 기법 |
+|------|--------|------|---------|
+| 1 | MemoryLake | 94.03% | 의도 기반 동적 메모리 재구성 |
+| 2 | EverMemOS | 92.32% | OpenClaw 기반, BM25+Vector, sqlite-vec |
+| 3 | Full-context | 91.21% | 전체 대화 투입 (상한선 참조) |
+
+### 우리가 적용할 수 있는 핵심 기법 (PropMem)
+1. **Entity-Filtered Retrieval** — 질문에서 entity 추출 → 해당 entity facts만 검색 (가장 큰 단일 개선)
+2. **Atomic Proposition** — 25단어 단위 fact 분리 (이미 유사하게 구현)
+3. **절대 날짜 변환** — "어제" → "2026-03-29" (cycle1에서 변환)
+4. **지식 업데이트 soft recency** — 구버전 30% 점수 패널티 (삭제 아닌 감점)
+
+### timezone 처리
+- profiles DB에 저장하지 않음 — OS에서 `Intl.DateTimeFormat().resolvedOptions().timeZone` 자동 감지
+- 출장/이주 시 자동 반영

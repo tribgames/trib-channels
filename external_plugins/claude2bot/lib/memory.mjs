@@ -2485,6 +2485,7 @@ export class MemoryStore {
                bm25(facts_fts) AS score, unixepoch(f.last_seen) AS updated_at, f.id AS entity_id,
                f.confidence AS quality_score,
                f.retrieval_count AS retrieval_count,
+               f.source_episode_id AS source_episode_id,
                e.source_ref AS source_ref,
                e.ts AS source_ts
         FROM facts_fts
@@ -2507,6 +2508,7 @@ export class MemoryStore {
                t.confidence AS quality_score,
                t.stage AS stage, t.evidence_level AS evidence_level, t.status AS status,
                t.retrieval_count AS retrieval_count,
+               t.source_episode_id AS source_episode_id,
                e.source_ref AS source_ref,
                e.ts AS source_ts
         FROM tasks_fts
@@ -2527,6 +2529,7 @@ export class MemoryStore {
                s.value AS content, bm25(signals_fts) AS score,
                unixepoch(s.last_seen) AS updated_at, s.id AS entity_id, s.retrieval_count AS retrieval_count,
                s.score AS quality_score,
+               s.source_episode_id AS source_episode_id,
                e.source_ref AS source_ref,
                e.ts AS source_ts
         FROM signals_fts
@@ -2578,6 +2581,7 @@ export class MemoryStore {
           SELECT 'fact' AS type, f.fact_type AS subtype, CAST(f.id AS TEXT) AS ref, f.text AS content,
                  0 AS score, unixepoch(f.last_seen) AS updated_at, f.id AS entity_id,
                  f.confidence AS quality_score, f.retrieval_count AS retrieval_count,
+                 f.source_episode_id AS source_episode_id,
                  NULL AS source_ref, NULL AS source_ts
           FROM facts f
           WHERE f.status = 'active' AND (${likeConditions})
@@ -2597,6 +2601,7 @@ export class MemoryStore {
                  trim(t.title || CASE WHEN t.details IS NOT NULL AND t.details != '' THEN ' — ' || t.details ELSE '' END) AS content,
                  0 AS score, unixepoch(t.last_seen) AS updated_at, t.id AS entity_id,
                  t.confidence AS quality_score, t.retrieval_count AS retrieval_count,
+                 t.source_episode_id AS source_episode_id,
                  NULL AS source_ref, NULL AS source_ts
           FROM tasks t
           WHERE t.status IN ('active', 'in_progress', 'paused')
@@ -2695,6 +2700,7 @@ export class MemoryStore {
         return this.db.prepare(`
           SELECT 'fact' AS type, f.fact_type AS subtype, f.id AS entity_id, f.text AS content,
                  unixepoch(f.last_seen) AS updated_at, f.retrieval_count AS retrieval_count,
+                 f.source_episode_id AS source_episode_id,
                  mv.vector_json
           FROM facts f JOIN memory_vectors mv ON mv.entity_type = 'fact' AND mv.entity_id = f.id AND mv.model = ?
           WHERE f.id = ? AND f.status = 'active'
@@ -2705,6 +2711,7 @@ export class MemoryStore {
           SELECT 'task' AS type, t.stage AS subtype, t.id AS entity_id,
                  trim(t.title || CASE WHEN t.details != '' THEN ' — ' || t.details ELSE '' END) AS content,
                  unixepoch(t.last_seen) AS updated_at, t.retrieval_count AS retrieval_count,
+                 t.source_episode_id AS source_episode_id,
                  mv.vector_json
           FROM tasks t JOIN memory_vectors mv ON mv.entity_type = 'task' AND mv.entity_id = t.id AND mv.model = ?
           WHERE t.id = ? AND t.status IN ('active', 'in_progress', 'paused')
@@ -2714,6 +2721,7 @@ export class MemoryStore {
         return this.db.prepare(`
           SELECT 'signal' AS type, s.kind AS subtype, s.id AS entity_id, s.value AS content,
                  unixepoch(s.last_seen) AS updated_at, s.retrieval_count AS retrieval_count,
+                 s.source_episode_id AS source_episode_id,
                  mv.vector_json
           FROM signals s JOIN memory_vectors mv ON mv.entity_type = 'signal' AND mv.entity_id = s.id AND mv.model = ?
           WHERE s.id = ?
@@ -2747,6 +2755,22 @@ export class MemoryStore {
     const queryTokens = new Set(tokenizeMemoryText(query))
     const queryTokenCount = queryTokens.size
     const primaryIntent = intent?.primary ?? 'decision'
+
+    // Entity-filtered retrieval: find matching entities and collect their source episode IDs
+    const entityLinkedEpisodeIds = new Set()
+    if (queryTokens.size > 0) {
+      try {
+        const tokenArray = [...queryTokens]
+        const placeholders = tokenArray.map(() => '?').join(',')
+        const matchedEntities = this.db.prepare(`
+          SELECT id, name, source_episode_id FROM entities
+          WHERE LOWER(name) IN (${placeholders})
+        `).all(...tokenArray)
+        for (const ent of matchedEntities) {
+          if (ent.source_episode_id) entityLinkedEpisodeIds.add(Number(ent.source_episode_id))
+        }
+      } catch { /* ignore entity lookup errors */ }
+    }
 
     const dedupKey = (item) => {
       const contentHash = (item.content || '').slice(0, 50).toLowerCase().replace(/\s+/g, '')
@@ -2856,11 +2880,18 @@ export class MemoryStore {
           item.type === 'summary' && overlapCount === 0 ? 0.08 :
           item.type === 'episode' && overlapCount === 0 ? 0.10 :
           0
+        // Entity boost: items linked to a matching entity get a score boost
+        const entityBoost =
+          entityLinkedEpisodeIds.size > 0 &&
+          item.source_episode_id != null &&
+          entityLinkedEpisodeIds.has(Number(item.source_episode_id))
+            ? -0.2
+            : 0
         return {
           ...item,
           content: compactRetrievalContent(item),
           overlapCount,
-          weighted_score: sparse + dense + recencyPenalty + typeBoost + intentBoost + retrievalBoost + focusBoost + qualityBoost + densityPenalty,
+          weighted_score: sparse + dense + recencyPenalty + typeBoost + intentBoost + retrievalBoost + focusBoost + qualityBoost + densityPenalty + entityBoost,
         }
       })
     const positiveCoreMatches = scored.filter(item =>

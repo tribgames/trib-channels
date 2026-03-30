@@ -459,7 +459,9 @@ export async function runCycle1(ws, config) {
       }
     } catch { /* best effort */ }
 
-    const extractionPrompt = loadCycle1Prompt().replace('{{CANDIDATES}}', candidateText + existingMemorySection)
+    const extractionPrompt = loadCycle1Prompt()
+      .replace('{{TODAY}}', new Date().toISOString().slice(0, 10))
+      .replace('{{CANDIDATES}}', candidateText + existingMemorySection)
 
     // Call LLM via provider abstraction
     let raw

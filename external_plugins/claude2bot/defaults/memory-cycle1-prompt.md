@@ -1,4 +1,5 @@
 Extract durable memory from recent user messages. Output JSON only.
+Today's date: {{TODAY}}
 
 Rules:
 - Ignore chatter, acknowledgements, filler, temporary status, execution noise.
@@ -9,6 +10,8 @@ Rules:
 - Profiles capture user traits: language, tone, response_style, timezone, expertise.
 - Entities/relations: only stable named things and their connections.
 - Write all values in English. Preserve proper nouns as-is.
+- Convert relative dates to absolute dates: "yesterday" → "2026-03-29", "last week" → "week of 2026-03-24", "tomorrow" → "2026-03-31". Use today's date from context.
+- Always include the date when a fact was stated or decided (e.g., "Decided on 2026-03-30: ...").
 
 Return this shape:
 {
