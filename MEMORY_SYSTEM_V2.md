@@ -441,3 +441,45 @@ claude2bot의 메모리 시스템을 인간 뇌의 기억 구조를 모방하여
 - trib-search도 동일한 instructions 재구성 필요
 - provider 추상화 공유 가능성 검토
 - annotations title 이미 적용됨
+
+---
+
+## 16. Phase 1 구현 완료 (2026-03-30)
+
+### 커밋 이력
+1. `5786793` — trib-search 분리 + launcher 정리
+2. `b8518f9` — Windows 호환 + 슬래시 커맨드 제거 + ready gate + webhook retry
+3. `750468d` — 시스템 태그 보호 + 포워더 바인딩 + 싱글톤
+4. `d0c73ca` — Memory v2 Phase 1 (번역/rollup 제거 + 노이즈 정리 + 시간 주입 + instructions 재구성)
+
+### Phase 1 완료 항목
+- [x] 번역 제거 (normalizeSleepArtifacts, normalizeJsonPayloadToEnglish, normalizeTextToEnglish)
+- [x] rollup 제거 (weekly/monthly/yearly + collectDailiesForWeek + collectFilesForPeriod + getWeekNumber)
+- [x] episode 중복 방지 (candidate 생성 시 kind='message' 필터)
+- [x] dedup key 개선 (content hash 기반)
+- [x] context.md fallback 중복 방지 (kind='message' + DISTINCT)
+- [x] recent topics kind 필터
+- [x] memory-context system-reminder 감싸기 (테스트 대기)
+- [x] 매 메시지 Current time 주입 (로컬 시간)
+- [x] settings.default.md 중복 제거 (session-start hook에서 제거)
+- [x] MCP instructions Current time 제거
+
+### 미해결 (다음 세션)
+- [ ] system-reminder 감싸기 테스트 (세션 재시작 필요)
+- [ ] 싱글톤 kill 미동작 디버깅
+- [ ] consolidation 최초 실행 (facts/tasks/signals 채우기)
+- [ ] 스킬 통합 (install/setup/doctor)
+- [ ] 음성 메시지 동작 확인
+
+### Phase 2 구현 대상
+- [ ] recall_memory MCP 도구 구현
+- [ ] MCP 도구 annotations title 추가
+- [ ] cycle1 provider 추상화 + ollama 연동
+- [ ] cycle1 interval 스케줄러
+- [ ] bot.md 도입
+
+### Phase 3 이후
+- [ ] cycle2 교정 모드 전환
+- [ ] cycle3 주간 장기 정리
+- [ ] 프로필 학습 (profile.json 제거)
+- [ ] trib-search 동기화

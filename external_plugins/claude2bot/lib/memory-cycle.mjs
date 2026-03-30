@@ -9,6 +9,7 @@ import { homedir, tmpdir } from 'os'
 import { join } from 'path'
 import { cleanMemoryText, getMemoryStore } from './memory.mjs'
 import { embedText } from './embedding-provider.mjs'
+import { callLLM } from './llm-provider.mjs'
 
 const PLUGIN_DATA_DIR = process.env.CLAUDE_PLUGIN_DATA || join(homedir(), '.claude', 'plugins', 'data', 'claude2bot-claude2bot')
 const HISTORY_DIR = join(PLUGIN_DATA_DIR, 'history')
@@ -418,7 +419,104 @@ export function getCycleStatus() {
   const pending = store.getPendingCandidateDays(100, 1)
   return {
     lastSleepAt: config.lastSleepAt ? new Date(config.lastSleepAt).toISOString() : null,
+    lastCycle1At: config.lastCycle1At ? new Date(config.lastCycle1At).toISOString() : null,
     pendingDays: pending.length,
     pendingCandidates: pending.reduce((sum, d) => sum + d.n, 0),
   }
+}
+
+// ── Cycle1: Lightweight interval-based memory extraction ──
+
+function looksLowSignalCycle1(text) {
+  const clean = cleanMemoryText(text)
+  if (!clean) return true
+  if (clean.includes('[Request interrupted by user]')) return true
+  if (/<event-result[\s>]|<event\s/i.test(String(text ?? ''))) return true
+  if (/^(read|list|show|count|find|tell me|summarize)\b/i.test(clean) && /(\/|\.jsonl\b|\.md\b|\.csv\b|\bfilenames?\b)/i.test(clean)) return true
+  if (/^no response requested\.?$/i.test(clean)) return true
+  if (/^stop hook error:/i.test(clean)) return true
+  if (/return this exact shape:/i.test(clean)) return true
+  const compact = clean.replace(/\s+/g, '')
+  const hasKorean = /[\uAC00-\uD7AF]/.test(compact)
+  if (compact.length < (hasKorean ? 4 : 8)) return true
+  return false
+}
+
+function loadCycle1Prompt() {
+  const promptPath = join(resourceDir(), 'defaults', 'memory-cycle1-prompt.md')
+  if (existsSync(promptPath)) return readFileSync(promptPath, 'utf8')
+  return 'Extract durable memory from candidates. Output JSON only with profiles/facts/tasks/signals/entities/relations.\n\n{{CANDIDATES}}'
+}
+
+const DEFAULT_CYCLE1_PROVIDER = { connection: 'codex', model: 'gpt-5.3-codex-spark', effort: 'medium' }
+
+export async function runCycle1(ws, config) {
+  const store = getStore()
+  const cycleConfig = readCycleConfig()
+  const lastRun = cycleConfig.lastCycle1At || 0
+
+  // Get new episodes since last run
+  const newEpisodes = store.getEpisodesSince(lastRun)
+  if (!newEpisodes || newEpisodes.length === 0) return { extracted: 0 }
+
+  // Filter: user messages only, clean + low-signal filter
+  const candidates = newEpisodes
+    .filter(e => e.role === 'user' && e.kind === 'message')
+    .map(e => ({ ...e, content: cleanMemoryText(e.content) }))
+    .filter(e => e.content && !looksLowSignalCycle1(e.content))
+
+  if (candidates.length === 0) {
+    // Update timestamp even if no candidates to avoid re-scanning
+    writeCycleConfig({ ...cycleConfig, lastCycle1At: Date.now() })
+    return { extracted: 0 }
+  }
+
+  // Build prompt
+  const candidateText = candidates
+    .map((c, i) => `#${i + 1} [${c.role}]: ${c.content.slice(0, 300)}`)
+    .join('\n\n')
+
+  const extractionPrompt = loadCycle1Prompt().replace('{{CANDIDATES}}', candidateText)
+
+  // Call LLM via provider abstraction
+  const provider = config?.memory?.cycle1?.provider || DEFAULT_CYCLE1_PROVIDER
+  const timeout = config?.memory?.cycle1?.timeout || 60000
+  const raw = await callLLM(extractionPrompt, provider, { timeout, cwd: ws })
+
+  // Parse and upsert
+  const parsed = extractJsonObject(raw)
+  if (!parsed) {
+    writeCycleConfig({ ...cycleConfig, lastCycle1At: Date.now() })
+    return { extracted: candidates.length, error: 'invalid JSON' }
+  }
+
+  const ts = new Date().toISOString()
+  const srcEp = candidates[0]?.id ?? null
+  if (parsed.profiles) store.upsertProfiles(parsed.profiles, ts, srcEp)
+  if (parsed.facts) await store.upsertFacts(parsed.facts, ts, srcEp)
+  if (parsed.tasks) store.upsertTasks(parsed.tasks, ts, srcEp)
+  if (parsed.signals) store.upsertSignals(parsed.signals, srcEp, ts)
+  if (parsed.entities) store.upsertEntities(parsed.entities, ts, srcEp)
+  if (parsed.relations) store.upsertRelations(parsed.relations, ts, srcEp)
+
+  // Update context file + timestamp
+  store.writeContextFile()
+  writeCycleConfig({ ...cycleConfig, lastCycle1At: Date.now() })
+
+  const result = {
+    extracted: candidates.length,
+    facts: (parsed.facts || []).length,
+    tasks: (parsed.tasks || []).length,
+    signals: (parsed.signals || []).length,
+  }
+  process.stderr.write(`[memory-cycle1] extracted=${result.extracted} facts=${result.facts} tasks=${result.tasks} signals=${result.signals}\n`)
+  return result
+}
+
+export function parseInterval(s) {
+  const match = String(s).match(/^(\d+)(s|m|h)$/)
+  if (!match) return 600000 // default 10m
+  const [, num, unit] = match
+  const multiplier = { s: 1000, m: 60000, h: 3600000 }
+  return Number(num) * multiplier[unit]
 }

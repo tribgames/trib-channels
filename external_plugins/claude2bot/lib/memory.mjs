@@ -1272,6 +1272,18 @@ export class MemoryStore {
     `).all(dayKey)
   }
 
+  getEpisodesSince(timestamp) {
+    const ts = typeof timestamp === 'number'
+      ? new Date(timestamp).toISOString()
+      : String(timestamp)
+    return this.db.prepare(`
+      SELECT id, ts, role, kind, content
+      FROM episodes
+      WHERE ts > ?
+      ORDER BY ts, id
+    `).all(ts)
+  }
+
   countEpisodes() {
     return this.db.prepare(`SELECT count(*) AS n FROM episodes`).get().n
   }
@@ -1876,15 +1888,35 @@ export class MemoryStore {
 
   buildContextText() {
     const parts = []
-    const profileRows = this.db.prepare(`
-      SELECT key, value
-      FROM profiles
-      ORDER BY confidence DESC, retrieval_count DESC, last_seen DESC
+
+    // ## Bot — bot.md + tone/style signals
+    const botMdPath = join(this.dataDir, 'bot.md')
+    let botContent = ''
+    try { botContent = readFileSync(botMdPath, 'utf8').trim() } catch {}
+    const toneSignals = this.db.prepare(`
+      SELECT kind, value, score FROM signals
+      WHERE kind IN ('tone', 'response_style', 'personality') AND status = 'active'
+      ORDER BY score DESC LIMIT 3
     `).all()
-    if (profileRows.length > 0) {
-      parts.push(`## Profile\n${profileRows.map(item => `- [${item.key}] ${item.value}`).join('\n')}`)
+    if (botContent || toneSignals.length) {
+      parts.push('## Bot')
+      if (botContent) parts.push(botContent)
+      if (toneSignals.length) {
+        parts.push(toneSignals.map(s => `- ${s.kind}: ${s.value}`).join('\n'))
+      }
     }
 
+    // ## User — profiles DB
+    const profiles = this.db.prepare(`
+      SELECT key, value, confidence FROM profiles
+      WHERE status = 'active'
+      ORDER BY confidence DESC LIMIT 10
+    `).all()
+    if (profiles.length) {
+      parts.push(`## User\n${profiles.map(p => `- ${p.key}: ${p.value}`).join('\n')}`)
+    }
+
+    // ## Core Memory — preference/constraint facts
     const coreFacts = this.db.prepare(`
       SELECT fact_type, text
       FROM facts
@@ -1893,12 +1925,13 @@ export class MemoryStore {
       ORDER BY confidence DESC, retrieval_count DESC, mention_count DESC, last_seen DESC
       LIMIT 6
     `).all()
-    if (coreFacts.length > 0 && profileRows.length === 0) {
+    if (coreFacts.length > 0) {
       parts.push(`## Core Memory\n${coreFacts.map(item => `- [${item.fact_type}] ${item.text}`).join('\n')}`)
     }
 
+    // ## Decisions — decision/fact facts
     const durableFacts = this.db.prepare(`
-      SELECT fact_type, text, confidence, last_seen, retrieval_count
+      SELECT fact_type, text
       FROM facts
       WHERE status = 'active'
         AND fact_type IN ('decision', 'fact')
@@ -1920,58 +1953,7 @@ export class MemoryStore {
       parts.push(`## Decisions\n${lines.join('\n\n')}`)
     }
 
-    if (profileRows.length === 0 && coreFacts.length === 0 && durableFacts.length === 0) {
-      const identity = this.db.prepare(`
-        SELECT content FROM documents WHERE kind = 'identity' AND doc_key = 'identity'
-      `).get()
-      if (identity?.content) parts.push(`## Identity\n${identity.content}`)
-    }
-
-    let history = this.db.prepare(`
-      SELECT content FROM summaries WHERE level = 'lifetime' ORDER BY updated_at DESC LIMIT 1
-    `).get()?.content ?? ''
-    if (!history) {
-      const rows = this.db.prepare(`
-        SELECT content FROM summaries
-        WHERE level IN ('yearly', 'monthly', 'weekly', 'daily')
-        ORDER BY CASE level
-          WHEN 'yearly' THEN 1
-          WHEN 'monthly' THEN 2
-          WHEN 'weekly' THEN 3
-          ELSE 4
-        END, updated_at DESC
-        LIMIT 3
-      `).all()
-      if (rows.length > 0) history = rows.map(row => row.content).join('\n\n')
-    }
-    if (history) parts.push(`## History\n${history}`)
-
-    const interests = this.db.prepare(`
-      SELECT name, count FROM interests
-      ORDER BY score DESC, count DESC, last_seen DESC
-      LIMIT 10
-    `).all()
-    if (interests.length > 0) {
-      parts.push(`## Interests\n${interests.map(item => `${item.name}(${item.count})`).join(', ')}`)
-    }
-
-    const signals = this.db.prepare(`
-      SELECT kind, value, score, last_seen, retrieval_count
-      FROM signals
-      ORDER BY score DESC, retrieval_count DESC, last_seen DESC
-      LIMIT 8
-    `).all()
-    const activeSignals = signals
-      .map(item => ({
-        ...item,
-        effectiveScore: decaySignalScore(item.score, item.last_seen, item.kind),
-      }))
-      .filter(item => item.effectiveScore >= 0.35)
-      .slice(0, 5)
-    if (activeSignals.length > 0) {
-      parts.push(`## Signals\n${activeSignals.map(item => `- [${item.kind}] ${item.value}`).join('\n')}`)
-    }
-
+    // ## Ongoing — active tasks
     const tasks = this.db.prepare(`
       SELECT title, details, status, priority, confidence, last_seen, retrieval_count, stage, evidence_level
       FROM tasks
@@ -1995,20 +1977,48 @@ export class MemoryStore {
       if (ongoing?.content) parts.push(`## Ongoing\n${ongoing.content}`)
     }
 
-    const recent = this.db.prepare(`
-      SELECT level, period_key, content
-      FROM summaries
-      WHERE level IN ('daily', 'weekly')
-      ORDER BY period_key DESC
-      LIMIT 4
+    // ## Signals — top signals with decay
+    const signals = this.db.prepare(`
+      SELECT kind, value, score, last_seen, retrieval_count
+      FROM signals
+      WHERE status = 'active'
+      ORDER BY score DESC, retrieval_count DESC, last_seen DESC
+      LIMIT 8
     `).all()
-    if (recent.length > 0) {
-      parts.push(`## Recent Summaries\n${recent.map(row => `### ${row.level}:${row.period_key}\n${row.content}`).join('\n\n')}`)
+    const activeSignals = signals
+      .filter(s => !['tone', 'response_style', 'personality'].includes(s.kind))
+      .map(item => ({
+        ...item,
+        effectiveScore: decaySignalScore(item.score, item.last_seen, item.kind),
+      }))
+      .filter(item => item.effectiveScore >= 0.35)
+      .slice(0, 5)
+    if (activeSignals.length > 0) {
+      parts.push(`## Signals\n${activeSignals.map(item => `- [${item.kind}] ${item.value}`).join('\n')}`)
     }
 
+    // ## Recent — daily summaries from history/daily/
+    const dailyDir = join(this.historyDir, 'daily')
+    if (existsSync(dailyDir)) {
+      const dailies = readdirSync(dailyDir)
+        .filter(f => f.endsWith('.md'))
+        .sort()
+        .reverse()
+        .slice(0, 2)
+      if (dailies.length) {
+        const recentLines = []
+        for (const f of dailies) {
+          const content = readFileSync(join(dailyDir, f), 'utf8').trim()
+          if (content) recentLines.push(content.slice(0, 500))
+        }
+        if (recentLines.length) parts.push(`## Recent\n${recentLines.join('\n\n')}`)
+      }
+    }
+
+    // Fallback — all sections empty → recent dialogues
     if (parts.length === 0) {
       const recentEpisodes = this.db.prepare(`
-        SELECT role, content
+        SELECT DISTINCT role, content
         FROM episodes
         WHERE kind = 'message'
         ORDER BY ts DESC, id DESC
@@ -3130,10 +3140,39 @@ export class MemoryStore {
       ORDER BY CASE priority WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END, retrieval_count DESC, last_seen DESC
       LIMIT 1
     `).get()?.workstream ?? ''
+
+    const formatAge = (ts) => {
+      if (!ts) return ''
+      const msTs = typeof ts === 'number' && ts < 1e12 ? ts * 1000 : new Date(ts).getTime()
+      const diff = Date.now() - msTs
+      if (diff < 0) return '0m'
+      const mins = Math.floor(diff / 60000)
+      if (mins < 60) return `${mins}m`
+      const hours = Math.floor(mins / 60)
+      if (hours < 24) return `${hours}h`
+      const days = Math.floor(hours / 24)
+      return `${days}d`
+    }
+
+    const formatHint = (item, overrides = {}) => {
+      const type = overrides.type ?? item.type ?? 'episode'
+      const attrs = [`type="${type}"`]
+      const conf = overrides.confidence ?? item.confidence ?? item.quality_score ?? item.effectiveScore
+      if (conf != null) attrs.push(`confidence="${Number(conf).toFixed(2)}"`)
+      const stage = overrides.stage ?? item.stage ?? item.status
+      if (stage && (type === 'task' || type === 'signal')) attrs.push(`stage="${stage}"`)
+      const ts = overrides.ts ?? item.updated_at ?? item.last_seen ?? item.source_ts ?? item.created_at
+      if (ts) attrs.push(`age="${formatAge(ts)}"`)
+      const rel = item.weighted_score ?? item.priority_score ?? item.rankScore
+      if (rel != null) attrs.push(`relevance="${Math.abs(Number(rel)).toFixed(2)}"`)
+      const text = String(overrides.text ?? item.content ?? item.text ?? item.value ?? '').slice(0, 200)
+      return `<hint ${attrs.join(' ')}>${text}</hint>`
+    }
+
     const coreMemory = await this.getCoreMemoryItems(clean, intent, queryVector)
     if (coreMemory.length > 0) {
       for (const item of coreMemory) {
-        lines.push(`- ${String(item.content).slice(0, 180)}`)
+        lines.push(formatHint(item))
       }
     }
 
@@ -3148,12 +3187,12 @@ export class MemoryStore {
       if (priorityTasks.length > 0) {
         for (const task of priorityTasks) {
           const detail = task.details ? ` — ${task.details}` : ''
-          lines.push(`- ${task.title}${detail} (${task.status})`)
+          lines.push(formatHint(task, { type: 'task', text: `${task.title}${detail}` }))
         }
       }
     } else if (intent.primary === 'decision') {
       const decisions = this.db.prepare(`
-        SELECT fact_type, text
+        SELECT fact_type, text, confidence, last_seen
         FROM facts
         WHERE status = 'active'
           AND fact_type IN ('decision', 'constraint')
@@ -3162,7 +3201,7 @@ export class MemoryStore {
       `).all()
       if (decisions.length > 0) {
         for (const item of decisions) {
-          lines.push(`- ${item.text}`)
+          lines.push(formatHint(item, { type: 'fact' }))
         }
       }
     }
@@ -3184,15 +3223,7 @@ export class MemoryStore {
     if (relevant.length > 0) {
       this.recordRetrieval(relevant)
       for (const item of relevant) {
-        if (item.type === 'task') {
-          lines.push(`- ${String(item.content).slice(0, 180)} (${item.subtype})`)
-        } else if (item.type === 'summary') {
-          lines.push(`- ${String(item.content).slice(0, 200)}`)
-        } else if (item.type === 'episode') {
-          lines.push(`- Previously discussed: ${String(item.content).slice(0, 160)}`)
-        } else {
-          lines.push(`- ${String(item.content).slice(0, 180)}`)
-        }
+        lines.push(formatHint(item))
       }
 
       const hasSignal = intent.primary === 'preference' && relevant.some(item => item.type === 'signal')
@@ -3216,7 +3247,7 @@ export class MemoryStore {
           .filter(item => !seenSignals.has(`${item.kind}:${item.value}`))
           .slice(0, 1)
         for (const signal of extraSignals) {
-          lines.push(`- ${signal.value}`)
+          lines.push(formatHint(signal, { type: 'signal', confidence: signal.effectiveScore, text: signal.value }))
         }
       }
     } else {
@@ -3239,11 +3270,11 @@ export class MemoryStore {
       for (const fact of facts) {
         const confidence = decayConfidence(fact.confidence, fact.last_seen)
         if (confidence < 0.25) continue
-        lines.push(`- ${fact.text}`)
+        lines.push(formatHint(fact, { type: 'fact', confidence }))
       }
 
       const tasks = this.db.prepare(`
-        SELECT title, status, confidence, last_seen
+        SELECT title, status, confidence, last_seen, stage
         FROM tasks
         WHERE status IN ('active', 'in_progress', 'paused')
         ORDER BY
@@ -3254,7 +3285,7 @@ export class MemoryStore {
       for (const task of tasks) {
         const confidence = decayConfidence(task.confidence, task.last_seen)
         if (confidence < 0.25) continue
-        lines.push(`- ${task.title} (${task.status})`)
+        lines.push(formatHint(task, { type: 'task', text: task.title, confidence }))
       }
 
       const signals = this.db.prepare(`
@@ -3270,7 +3301,7 @@ export class MemoryStore {
         }))
         .filter(item => item.effectiveScore >= 0.45)
       for (const signal of activeSignals) {
-        lines.push(`- ${signal.value}`)
+        lines.push(formatHint(signal, { type: 'signal', confidence: signal.effectiveScore, text: signal.value }))
       }
     }
 
@@ -3289,14 +3320,14 @@ export class MemoryStore {
           LIMIT 3
         `).all()
         if (recentTopics.length > 0) {
-          lines.push('Recent topics: ' + recentTopics.map(r => cleanMemoryText(r.content).slice(0, 40)).join(' / '))
+          lines.push('<recent>' + recentTopics.map(r => cleanMemoryText(r.content).slice(0, 40)).join(' / ') + '</recent>')
         }
       } catch {}
     }
 
     if (lines.length === 0) return ''
     const ctx = `<memory-context>\n${lines.join('\n')}\n</memory-context>`
-    process.stderr.write(`[memory] recall q="${clean.slice(0, 40)}" intent=${intent.primary} items=${lines.filter(l => l.startsWith('- ')).length}\n`)
+    process.stderr.write(`[memory] recall q="${clean.slice(0, 40)}" intent=${intent.primary} hints=${lines.filter(l => l.startsWith('<hint ')).length}\n`)
     return ctx
   }
 }

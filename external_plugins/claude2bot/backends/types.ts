@@ -256,6 +256,20 @@ export interface PluginConfig {
     provider?: 'local' | 'ollama'
     ollamaModel?: string
   }
+  /** Memory cycle configuration */
+  memory?: {
+    cycle1?: {
+      interval?: string
+      timeout?: number
+      provider?: {
+        connection: 'codex' | 'cli' | 'ollama' | 'api'
+        model?: string
+        effort?: string
+        fast?: boolean
+        baseUrl?: string
+      }
+    }
+  }
 }
 
 // ── Bot config (bot.json) ─────────────────────────────────────────────

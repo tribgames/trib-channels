@@ -27,7 +27,7 @@ import { controlClaudeSession } from './lib/session-control.js'
 import { JsonStateFile, ensureDir, removeFileIfExists, writeTextFile, type StatusState } from './lib/state-file.js'
 import { getMemoryStore } from './lib/memory.mjs'
 import { configureEmbedding } from './lib/embedding-provider.mjs'
-import { sleepCycle, memoryFlush, rebuildRecent, pruneToRecent, getCycleStatus, autoFlush } from './lib/memory-cycle.mjs'
+import { sleepCycle, memoryFlush, rebuildRecent, pruneToRecent, getCycleStatus, autoFlush, runCycle1, parseInterval } from './lib/memory-cycle.mjs'
 import {
   buildModalRequestSpec,
   PendingInteractionStore,
@@ -126,6 +126,23 @@ if (memoryStore.countEpisodes() === 0) {
 void memoryStore.warmupEmbeddings().then(() => memoryStore.ensureEmbeddings({ perTypeLimit: 12 })).catch(err => {
   process.stderr.write(`claude2bot: embedding warmup failed: ${err}\n`)
 })
+
+// ── Cycle1 interval scheduler ─────────────────────────────────────────
+const cycle1Config = (config as any)?.memory?.cycle1
+if (cycle1Config?.interval) {
+  const intervalMs = parseInterval(cycle1Config.interval)
+  setInterval(async () => {
+    try {
+      const result = await runCycle1(process.cwd(), config)
+      if (result.extracted > 0) {
+        process.stderr.write(`[memory-cycle1] extracted=${result.extracted} facts=${result.facts} tasks=${result.tasks}\n`)
+      }
+    } catch (e: unknown) {
+      process.stderr.write(`[memory-cycle1] error: ${e instanceof Error ? e.message : String(e)}\n`)
+    }
+  }, intervalMs)
+  process.stderr.write(`[memory-cycle1] scheduler started: interval=${cycle1Config.interval} (${intervalMs}ms)\n`)
+}
 
 // ── Instructions ───────────────────────────────────────────────────────
 // Based on the official Claude Code Discord plugin instructions.
@@ -867,6 +884,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
       name: 'reply',
+      annotations: { title: 'Discord Reply' },
       description:
         'Reply on the messaging channel. Pass chat_id from the inbound message. Optionally pass reply_to, files, embeds, and components (buttons, selects, etc).',
       inputSchema: {
@@ -899,6 +917,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'react',
+      annotations: { title: 'Reaction' },
       description: 'Add an emoji reaction to a message. Unicode emoji work directly; custom emoji need the <:name:id> form.',
       inputSchema: {
         type: 'object' as const,
@@ -912,6 +931,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'edit_message',
+      annotations: { title: 'Edit Message' },
       description: 'Edit a message the bot previously sent. Supports text, embeds, and components.',
       inputSchema: {
         type: 'object' as const,
@@ -935,6 +955,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'download_attachment',
+      annotations: { title: 'Download Attachment' },
       description: 'Download attachments from a message to the local inbox. Use after fetch_messages shows a message has attachments (marked with +Natt). Returns file paths ready to Read.',
       inputSchema: {
         type: 'object' as const,
@@ -947,6 +968,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'fetch_messages',
+      annotations: { title: 'Fetch Messages' },
       description: "Fetch recent messages from a channel. Returns oldest-first with message IDs. The platform's search API isn't exposed to bots, so this is the only way to look back.",
       inputSchema: {
         type: 'object' as const,
@@ -962,6 +984,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'schedule_status',
+      annotations: { title: 'Schedule Status' },
       description: 'Show all configured schedules, their next fire time, and whether they are currently running.',
       inputSchema: {
         type: 'object' as const,
@@ -970,6 +993,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'trigger_schedule',
+      annotations: { title: 'Trigger Schedule' },
       description: 'Manually trigger a named schedule immediately, ignoring time/day constraints.',
       inputSchema: {
         type: 'object' as const,
@@ -981,6 +1005,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'schedule_control',
+      annotations: { title: 'Schedule Control' },
       description: 'Defer or skip a schedule. Use "defer" to suppress for N minutes (default 30), or "skip_today" to suppress for the rest of the day.',
       inputSchema: {
         type: 'object' as const,
@@ -994,14 +1019,31 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'memory_cycle',
-      description: 'Run memory management operations: sleep (full summarize), flush (consolidate pending), rebuild (recent), prune (cleanup), status.',
+      annotations: { title: 'Memory Cycle' },
+      description: 'Run memory management operations: sleep (full summarize), flush (consolidate pending), rebuild (recent), prune (cleanup), cycle1 (lightweight extraction), status.',
       inputSchema: {
         type: 'object' as const,
         properties: {
-          action: { type: 'string', enum: ['sleep', 'flush', 'rebuild', 'prune', 'status'], description: 'Memory operation to run' },
+          action: { type: 'string', enum: ['sleep', 'flush', 'rebuild', 'prune', 'cycle1', 'status'], description: 'Memory operation to run' },
           maxDays: { type: 'number', description: 'Max days to process (default varies by action)' },
         },
         required: ['action'],
+      },
+    },
+    {
+      name: 'recall_memory',
+      annotations: { title: 'Memory Recall' },
+      description: 'Search memory DB for relevant facts, tasks, signals, episodes. Use silently without announcing to user.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          query: { type: 'string', description: 'Search keywords (keep short, 3-5 words)' },
+          type: { type: 'string', enum: ['all', 'facts', 'tasks', 'signals', 'episodes'], default: 'all', description: 'Memory type filter' },
+          timerange: { type: 'string', description: 'e.g. today, this-week, 2026-03' },
+          limit: { type: 'number', default: 5, description: 'Max results' },
+          source: { type: 'boolean', default: false, description: 'Include source episode + line' },
+        },
+        required: ['query'],
       },
     },
   ],
@@ -1150,12 +1192,48 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           } else if (mcAction === 'prune') {
             await pruneToRecent(ws, { maxDays: (args.maxDays as number) ?? 5 })
             result = { content: [{ type: 'text', text: 'Memory prune completed.' }] }
+          } else if (mcAction === 'cycle1') {
+            const c1result = await runCycle1(ws, config)
+            result = { content: [{ type: 'text', text: `Cycle1 completed: ${JSON.stringify(c1result)}` }] }
           } else {
             result = { content: [{ type: 'text', text: `unknown memory action: ${mcAction}` }], isError: true }
           }
         } catch (e: unknown) {
           result = { content: [{ type: 'text', text: `memory_cycle error: ${e instanceof Error ? e.message : String(e)}` }], isError: true }
         }
+        break
+      }
+      case 'recall_memory': {
+        const query = String(args.query ?? '')
+        const typeFilter = String(args.type ?? 'all')
+        const limit = Number(args.limit ?? 5)
+        const includeSource = Boolean(args.source ?? false)
+
+        const results = await memoryStore.searchRelevantHybrid(query, limit * 2)
+
+        if (!results || results.length === 0) {
+          result = { content: [{ type: 'text', text: '(no matching memories found)' }] }
+          break
+        }
+
+        // Map memory type names: fact->facts, task->tasks, signal->signals, episode->episodes
+        const typeMap: Record<string, string> = { fact: 'facts', task: 'tasks', signal: 'signals', episode: 'episodes', summary: 'episodes' }
+        const formatted = results
+          .filter((r: Record<string, unknown>) => typeFilter === 'all' || typeMap[r.type as string] === typeFilter || r.type === typeFilter)
+          .slice(0, limit)
+          .map((r: Record<string, unknown>) => {
+            const ts = r.updated_at ?? r.source_ts
+            const date = ts ? new Date(typeof ts === 'number' && ts < 1e12 ? (ts as number) * 1000 : ts as number).toLocaleString() : 'unknown'
+            const meta = [r.type as string, r.retrieval_count ? `${r.retrieval_count}회 조회` : null].filter(Boolean).join(', ')
+            let line = `[${date}] ${r.content || r.text || ''} (${meta})`
+            if (includeSource && r.source_ref) {
+              line += `\n  └ source: ${r.source_ref}`
+            }
+            return line
+          })
+          .join('\n')
+
+        result = { content: [{ type: 'text', text: formatted || '(no matching memories found)' }] }
         break
       }
       default:
