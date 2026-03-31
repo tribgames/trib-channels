@@ -5,7 +5,9 @@
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
-    "start": "npx tsx server.ts"
+    "start": "npx tsx server.ts",
+    "test:memory:fixture": "node scripts/run-memory-fixture-regression.mjs",
+    "test:memory:snapshots": "node scripts/run-memory-fixture-snapshots.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",

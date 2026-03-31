@@ -9,7 +9,7 @@ Rules:
 - Signals capture patterns: language, tone, interests, cadence.
 - Profiles capture user traits: language, tone, response_style, timezone, expertise.
 - Entities/relations: only stable named things and their connections.
-- Write all values in English. Preserve proper nouns as-is.
+- Preserve the original language of each value whenever possible. Do not translate just to normalize. Preserve proper nouns, identifiers, and mixed-language technical terms as-is.
 - If existing memories are tagged [similar], skip if the meaning is identical. Merge if slightly different.
 - If existing memories are tagged [conflict], prioritize the most recent information. Output the updated version.
 - If contradictory information exists between existing memories and new input, prioritize the most recent.

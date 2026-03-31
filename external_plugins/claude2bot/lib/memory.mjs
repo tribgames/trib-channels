@@ -31,13 +31,28 @@ function parseTemporalHint(query) {
   if (/last\s*week/i.test(query)) return { start: daysAgo(7), end: daysAgo(1) }
   if (/this\s*week/i.test(query)) return { start: daysAgo(kst.getDay() || 7), end: today }
   if (/today/i.test(query)) return { start: today, end: today }
-  if (/recently/i.test(query)) return { start: daysAgo(3), end: today }
+  if (/recently/i.test(query)) return { start: daysAgo(3), end: today, exact: false }
+  if (/어제/.test(query)) return { start: daysAgo(1), end: daysAgo(1), exact: true }
+  if (/그저께|이틀 전/.test(query)) return { start: daysAgo(2), end: daysAgo(2), exact: true }
+  if (/오늘/.test(query)) return { start: today, end: today, exact: true }
+  if (/이번 ?주/.test(query)) return { start: daysAgo(kst.getDay() || 7), end: today, exact: false }
+  if (/지난 ?주/.test(query)) return { start: daysAgo(7), end: daysAgo(1), exact: false }
+  const isoDateMatch = query.match(/(\d{4})[-.](\d{2})[-.](\d{2})/)
+  if (isoDateMatch) {
+    const date = `${isoDateMatch[1]}-${isoDateMatch[2]}-${isoDateMatch[3]}`
+    return { start: date, end: date, exact: true }
+  }
+  const koreanDateMatch = query.match(/(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일/)
+  if (koreanDateMatch) {
+    const date = `${koreanDateMatch[1]}-${String(koreanDateMatch[2]).padStart(2, '0')}-${String(koreanDateMatch[3]).padStart(2, '0')}`
+    return { start: date, end: date, exact: true }
+  }
   const dateMatch = query.match(/(\d{1,2})\/(\d{1,2})/)
   if (dateMatch) {
     const m = String(dateMatch[1]).padStart(2, '0')
     const d = String(dateMatch[2]).padStart(2, '0')
     const date = `${kst.getFullYear()}-${m}-${d}`
-    return { start: date, end: date }
+    return { start: date, end: date, exact: true }
   }
   return null
 }
@@ -50,19 +65,44 @@ function isPolicyIntent(intent) {
   return intent === 'policy' || intent === 'security'
 }
 
+function isDoneTaskQuery(query = '') {
+  const clean = cleanMemoryText(query).toLowerCase()
+  return /\b(done|completed|finished|resolved|status)\b/.test(clean) || /완료|끝났|끝난|끝난거|상태/.test(query)
+}
+
+function isRuleQuery(query = '') {
+  const clean = cleanMemoryText(query).toLowerCase()
+  return /\b(rule|policy|forbidden|allowed|constraint|prompt|transcript|durable memory)\b/.test(clean) || /규칙|정책|제약|금지|허용|prompt|transcript|durable memory/.test(query)
+}
+
+function isRelationQuery(query = '') {
+  const clean = cleanMemoryText(query).toLowerCase()
+  return /\b(relation|connect|connected|responsibility|role|uses|use|depends|dependency|where.*used|what.*used|store|persistence)\b/.test(clean)
+    || /관계|연결|책임|역할|분리|용도|어디에 쓰|어디 쓰|저장|persist|의존/.test(query)
+}
+
+function isHistoryQuery(query = '') {
+  const clean = cleanMemoryText(query).toLowerCase()
+  return /\b(history|timeline|discuss|discussion|discussed|happened|what did we discuss|summarize the discussion)\b/.test(clean)
+    || /기억|타임라인|논의|대화|얘기|뭐라고 했|요약/.test(query)
+}
+
 function getIntentTypeCaps(intent, options = {}) {
   const hasTaskCandidate = Boolean(options.hasTaskCandidate)
   const hasCoreResult = Boolean(options.hasCoreResult)
   const conciseQuery = Boolean(options.conciseQuery)
-  if (isProfileIntent(intent)) return new Map([['fact', 3], ['task', 0], ['signal', 2], ['episode', 0]])
-  if (intent === 'task') return new Map([['fact', 1], ['task', hasTaskCandidate ? 4 : 2], ['signal', 0], ['episode', 1]])
-  if (isPolicyIntent(intent)) return new Map([['fact', 4], ['task', 1], ['signal', 1], ['episode', 0]])
-  if (intent === 'event') return new Map([['fact', 1], ['task', 1], ['signal', 0], ['episode', 4]])
-  if (intent === 'history') return new Map([['fact', 1], ['task', 1], ['signal', 0], ['episode', 3]])
+  if (isProfileIntent(intent)) return new Map([['fact', 3], ['proposition', 2], ['task', 0], ['signal', 2], ['profile', 3], ['episode', 0]])
+  if (intent === 'task') return new Map([['fact', 1], ['proposition', 1], ['task', hasTaskCandidate ? 4 : 2], ['signal', 0], ['episode', 1]])
+  if (isPolicyIntent(intent)) return new Map([['fact', 4], ['proposition', 3], ['task', 1], ['signal', 1], ['episode', 0]])
+  if (intent === 'event') return new Map([['fact', 1], ['proposition', 2], ['task', 1], ['signal', 0], ['episode', 4], ['entity', 1], ['relation', 1]])
+  if (intent === 'history') return new Map([['fact', 1], ['proposition', 2], ['task', 1], ['signal', 0], ['episode', 3], ['entity', 1], ['relation', 1]])
   return new Map([
     ['fact', 4],
+    ['proposition', 3],
     ['task', 3],
     ['signal', 0],
+    ['entity', 2],
+    ['relation', 2],
     ['episode', hasCoreResult ? (conciseQuery ? 1 : 2) : 2],
   ])
 }
@@ -72,6 +112,8 @@ function getIntentSubtypeBonus(intent, item) {
     return (
       item.type === 'fact' && item.subtype === 'preference' ? -0.10 :
       item.type === 'fact' && item.subtype === 'constraint' ? -0.08 :
+      item.type === 'profile' ? -0.14 :
+      item.type === 'proposition' ? -0.06 :
       item.type === 'signal' && (item.subtype === 'tone' || item.subtype === 'language') ? -0.08 :
       0
     )
@@ -82,6 +124,7 @@ function getIntentSubtypeBonus(intent, item) {
   if (isPolicyIntent(intent)) {
     return (
       item.type === 'fact' && item.subtype === 'constraint' ? -0.10 :
+      item.type === 'proposition' ? -0.08 :
       item.type === 'fact' && item.subtype === 'decision' ? -0.06 :
       0
     )
@@ -97,11 +140,11 @@ function getIntentSubtypeBonus(intent, item) {
 
 function shouldKeepRerankItem(intent, item, options = {}) {
   const hasTaskCandidate = Boolean(options.hasTaskCandidate)
-  if (isProfileIntent(intent)) return item.type === 'fact' || item.type === 'signal'
+  if (isProfileIntent(intent)) return item.type === 'fact' || item.type === 'signal' || item.type === 'profile' || item.type === 'proposition'
   if (intent === 'task' && hasTaskCandidate) return item.type === 'task' || (item.type === 'fact' && item.subtype === 'decision')
-  if (isPolicyIntent(intent)) return item.type === 'fact' || item.type === 'signal'
+  if (isPolicyIntent(intent)) return item.type === 'fact' || item.type === 'signal' || item.type === 'proposition'
   if (intent === 'event') return item.type === 'episode' || item.type === 'fact' || item.type === 'task'
-  if (intent === 'decision') return item.type === 'fact' || item.type === 'task'
+  if (intent === 'decision') return item.type === 'fact' || item.type === 'task' || item.type === 'proposition' || item.type === 'entity' || item.type === 'relation'
   return true
 }
 
@@ -263,13 +306,98 @@ function looksLowSignal(text) {
   return false
 }
 
+function looksLowSignalQuery(text) {
+  const clean = cleanMemoryText(text)
+  if (!clean) return true
+  if (clean.includes('[Request interrupted by user]')) return true
+  const compact = clean.replace(/\s+/g, '')
+  if (!/[\p{L}\p{N}]/u.test(compact)) return true
+  if (compact.length <= 1) return true
+  return false
+}
+
+function normalizeMemoryToken(token) {
+  let normalized = String(token ?? '').trim().toLowerCase()
+  if (!normalized) return ''
+
+  if (normalized.length > 2) {
+    normalized = normalized.replace(/(은|는|이|가|을|를|랑|과|와|도|에|의)$/u, '')
+  }
+
+  if (/^[a-z][a-z0-9_-]+$/i.test(normalized)) {
+    if (normalized.length > 5 && normalized.endsWith('ing')) normalized = normalized.slice(0, -3)
+    else if (normalized.length > 4 && normalized.endsWith('ed')) normalized = normalized.slice(0, -2)
+    else if (normalized.length > 4 && normalized.endsWith('es')) normalized = normalized.slice(0, -2)
+    else if (normalized.length > 3 && normalized.endsWith('s')) normalized = normalized.slice(0, -1)
+  }
+
+  normalized = MEMORY_TOKEN_ALIASES.get(normalized) ?? normalized
+
+  return normalized
+}
+
+const MEMORY_TOKEN_ALIASES = new Map([
+  ['윈도우', 'windows'],
+  ['호환성', 'compatibility'],
+  ['대응', 'compatibility'],
+  ['중복', 'duplicate'],
+  ['메시지', 'message'],
+  ['리콜', 'recall'],
+  ['배포', 'deploy'],
+  ['빌드', 'build'],
+  ['커밋', 'commit'],
+  ['푸시', 'push'],
+  ['클라', 'client'],
+  ['서버', 'server'],
+  ['호칭', 'address'],
+  ['말투', 'tone'],
+  ['어투', 'tone'],
+  ['시간대', 'timezone'],
+  ['타임존', 'timezone'],
+  ['배포', 'deploy'],
+  ['빌드', 'build'],
+  ['deployment', 'deploy'],
+])
+
+const MEMORY_TOKEN_STOPWORDS = new Set([
+  'a', 'an', 'and', 'are', 'as', 'at', 'be', 'but', 'by', 'did', 'do', 'does', 'for', 'from',
+  'how', 'i', 'if', 'in', 'is', 'it', 'me', 'my', 'of', 'on', 'or', 'our', 'so', 'that', 'the',
+  'their', 'them', 'they', 'this', 'to', 'was', 'we', 'were', 'what', 'when', 'who', 'why', 'you',
+  'your', 'unless', 'with',
+  'user', 'assistant', 'requested', 'request', 'asked', 'ask', 'stated', 'state', 'reported', 'report',
+  'mentioned', 'mention', 'clarified', 'clarify', 'explicitly', 'currently',
+  '사용자', '유저', '요청', '질문', '답변', '언급', '말씀', '설명', '보고', '무슨', '뭐야', '했지',
+])
+
+const SUBJECT_STOPWORDS = new Set([
+  ...MEMORY_TOKEN_STOPWORDS,
+  'active', 'current', 'ongoing', 'issue', 'issues', 'problem', 'weakness', 'weaknesses', 'thing', 'things',
+  '현재', '핵심', '문제', '약점', '이슈',
+])
+
 function tokenizeMemoryText(text) {
   return cleanMemoryText(text)
     .toLowerCase()
     .split(/[^\p{L}\p{N}_-]+/u)
-    .map(token => token.trim())
+    .map(token => normalizeMemoryToken(token))
     .filter(token => token.length >= 2)
-    .slice(0, 10)
+    .filter(token => !MEMORY_TOKEN_STOPWORDS.has(token))
+    .slice(0, 24)
+}
+
+function extractExplicitDate(text) {
+  const clean = cleanMemoryText(text)
+  const isoDateMatch = clean.match(/(\d{4})[-.](\d{2})[-.](\d{2})/)
+  if (isoDateMatch) return `${isoDateMatch[1]}-${isoDateMatch[2]}-${isoDateMatch[3]}`
+  const koreanDateMatch = clean.match(/(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일/)
+  if (koreanDateMatch) {
+    return `${koreanDateMatch[1]}-${String(koreanDateMatch[2]).padStart(2, '0')}-${String(koreanDateMatch[3]).padStart(2, '0')}`
+  }
+  return null
+}
+
+function propositionSubjectTokens(text) {
+  return tokenizeMemoryText(text).filter(token => !SUBJECT_STOPWORDS.has(token))
 }
 
 function buildFtsQuery(text) {
@@ -365,6 +493,12 @@ function normalizeFactSlot(slot) {
   return value ? value : ''
 }
 
+function propositionKindForFact(factType, slot = '') {
+  const normalizedSlot = normalizeFactSlot(slot)
+  if (normalizedSlot) return normalizedSlot
+  return normalizeFactType(factType) || 'fact'
+}
+
 function normalizeWorkstream(value) {
   const clean = String(value ?? '').trim().toLowerCase()
   if (!clean) return ''
@@ -439,19 +573,139 @@ function normalizeProfileKey(key) {
   return ['language', 'tone', 'address', 'response_style', 'timezone'].includes(value) ? value : ''
 }
 
+function shouldKeepProfileValue(key, value) {
+  const clean = cleanMemoryText(value)
+  if (!key || !clean) return false
+  if (key === 'timezone') return clean.length <= 64
+  if (clean.length > 160) return false
+  if (clean.length > 48 && /\b(?:on|as of)\s+\d{4}-\d{2}-\d{2}\b/i.test(clean)) return false
+  if (clean.length > 48 && /\b(requested|asked|stated|reported|mentioned|clarified)\b/i.test(clean)) return false
+  if (clean.length > 48 && /(요청|지시|말씀|언급|보고|설명)/.test(clean)) return false
+  return true
+}
+
 function profileKeyForFact(factType, text = '', slot = '') {
   const combined = `${slot} ${text}`.toLowerCase()
-  if (factType === 'preference' && /\b(address|call|name|nickname)\b/.test(combined)) return 'address'
-  if (factType === 'preference' && /\b(response style|response-style|style|tone)\b/.test(combined)) return 'response_style'
-  if (factType === 'constraint' && /\btimezone|time zone|local time\b/.test(combined)) return 'timezone'
+  if (factType === 'preference' && (/\b(address|call|name|nickname)\b/.test(combined) || /호칭|이름|닉네임/.test(combined))) return 'address'
+  if (factType === 'preference' && (/\b(response style|response-style|style|tone)\b/.test(combined) || /말투|어투|응답 스타일|답변 스타일/.test(combined))) return 'response_style'
+  if (factType === 'constraint' && (/\btimezone|time zone|local time\b/.test(combined) || /시간대|현지 시간/.test(combined))) return 'timezone'
   return ''
 }
 
 function profileKeyForSignal(kind, value = '') {
   const combined = `${kind} ${value}`.toLowerCase()
-  if (kind === 'language' || /\bkorean|english|language\b/.test(combined)) return 'language'
-  if (kind === 'tone' || /\btone|style|formal|respectful\b/.test(combined)) return 'tone'
+  if (kind === 'language' || /\bkorean|english|japanese|chinese|language\b/.test(combined) || /한국어|영어|일본어|중국어|언어/.test(combined)) return 'language'
+  if (kind === 'tone' || /\btone|style|formal|respectful|casual\b/.test(combined) || /존댓말|반말|격식|말투|어투/.test(combined)) return 'tone'
   return ''
+}
+
+function applyLexicalIntentHints(clean, scores) {
+  const lowered = clean.toLowerCase()
+  const add = (intent, value) => {
+    scores[intent] = Number((scores[intent] + value).toFixed(4))
+  }
+
+  if (/\b(language|tone|style|address|honorific|timezone)\b/.test(lowered) || /한국어|영어|존댓말|반말|말투|어투|호칭|시간대/.test(clean)) {
+    add('profile', /\btimezone\b/.test(lowered) || /시간대/.test(clean) ? 0.62 : 0.45)
+    scores.event = Math.max(0, scores.event - 0.22)
+    scores.history = Math.max(0, scores.history - 0.12)
+    scores.task = Math.max(0, scores.task - 0.22)
+  }
+  if (/\b(profile|identity|source of truth|name|address)\b/.test(lowered) || /프로필|정체성|source of truth|호칭|이름/.test(clean)) {
+    add('profile', 0.22)
+    add('decision', 0.08)
+  }
+  if (/\bsource of truth\b/.test(lowered) || /source of truth/.test(clean)) {
+    add('decision', 0.26)
+  }
+  if (/\b(remove|removed|delete|drop|separate)\b/.test(lowered) && /\b(identity|profile|storage|persistence)\b/.test(lowered)) {
+    add('decision', 0.28)
+  }
+  if (/\b(task|tasks|work|working|todo|next step|in progress|current work)\b/.test(lowered) || /작업|진행|진행중|할 일|할일|다음/.test(clean)) {
+    add('task', 0.32)
+  }
+  if (/\b(backlog|remaining work|remaining tasks|still ongoing)\b/.test(lowered) || /백로그|남은 작업|남은 거/.test(clean)) {
+    add('task', 0.24)
+  }
+  if (isDoneTaskQuery(clean)) {
+    add('task', 0.18)
+  }
+  if (/\b(rule|policy|forbidden|allowed|commit|push|deploy|build|restriction|approval)\b/.test(lowered) || /규칙|정책|금지|허용|커밋|푸시|배포|빌드|승인|제한/.test(clean)) {
+    add('policy', 0.3)
+    scores.task = Math.max(0, scores.task - 0.08)
+  }
+  if (/\b(deployment|opt-in only)\b/.test(lowered) || /opt-in/.test(clean)) {
+    add('policy', 0.34)
+    scores.task = Math.max(0, scores.task - 0.16)
+  }
+  if (isRuleQuery(clean)) {
+    add('policy', 0.34)
+    scores.history = Math.max(0, scores.history - 0.06)
+    scores.event = Math.max(0, scores.event - 0.06)
+  }
+  if (isRelationQuery(clean) || /\b(project|service|tool|system|relation|integrates|uses|depends)\b/.test(lowered) || /관계|역할 분리|프로젝트|서비스|도구|시스템|어디에 쓰여|어디 쓰여/.test(clean)) {
+    add('decision', 0.32)
+    scores.security = Math.max(0, scores.security - 0.08)
+    scores.profile = Math.max(0, scores.profile - 0.12)
+  }
+  if (/\b(related|pairing|connect|connected|integration point)\b/.test(lowered) || /연결|관계|integration point/.test(clean)) {
+    add('decision', 0.34)
+    scores.profile = Math.max(0, scores.profile - 0.14)
+    scores.task = Math.max(0, scores.task - 0.12)
+  }
+  if (/\b(transcript|prompt|durable memory|memory recall)\b/.test(lowered) || /transcript|prompt|durable memory|memory recall|리콜/.test(clean)) {
+    add('policy', 0.18)
+    add('decision', 0.12)
+  }
+  if (/\b(decision|architecture|design|structure|direction|weakness|problem)\b/.test(lowered) || /결정|아키텍처|구조|설계|방향|약점|문제/.test(clean)) {
+    add('decision', 0.22)
+  }
+  if (/\b(memory retrieval|retrieval)\b/.test(lowered) || /리트리벌|리콜/.test(clean)) {
+    add('decision', 0.14)
+  }
+  if (isHistoryQuery(clean) || /\b(today|yesterday|when|timeline|history|discussed|happened)\b/.test(lowered) || /오늘|어제|언제|타임라인|기억|얘기|무슨|논의|했지/.test(clean)) {
+    add('history', 0.24)
+  }
+  if (/\b(summarize the discussion|discussion on|what happened on)\b/.test(lowered)) {
+    add('history', 0.18)
+    scores.event = Math.max(0, scores.event - 0.04)
+  }
+  if (/\b(summarize|summary)\b/.test(lowered) || /요약/.test(clean)) {
+    add('history', 0.18)
+  }
+  if (/\b(event|incident|meeting|discussion)\b/.test(lowered) || /이벤트|사건|회의|대화|논의/.test(clean)) {
+    add('event', 0.22)
+  }
+  if (/\b(identity|secret|credential|api key|sensitive)\b/.test(lowered)) {
+    scores.security = Math.max(0, scores.security - 0.08)
+  }
+  if (/\b(who does|who handles|external search|internal recall)\b/.test(lowered) || /누가 하고|누가 해|외부 검색|내부 리콜/.test(clean)) {
+    add('decision', 0.24)
+    scores.security = Math.max(0, scores.security - 0.08)
+  }
+}
+
+function computeSourceTrustAdjustment(item, primaryIntent = 'decision') {
+  const sourceKind = String(item?.source_kind ?? '').toLowerCase().trim()
+  const sourceBackend = String(item?.source_backend ?? '').toLowerCase().trim()
+
+  if (sourceKind === 'message') {
+    return item?.type === 'episode' ? -0.1 : -0.14
+  }
+  if (sourceKind === 'transcript') {
+    if (item?.type === 'episode' && (primaryIntent === 'event' || primaryIntent === 'history')) return 0.04
+    return item?.type === 'episode' ? 0.08 : 0.14
+  }
+  if (sourceKind === 'turn') {
+    return 0.05
+  }
+  if (sourceBackend === 'discord') {
+    return -0.03
+  }
+  if (sourceBackend === 'claude-session') {
+    return 0.04
+  }
+  return 0
 }
 
 function compactClause(label, value) {
@@ -606,6 +860,7 @@ export class MemoryStore {
     this._loadVecExtension()
     this.init()
     this.rebuildDerivedIndexes()
+    this.syncEmbeddingMetadata()
   }
 
   _loadVecExtension() {
@@ -613,7 +868,19 @@ export class MemoryStore {
     try {
       sqliteVec.load(this.db)
       this.vecEnabled = true
-      const dims = getEmbeddingDims()
+      let dims = getEmbeddingDims()
+      try {
+        const forcedDims = Number(process.env.CLAUDE2BOT_FORCE_VEC_DIMS ?? '0')
+        if (forcedDims > 0) {
+          dims = forcedDims
+        } else {
+          const hasMeta = this.db.prepare(`SELECT 1 AS ok FROM sqlite_master WHERE type='table' AND name='memory_meta'`).get()?.ok
+          if (hasMeta) {
+            const storedDims = Number(this.db.prepare(`SELECT value FROM memory_meta WHERE key = 'embedding.vector_dims'`).get()?.value ?? '0')
+            if (storedDims > 0) dims = storedDims
+          }
+        }
+      } catch { /* ignore metadata lookup */ }
       // Check if vec_memory exists with different dimensions
       try {
         const existing = this.db.prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='vec_memory'`).get()
@@ -653,12 +920,15 @@ export class MemoryStore {
       DELETE FROM signals;
       DELETE FROM profiles;
       DELETE FROM interests;
+      DELETE FROM propositions;
       DELETE FROM relations;
+      DELETE FROM entity_links;
       DELETE FROM entities;
       DELETE FROM documents;
       DELETE FROM facts_fts;
       DELETE FROM tasks_fts;
       DELETE FROM signals_fts;
+      DELETE FROM propositions_fts;
       DELETE FROM memory_vectors;
       DELETE FROM pending_embeds;
       DELETE FROM memory_meta;
@@ -675,6 +945,7 @@ export class MemoryStore {
     this.clearHistoryOutputs()
     const rebuiltCandidates = this.rebuildCandidates()
     this.writeContextFile()
+    this.syncEmbeddingMetadata({ reason: 'switch_embedding_model' })
 
     return {
       preservedEpisodes,
@@ -884,6 +1155,47 @@ export class MemoryStore {
       CREATE INDEX IF NOT EXISTS idx_relations_source ON relations(source_entity_id);
       CREATE INDEX IF NOT EXISTS idx_relations_target ON relations(target_entity_id);
 
+      CREATE TABLE IF NOT EXISTS entity_links (
+        id INTEGER PRIMARY KEY,
+        entity_id INTEGER NOT NULL REFERENCES entities(id),
+        linked_type TEXT NOT NULL,
+        linked_id INTEGER NOT NULL,
+        source_episode_id INTEGER,
+        strength REAL NOT NULL DEFAULT 1,
+        UNIQUE(entity_id, linked_type, linked_id),
+        FOREIGN KEY(source_episode_id) REFERENCES episodes(id) ON DELETE SET NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_entity_links_entity ON entity_links(entity_id, linked_type);
+      CREATE INDEX IF NOT EXISTS idx_entity_links_linked ON entity_links(linked_type, linked_id);
+
+      CREATE TABLE IF NOT EXISTS propositions (
+        id INTEGER PRIMARY KEY,
+        subject_key TEXT NOT NULL,
+        proposition_kind TEXT NOT NULL,
+        text TEXT NOT NULL,
+        occurred_on TEXT,
+        confidence REAL NOT NULL DEFAULT 0.5,
+        first_seen TEXT,
+        last_seen TEXT,
+        source_episode_id INTEGER,
+        source_fact_id INTEGER,
+        status TEXT NOT NULL DEFAULT 'active',
+        mention_count INTEGER NOT NULL DEFAULT 1,
+        retrieval_count INTEGER NOT NULL DEFAULT 0,
+        last_retrieved_at TEXT,
+        superseded_by INTEGER REFERENCES propositions(id),
+        UNIQUE(subject_key, proposition_kind, text),
+        FOREIGN KEY(source_episode_id) REFERENCES episodes(id) ON DELETE SET NULL,
+        FOREIGN KEY(source_fact_id) REFERENCES facts(id) ON DELETE SET NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_propositions_subject ON propositions(subject_key, proposition_kind, status);
+      CREATE INDEX IF NOT EXISTS idx_propositions_fact ON propositions(source_fact_id);
+
+      CREATE VIRTUAL TABLE IF NOT EXISTS propositions_fts
+        USING fts5(text, tokenize='trigram');
+
       CREATE TABLE IF NOT EXISTS pending_embeds (
         id INTEGER PRIMARY KEY,
         entity_type TEXT NOT NULL,
@@ -975,10 +1287,25 @@ export class MemoryStore {
     this.clearFactsStmt = this.db.prepare(`DELETE FROM facts`)
     this.clearTasksStmt = this.db.prepare(`DELETE FROM tasks`)
     this.clearSignalsStmt = this.db.prepare(`DELETE FROM signals`)
+    this.clearPropositionsStmt = this.db.prepare(`DELETE FROM propositions`)
+    this.clearEntityLinksStmt = this.db.prepare(`DELETE FROM entity_links`)
     this.clearFactsFtsStmt = this.db.prepare(`DELETE FROM facts_fts`)
     this.clearTasksFtsStmt = this.db.prepare(`DELETE FROM tasks_fts`)
     this.clearSignalsFtsStmt = this.db.prepare(`DELETE FROM signals_fts`)
+    this.clearPropositionsFtsStmt = this.db.prepare(`DELETE FROM propositions_fts`)
     this.clearVectorsStmt = this.db.prepare(`DELETE FROM memory_vectors`)
+    this.getMetaStmt = this.db.prepare(`SELECT value FROM memory_meta WHERE key = ?`)
+    this.upsertMetaStmt = this.db.prepare(`
+      INSERT INTO memory_meta (key, value)
+      VALUES (?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    `)
+    this.hasVectorModelStmt = this.db.prepare(`
+      SELECT 1 AS ok
+      FROM memory_vectors
+      WHERE model = ?
+      LIMIT 1
+    `)
     this.upsertDocumentStmt = this.db.prepare(`
       INSERT INTO documents (kind, doc_key, content, updated_at)
       VALUES (?, ?, ?, unixepoch())
@@ -1085,6 +1412,62 @@ export class MemoryStore {
     `)
     this.deleteSignalFtsStmt = this.db.prepare(`DELETE FROM signals_fts WHERE rowid = ?`)
     this.insertSignalFtsStmt = this.db.prepare(`INSERT INTO signals_fts(rowid, kind, value) VALUES (?, ?, ?)`)
+    this.upsertEntityLinkStmt = this.db.prepare(`
+      INSERT INTO entity_links (entity_id, linked_type, linked_id, source_episode_id, strength)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(entity_id, linked_type, linked_id) DO UPDATE SET
+        source_episode_id = COALESCE(excluded.source_episode_id, entity_links.source_episode_id),
+        strength = MAX(entity_links.strength, excluded.strength)
+    `)
+    this.listEntityLinksStmt = this.db.prepare(`
+      SELECT entity_id, linked_type, linked_id, strength
+      FROM entity_links
+      WHERE entity_id = ?
+      ORDER BY strength DESC, linked_type ASC, linked_id ASC
+    `)
+    this.upsertPropositionStmt = this.db.prepare(`
+      INSERT INTO propositions (
+        subject_key, proposition_kind, text, occurred_on, confidence, first_seen, last_seen,
+        source_episode_id, source_fact_id, status, mention_count
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 1)
+      ON CONFLICT(subject_key, proposition_kind, text) DO UPDATE SET
+        confidence = MAX(propositions.confidence, excluded.confidence),
+        occurred_on = COALESCE(excluded.occurred_on, propositions.occurred_on),
+        last_seen = excluded.last_seen,
+        source_episode_id = COALESCE(excluded.source_episode_id, propositions.source_episode_id),
+        source_fact_id = COALESCE(excluded.source_fact_id, propositions.source_fact_id),
+        status = 'active',
+        mention_count = propositions.mention_count + 1
+    `)
+    this.findPropositionStmt = this.db.prepare(`
+      SELECT id, subject_key, proposition_kind, text, occurred_on, confidence
+      FROM propositions
+      WHERE subject_key = ? AND proposition_kind = ? AND text = ?
+    `)
+    this.listSiblingPropositionsStmt = this.db.prepare(`
+      SELECT id, text, occurred_on
+      FROM propositions
+      WHERE subject_key = ?
+        AND proposition_kind = ?
+        AND status = 'active'
+        AND id != ?
+    `)
+    this.markPropositionSupersededStmt = this.db.prepare(`
+      UPDATE propositions
+      SET status = 'superseded',
+          superseded_by = ?,
+          last_seen = ?
+      WHERE id = ?
+    `)
+    this.bumpPropositionRetrievalStmt = this.db.prepare(`
+      UPDATE propositions
+      SET retrieval_count = retrieval_count + 1,
+          last_retrieved_at = ?
+      WHERE id = ?
+    `)
+    this.deletePropositionFtsStmt = this.db.prepare(`DELETE FROM propositions_fts WHERE rowid = ?`)
+    this.insertPropositionFtsStmt = this.db.prepare(`INSERT INTO propositions_fts(rowid, text) VALUES (?, ?)`)
     this.markFactsStaleStmt = this.db.prepare(`
       UPDATE facts
       SET status = 'stale'
@@ -1145,7 +1528,7 @@ export class MemoryStore {
       SELECT 'fact' AS type, f.fact_type AS subtype, f.id AS entity_id, f.workstream AS workstream, f.text AS content,
              unixepoch(f.last_seen) AS updated_at, f.retrieval_count AS retrieval_count,
              f.confidence AS quality_score,
-             e.source_ref AS source_ref, e.ts AS source_ts, mv.vector_json AS vector_json
+             e.source_ref AS source_ref, e.ts AS source_ts, e.kind AS source_kind, e.backend AS source_backend, mv.vector_json AS vector_json
       FROM memory_vectors mv
       JOIN facts f ON f.id = mv.entity_id
       LEFT JOIN episodes e ON e.id = f.source_episode_id
@@ -1159,7 +1542,7 @@ export class MemoryStore {
              unixepoch(t.last_seen) AS updated_at, t.retrieval_count AS retrieval_count,
              t.confidence AS quality_score,
              t.stage AS stage, t.evidence_level AS evidence_level, t.status AS status,
-             e.source_ref AS source_ref, e.ts AS source_ts, mv.vector_json AS vector_json
+             e.source_ref AS source_ref, e.ts AS source_ts, e.kind AS source_kind, e.backend AS source_backend, mv.vector_json AS vector_json
       FROM memory_vectors mv
       JOIN tasks t ON t.id = mv.entity_id
       LEFT JOIN episodes e ON e.id = t.source_episode_id
@@ -1171,17 +1554,29 @@ export class MemoryStore {
       SELECT 'signal' AS type, s.kind AS subtype, s.id AS entity_id, s.value AS content,
              unixepoch(s.last_seen) AS updated_at, s.retrieval_count AS retrieval_count,
              s.score AS quality_score,
-             e.source_ref AS source_ref, e.ts AS source_ts, mv.vector_json AS vector_json
+             e.source_ref AS source_ref, e.ts AS source_ts, e.kind AS source_kind, e.backend AS source_backend, mv.vector_json AS vector_json
       FROM memory_vectors mv
       JOIN signals s ON s.id = mv.entity_id
       LEFT JOIN episodes e ON e.id = s.source_episode_id
       WHERE mv.entity_type = 'signal'
         AND mv.model = ?
     `)
+    this.listDensePropositionRowsStmt = this.db.prepare(`
+      SELECT 'proposition' AS type, p.proposition_kind AS subtype, p.id AS entity_id, p.text AS content,
+             unixepoch(p.last_seen) AS updated_at, p.retrieval_count AS retrieval_count,
+             p.confidence AS quality_score,
+             e.source_ref AS source_ref, e.ts AS source_ts, e.kind AS source_kind, e.backend AS source_backend, mv.vector_json AS vector_json
+      FROM memory_vectors mv
+      JOIN propositions p ON p.id = mv.entity_id
+      LEFT JOIN episodes e ON e.id = p.source_episode_id
+      WHERE mv.entity_type = 'proposition'
+        AND mv.model = ?
+        AND p.status = 'active'
+    `)
     this.listDenseEpisodeRowsStmt = this.db.prepare(`
       SELECT 'episode' AS type, e.role AS subtype, e.id AS entity_id, e.content AS content,
              e.created_at AS updated_at, 0 AS retrieval_count,
-             e.source_ref AS source_ref, e.ts AS source_ts, mv.vector_json AS vector_json
+             e.source_ref AS source_ref, e.ts AS source_ts, e.kind AS source_kind, e.backend AS source_backend, mv.vector_json AS vector_json
       FROM memory_vectors mv
       JOIN episodes e ON e.id = mv.entity_id
       WHERE mv.entity_type = 'episode'
@@ -1189,19 +1584,335 @@ export class MemoryStore {
     `)
   }
 
+  getMetaValue(key, fallback = null) {
+    const row = this.getMetaStmt.get(key)
+    return row?.value ?? fallback
+  }
+
+  setMetaValue(key, value) {
+    const serialized =
+      typeof value === 'string'
+        ? value
+        : JSON.stringify(value)
+    this.upsertMetaStmt.run(key, serialized)
+  }
+
+  syncEmbeddingMetadata(extra = {}) {
+    this.setMetaValue('embedding.current_model', getEmbeddingModelId())
+    this.setMetaValue('embedding.current_dims', String(getEmbeddingDims()))
+    this.setMetaValue('embedding.index_version', '2')
+    this.setMetaValue('embedding.updated_at', new Date().toISOString())
+    if (extra.vectorModel) this.setMetaValue('embedding.vector_model', extra.vectorModel)
+    if (extra.vectorDims) this.setMetaValue('embedding.vector_dims', String(extra.vectorDims))
+    if (extra.reason) this.setMetaValue('embedding.last_reason', extra.reason)
+  }
+
+  noteVectorWrite(model, dims) {
+    this.syncEmbeddingMetadata({
+      vectorModel: model,
+      vectorDims: dims,
+      reason: 'vector_write',
+    })
+  }
+
+  deriveSubjectKey(text, propositionKind = 'fact') {
+    const clean = cleanMemoryText(text)
+    if (!clean) return propositionKind
+    try {
+      const entities = this.db.prepare(`
+        SELECT name
+        FROM entities
+        ORDER BY length(name) DESC, id ASC
+      `).all()
+      for (const entity of entities) {
+        if (entity?.name && clean.toLowerCase().includes(String(entity.name).toLowerCase())) {
+          return String(entity.name)
+        }
+      }
+    } catch { /* ignore */ }
+    const tokens = propositionSubjectTokens(clean)
+    if (tokens.length === 0) return propositionKind
+    return tokens.slice(0, 2).join('-')
+  }
+
+  upsertPropositions(items = [], seenAt = null, sourceEpisodeId = null, sourceFactId = null) {
+    const seenKeys = new Set()
+    for (const item of items) {
+      const text = cleanMemoryText(item?.text)
+      const propositionKind = normalizeFactSlot(item?.propositionKind) || 'fact'
+      if (!text) continue
+      const subjectKey = normalizeWorkstream(item?.subjectKey) || normalizeWorkstream(this.deriveSubjectKey(text, propositionKind)) || propositionKind
+      const occurredOn = item?.occurredOn ?? extractExplicitDate(text) ?? (seenAt ? String(seenAt).slice(0, 10) : null)
+      const confidence = Number(item?.confidence ?? 0.6)
+      const dedupeKey = `${subjectKey}:${propositionKind}:${text}`
+      if (seenKeys.has(dedupeKey)) continue
+      seenKeys.add(dedupeKey)
+      this.upsertPropositionStmt.run(
+        subjectKey,
+        propositionKind,
+        text,
+        occurredOn,
+        confidence,
+        seenAt,
+        seenAt,
+        sourceEpisodeId,
+        sourceFactId,
+      )
+      const row = this.findPropositionStmt.get(subjectKey, propositionKind, text)
+      if (!row?.id) continue
+      this.deletePropositionFtsStmt.run(row.id)
+      this.insertPropositionFtsStmt.run(row.id, text)
+      const siblings = this.listSiblingPropositionsStmt.all(subjectKey, propositionKind, row.id)
+      for (const sibling of siblings) {
+        const siblingDate = sibling?.occurred_on ? new Date(String(sibling.occurred_on)).getTime() : 0
+        const rowDate = occurredOn ? new Date(String(occurredOn)).getTime() : 0
+        const lexicalOverlap = (() => {
+          const left = new Set(tokenizeMemoryText(text))
+          const right = new Set(tokenizeMemoryText(String(sibling?.text ?? '')))
+          const overlap = [...left].filter(token => right.has(token)).length
+          return left.size > 0 ? overlap / left.size : 0
+        })()
+        if (String(sibling?.text ?? '') === text) continue
+        if (rowDate && siblingDate && rowDate < siblingDate) continue
+        if (lexicalOverlap < 0.35) continue
+        this.markPropositionSupersededStmt.run(row.id, seenAt ?? new Date().toISOString(), sibling.id)
+      }
+      this.linkMemoryToEntities(text, 'proposition', row.id, sourceEpisodeId)
+    }
+  }
+
+  linkMemoryToEntities(text, linkedType, linkedId, sourceEpisodeId = null) {
+    const clean = cleanMemoryText(text)
+    if (!clean || !linkedType || !Number.isFinite(Number(linkedId))) return
+    let entities = []
+    try {
+      entities = this.db.prepare(`
+        SELECT id, name
+        FROM entities
+        ORDER BY length(name) DESC, id ASC
+      `).all()
+    } catch {
+      return
+    }
+    const lowered = clean.toLowerCase()
+    for (const entity of entities) {
+      const name = String(entity?.name ?? '').trim()
+      if (!name) continue
+      if (!lowered.includes(name.toLowerCase())) continue
+      const strength = Math.min(1.5, Math.max(0.6, name.length / 20))
+      this.upsertEntityLinkStmt.run(entity.id, linkedType, Number(linkedId), sourceEpisodeId, strength)
+    }
+  }
+
+  rebuildEntityLinks() {
+    this.clearEntityLinksStmt.run()
+
+    const factRows = this.db.prepare(`SELECT id, text, source_episode_id FROM facts WHERE status = 'active'`).all()
+    for (const row of factRows) this.linkMemoryToEntities(row.text, 'fact', row.id, row.source_episode_id)
+
+    const taskRows = this.db.prepare(`
+      SELECT id,
+             trim(title || CASE WHEN details IS NOT NULL AND details != '' THEN ' — ' || details ELSE '' END) AS content,
+             source_episode_id
+      FROM tasks
+      WHERE status IN ('active', 'in_progress', 'paused', 'done')
+    `).all()
+    for (const row of taskRows) this.linkMemoryToEntities(row.content, 'task', row.id, row.source_episode_id)
+
+    const propositionRows = this.db.prepare(`SELECT id, text, source_episode_id FROM propositions WHERE status = 'active'`).all()
+    for (const row of propositionRows) this.linkMemoryToEntities(row.text, 'proposition', row.id, row.source_episode_id)
+
+    const episodeRows = this.db.prepare(`
+      SELECT id, content
+      FROM episodes
+      WHERE role = 'user'
+        AND kind = 'message'
+    `).all()
+    for (const row of episodeRows) this.linkMemoryToEntities(row.content, 'episode', row.id, row.id)
+  }
+
+  resolveQueryEntityScope(query = '') {
+    const clean = cleanMemoryText(query)
+    if (!clean) return []
+    try {
+      const entities = this.db.prepare(`
+        SELECT id, name, entity_type, description, source_episode_id
+        FROM entities
+        ORDER BY length(name) DESC, last_seen DESC, id ASC
+      `).all()
+      const lowered = clean.toLowerCase()
+      const rows = entities.filter(entity => {
+        const name = String(entity?.name ?? '').trim().toLowerCase()
+        if (!name) return false
+        return lowered.includes(name)
+      }).slice(0, 8)
+      const seen = new Set()
+      return rows.filter(row => {
+        if (seen.has(row.id)) return false
+        seen.add(row.id)
+        return true
+      })
+    } catch {
+      return []
+    }
+  }
+
+  getEntityScopedResults(queryEntities = [], limit = 6) {
+    const results = []
+    const seen = new Set()
+    if (queryEntities.length >= 2) {
+      const entityIds = queryEntities.map(entity => Number(entity.id)).filter(Number.isFinite)
+      const relations = this.db.prepare(`
+        SELECT 'relation' AS type, r.relation_type AS subtype, r.id AS entity_id,
+               trim(se.name || ' -> ' || te.name || CASE WHEN r.description IS NOT NULL AND r.description != '' THEN ' — ' || r.description ELSE '' END) AS content,
+               unixepoch(r.last_seen) AS updated_at, 0 AS retrieval_count,
+               r.confidence AS quality_score, r.source_episode_id AS source_episode_id,
+               ep.kind AS source_kind, ep.backend AS source_backend
+        FROM relations r
+        JOIN entities se ON se.id = r.source_entity_id
+        JOIN entities te ON te.id = r.target_entity_id
+        LEFT JOIN episodes ep ON ep.id = r.source_episode_id
+        WHERE r.status = 'active'
+          AND r.source_entity_id IN (${entityIds.map(() => '?').join(', ')})
+          AND r.target_entity_id IN (${entityIds.map(() => '?').join(', ')})
+        ORDER BY r.confidence DESC, r.last_seen DESC
+        LIMIT ?
+      `).all(...entityIds, ...entityIds, Math.max(2, limit))
+      for (const relation of relations) {
+        const key = `${relation.type}:${relation.entity_id}`
+        if (seen.has(key)) continue
+        seen.add(key)
+        results.push({ ...relation, score: -9.7 })
+      }
+    }
+    if (queryEntities.length === 1) {
+      const entityId = Number(queryEntities[0].id)
+      const relations = this.db.prepare(`
+        SELECT 'relation' AS type, r.relation_type AS subtype, r.id AS entity_id,
+               trim(se.name || ' -> ' || te.name || CASE WHEN r.description IS NOT NULL AND r.description != '' THEN ' — ' || r.description ELSE '' END) AS content,
+               unixepoch(r.last_seen) AS updated_at, 0 AS retrieval_count,
+               r.confidence AS quality_score, r.source_episode_id AS source_episode_id,
+               ep.kind AS source_kind, ep.backend AS source_backend
+        FROM relations r
+        JOIN entities se ON se.id = r.source_entity_id
+        JOIN entities te ON te.id = r.target_entity_id
+        LEFT JOIN episodes ep ON ep.id = r.source_episode_id
+        WHERE r.status = 'active'
+          AND (r.source_entity_id = ? OR r.target_entity_id = ?)
+        ORDER BY r.confidence DESC, r.last_seen DESC
+        LIMIT ?
+      `).all(entityId, entityId, Math.max(2, limit))
+      for (const relation of relations) {
+        const key = `${relation.type}:${relation.entity_id}`
+        if (seen.has(key)) continue
+        seen.add(key)
+        results.push({ ...relation, score: -9.65 })
+      }
+    }
+    for (const entity of queryEntities) {
+      const links = this.listEntityLinksStmt.all(entity.id).slice(0, Math.max(3, limit))
+      for (const link of links) {
+        let row = null
+        if (link.linked_type === 'fact') row = this._getEntityMeta('fact', link.linked_id, getEmbeddingModelId())
+        else if (link.linked_type === 'task') row = this._getEntityMeta('task', link.linked_id, getEmbeddingModelId())
+        else if (link.linked_type === 'proposition') row = this._getEntityMeta('proposition', link.linked_id, getEmbeddingModelId())
+        else if (link.linked_type === 'episode') row = this._getEntityMeta('episode', link.linked_id, getEmbeddingModelId())
+        if (!row) continue
+        const key = `${row.type}:${row.entity_id}`
+        if (seen.has(key)) continue
+        seen.add(key)
+        results.push({
+          ...row,
+          score: -9.4,
+          scoped_entity_id: entity.id,
+          scoped_entity_name: entity.name,
+        })
+        if (results.length >= limit) return results
+      }
+    }
+    return results
+  }
+
+  getRuleScopedResults(query = '', limit = 6) {
+    const clean = cleanMemoryText(query)
+    if (!clean || !isRuleQuery(clean)) return []
+    const tokens = propositionSubjectTokens(clean).slice(0, 8)
+    if (tokens.length === 0) return []
+    const patterns = tokens.map(token => `%${token}%`)
+    const results = []
+    try {
+      results.push(...this.db.prepare(`
+        SELECT 'fact' AS type, fact_type AS subtype, CAST(id AS TEXT) AS ref, text AS content,
+               unixepoch(last_seen) AS updated_at, id AS entity_id, retrieval_count,
+               confidence AS quality_score, source_episode_id
+        FROM facts
+        WHERE status = 'active'
+          AND fact_type = 'constraint'
+          AND (${patterns.map(() => 'text LIKE ?').join(' OR ')})
+        ORDER BY confidence DESC, mention_count DESC, last_seen DESC
+        LIMIT ?
+      `).all(...patterns, Math.max(3, limit)))
+    } catch { /* ignore */ }
+    try {
+      results.push(...this.db.prepare(`
+        SELECT 'proposition' AS type, proposition_kind AS subtype, CAST(id AS TEXT) AS ref, text AS content,
+               unixepoch(last_seen) AS updated_at, id AS entity_id, retrieval_count,
+               confidence AS quality_score, source_episode_id
+        FROM propositions
+        WHERE status = 'active'
+          AND (${patterns.map(() => 'text LIKE ?').join(' OR ')})
+        ORDER BY confidence DESC, mention_count DESC, last_seen DESC
+        LIMIT ?
+      `).all(...patterns, Math.max(3, limit)))
+    } catch { /* ignore */ }
+    return results
+      .sort((left, right) => Number(right.quality_score ?? 0) - Number(left.quality_score ?? 0))
+      .slice(0, limit)
+      .map(item => ({ ...item, score: -9.6 }))
+  }
+
+  /**
+   * Retrieve a stored vector from memory_vectors, or compute and store it.
+   * @param {string} entityType - 'fact', 'task', 'signal', 'episode'
+   * @param {number} entityId - row id
+   * @param {string} text - text to embed if no stored vector found
+   * @returns {number[]} embedding vector
+   */
+  async getStoredVector(entityType, entityId, text) {
+    const model = getEmbeddingModelId()
+    const existing = this.getVectorStmt.get(entityType, entityId, model)
+    if (existing?.vector_json) {
+      try {
+        const parsed = JSON.parse(existing.vector_json)
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed
+      } catch { /* fall through to embed */ }
+    }
+    const vector = await embedText(String(text).slice(0, 320))
+    if (Array.isArray(vector) && vector.length > 0) {
+      const contentHash = hashEmbeddingInput(text)
+      this.upsertVectorStmt.run(entityType, entityId, model, vector.length, JSON.stringify(vector), contentHash)
+      this._syncToVecTable(entityType, entityId, vector)
+      this.noteVectorWrite(model, vector.length)
+    }
+    return vector
+  }
+
   rebuildDerivedIndexes() {
     this.clearFactsFtsStmt.run()
     this.clearTasksFtsStmt.run()
     this.clearSignalsFtsStmt.run()
+    this.clearPropositionsFtsStmt.run()
 
     const facts = this.db.prepare(`SELECT id, text FROM facts`).all()
     for (const row of facts) {
-      this.insertFactFtsStmt.run(row.id, row.text)
+      try { this.deleteFactFtsStmt.run(row.id) } catch { /* best effort rebuild */ }
+      try { this.insertFactFtsStmt.run(row.id, row.text) } catch { /* best effort rebuild */ }
     }
 
     const tasks = this.db.prepare(`SELECT id, title, details FROM tasks`).all()
     for (const row of tasks) {
-      this.insertTaskFtsStmt.run(row.id, row.title, row.details ?? '')
+      try { this.deleteTaskFtsStmt.run(row.id) } catch { /* best effort rebuild */ }
+      try { this.insertTaskFtsStmt.run(row.id, row.title, row.details ?? '') } catch { /* best effort rebuild */ }
     }
 
     const signals = this.db.prepare(`SELECT id, kind, value FROM signals`).all()
@@ -1209,6 +1920,12 @@ export class MemoryStore {
       try {
         this.insertSignalFtsStmt.run(row.id, row.kind, row.value)
       } catch { /* best-effort rebuild */ }
+    }
+
+    const propositions = this.db.prepare(`SELECT id, text FROM propositions WHERE status = 'active'`).all()
+    for (const row of propositions) {
+      try { this.deletePropositionFtsStmt.run(row.id) } catch { /* best effort rebuild */ }
+      try { this.insertPropositionFtsStmt.run(row.id, row.text) } catch { /* best effort rebuild */ }
     }
 
   }
@@ -1270,6 +1987,7 @@ export class MemoryStore {
       if (!Array.isArray(vector) || vector.length === 0) return
       this.upsertVectorStmt.run('episode', episodeId, model, vector.length, JSON.stringify(vector), contentHash)
       this._syncToVecTable('episode', episodeId, vector)
+      this.noteVectorWrite(model, vector.length)
       try { this.db.prepare('DELETE FROM pending_embeds WHERE entity_type = ? AND entity_id = ?').run('episode', episodeId) } catch {}
     }
     if (!this._embedQueue) this._embedQueue = Promise.resolve()
@@ -1287,6 +2005,7 @@ export class MemoryStore {
       const contentHash = hashEmbeddingInput(item.content)
       this.upsertVectorStmt.run(item.entity_type, item.entity_id, model, vector.length, JSON.stringify(vector), contentHash)
       this._syncToVecTable(item.entity_type, item.entity_id, vector)
+      this.noteVectorWrite(model, vector.length)
       this.db.prepare('DELETE FROM pending_embeds WHERE entity_type = ? AND entity_id = ?').run(item.entity_type, item.entity_id)
       processed += 1
     }
@@ -1367,29 +2086,39 @@ export class MemoryStore {
     return this.db.prepare(`
       SELECT mc.id, mc.episode_id, mc.ts, mc.role, mc.content, mc.score
       FROM memory_candidates mc
-      WHERE mc.day_key = ? AND mc.status = 'pending'
+      JOIN episodes e ON e.id = mc.episode_id
+      WHERE mc.day_key = ?
+        AND mc.status = 'pending'
+        AND e.role = 'user'
+        AND e.kind = 'message'
       ORDER BY mc.score DESC, mc.ts ASC
     `).all(dayKey)
   }
 
   getPendingCandidateDays(limit = 7, minCount = 1) {
     return this.db.prepare(`
-      SELECT day_key, count(*) AS n
-      FROM memory_candidates
-      WHERE status = 'pending'
-      GROUP BY day_key
+      SELECT mc.day_key, count(*) AS n
+      FROM memory_candidates mc
+      JOIN episodes e ON e.id = mc.episode_id
+      WHERE mc.status = 'pending'
+        AND e.role = 'user'
+        AND e.kind = 'message'
+      GROUP BY mc.day_key
       HAVING count(*) >= ?
-      ORDER BY day_key DESC
+      ORDER BY mc.day_key DESC
       LIMIT ?
     `).all(minCount, limit)
   }
 
   getRecentCandidateDays(limit = 7) {
     return this.db.prepare(`
-      SELECT day_key, count(*) AS n
-      FROM memory_candidates
-      GROUP BY day_key
-      ORDER BY day_key DESC
+      SELECT mc.day_key, count(*) AS n
+      FROM memory_candidates mc
+      JOIN episodes e ON e.id = mc.episode_id
+      WHERE e.role = 'user'
+        AND e.kind = 'message'
+      GROUP BY mc.day_key
+      ORDER BY mc.day_key DESC
       LIMIT ?
     `).all(limit)
   }
@@ -1398,14 +2127,21 @@ export class MemoryStore {
     if (dayKey) {
       return this.db.prepare(`
         SELECT count(*) AS n
-        FROM memory_candidates
-        WHERE status = 'pending' AND day_key = ?
+        FROM memory_candidates mc
+        JOIN episodes e ON e.id = mc.episode_id
+        WHERE mc.status = 'pending'
+          AND mc.day_key = ?
+          AND e.role = 'user'
+          AND e.kind = 'message'
       `).get(dayKey).n
     }
     return this.db.prepare(`
       SELECT count(*) AS n
-      FROM memory_candidates
-      WHERE status = 'pending'
+      FROM memory_candidates mc
+      JOIN episodes e ON e.id = mc.episode_id
+      WHERE mc.status = 'pending'
+        AND e.role = 'user'
+        AND e.kind = 'message'
     `).get().n
   }
 
@@ -1422,8 +2158,7 @@ export class MemoryStore {
       if (!clean) continue
       const shouldCandidate =
         row.role === 'user' &&
-        row.kind !== 'schedule-inject' &&
-        row.kind !== 'event-inject'
+        row.kind === 'message'
       const score = shouldCandidate ? candidateScore(clean, row.role) : 0
       if (score > 0) {
         this.insertCandidateStmt.run(row.id, row.ts, row.day_key, row.role, clean, score)
@@ -1437,9 +2172,11 @@ export class MemoryStore {
     this.clearFactsStmt.run()
     this.clearTasksStmt.run()
     this.clearSignalsStmt.run()
+    this.clearPropositionsStmt.run()
     this.clearFactsFtsStmt.run()
     this.clearTasksFtsStmt.run()
     this.clearSignalsFtsStmt.run()
+    this.clearPropositionsFtsStmt.run()
     this.clearVectorsStmt.run()
     this.db.prepare(`UPDATE memory_candidates SET status = 'pending'`).run()
   }
@@ -1486,6 +2223,16 @@ export class MemoryStore {
         for (const id of signalIds) this.deleteSignalFtsStmt.run(id)
         this.db.prepare(`DELETE FROM signals WHERE id IN (${signalPlaceholders})`).run(...signalIds)
         this.db.prepare(`DELETE FROM memory_vectors WHERE entity_type = 'signal' AND entity_id IN (${signalPlaceholders})`).run(...signalIds)
+      }
+
+      const propositionIds = this.db.prepare(`
+        SELECT id FROM propositions WHERE source_episode_id IN (${episodePlaceholders})
+      `).all(...episodeIds).map(row => Number(row.id)).filter(Number.isFinite)
+      if (propositionIds.length > 0) {
+        const propositionPlaceholders = propositionIds.map(() => '?').join(', ')
+        for (const id of propositionIds) this.deletePropositionFtsStmt.run(id)
+        this.db.prepare(`DELETE FROM propositions WHERE id IN (${propositionPlaceholders})`).run(...propositionIds)
+        this.db.prepare(`DELETE FROM memory_vectors WHERE entity_type = 'proposition' AND entity_id IN (${propositionPlaceholders})`).run(...propositionIds)
       }
     }
 
@@ -1546,6 +2293,18 @@ export class MemoryStore {
       this.db.prepare(`DELETE FROM memory_vectors WHERE entity_type = 'signal' AND entity_id IN (${staleSignalPlaceholders})`).run(...staleSignalIds)
     }
 
+    const stalePropositionIds = this.db.prepare(`
+      SELECT id FROM propositions
+      WHERE source_episode_id IS NOT NULL
+        AND source_episode_id NOT IN (${keepPlaceholders})
+    `).all(...keepEpisodeIds).map(row => Number(row.id)).filter(Number.isFinite)
+    if (stalePropositionIds.length > 0) {
+      const stalePropositionPlaceholders = stalePropositionIds.map(() => '?').join(', ')
+      for (const id of stalePropositionIds) this.deletePropositionFtsStmt.run(id)
+      this.db.prepare(`DELETE FROM propositions WHERE id IN (${stalePropositionPlaceholders})`).run(...stalePropositionIds)
+      this.db.prepare(`DELETE FROM memory_vectors WHERE entity_type = 'proposition' AND entity_id IN (${stalePropositionPlaceholders})`).run(...stalePropositionIds)
+    }
+
     this.db.prepare(`
       DELETE FROM profiles
       WHERE source_episode_id IS NOT NULL
@@ -1586,7 +2345,7 @@ export class MemoryStore {
       const key = normalizeProfileKey(profile?.key)
       const value = cleanMemoryText(profile?.value)
       const confidence = Number(profile?.confidence ?? 0.6)
-      if (!key || !value) continue
+      if (!shouldKeepProfileValue(key, value)) continue
       this.upsertProfileStmt.run(key, value, confidence, seenAt, seenAt, sourceEpisodeId)
     }
   }
@@ -1697,6 +2456,16 @@ export class MemoryStore {
       if (row?.id) {
         this.deleteFactFtsStmt.run(row.id)
         this.insertFactFtsStmt.run(row.id, text)
+        this.linkMemoryToEntities(text, 'fact', row.id, sourceEpisodeId)
+        this.upsertPropositions([
+          {
+            subjectKey: fact?.subject_key,
+            propositionKind: propositionKindForFact(factType, slot),
+            text,
+            occurredOn: extractExplicitDate(text),
+            confidence,
+          },
+        ], seenAt, sourceEpisodeId, row.id)
       }
       if (slot) {
         this.staleFactSlotStmt.run(slot, text)
@@ -1761,6 +2530,7 @@ export class MemoryStore {
       if (row?.id) {
         this.deleteTaskFtsStmt.run(row.id)
         this.insertTaskFtsStmt.run(row.id, title, details)
+        this.linkMemoryToEntities(`${title} ${details ?? ''}`, 'task', row.id, sourceEpisodeId)
         const changed =
           !prev ||
           prev.status !== normalizeTaskStatus(task?.status, details) ||
@@ -1965,7 +2735,7 @@ export class MemoryStore {
       SELECT key, value, confidence FROM profiles
       WHERE status = 'active'
       ORDER BY confidence DESC LIMIT 10
-    `).all()
+    `).all().filter(profile => shouldKeepProfileValue(profile.key, profile.value))
     if (profiles.length) {
       parts.push(`## User\n${profiles.map(p => `- ${p.key}: ${p.value}`).join('\n')}`)
     }
@@ -2046,6 +2816,7 @@ export class MemoryStore {
         effectiveScore: decaySignalScore(item.score, item.last_seen, item.kind),
       }))
       .filter(item => item.effectiveScore >= 0.35)
+      .filter((item, index, arr) => arr.findIndex(candidate => candidate.kind === item.kind) === index)
       .slice(0, 5)
     if (activeSignals.length > 0) {
       parts.push(`## Signals\n${activeSignals.map(item => `- [${item.kind}] ${item.value}`).join('\n')}`)
@@ -2084,7 +2855,9 @@ export class MemoryStore {
   }
 
   getEmbeddableItems(options = {}) {
-    const perTypeLimit = Math.max(1, Number(options.perTypeLimit ?? 64))
+    const perTypeLimit = options.all
+      ? 1000000000
+      : Math.max(1, Number(options.perTypeLimit ?? 64))
     const items = []
 
     const factRows = this.db.prepare(`
@@ -2138,6 +2911,23 @@ export class MemoryStore {
       items.push({
         key: embeddingItemKey('signal', row.id),
         entityType: 'signal',
+        entityId: row.id,
+        subtype: row.subtype,
+        content: row.content,
+      })
+    }
+
+    const propositionRows = this.db.prepare(`
+      SELECT id, proposition_kind AS subtype, text AS content
+      FROM propositions
+      WHERE status = 'active'
+      ORDER BY last_seen DESC, id DESC
+      LIMIT ?
+    `).all(Math.max(8, Math.floor(perTypeLimit * 0.75)))
+    for (const row of propositionRows) {
+      items.push({
+        key: embeddingItemKey('proposition', row.id),
+        entityType: 'proposition',
         entityId: row.id,
         subtype: row.subtype,
         content: row.content,
@@ -2200,6 +2990,7 @@ export class MemoryStore {
         contentHash,
       )
       this._syncToVecTable(item.entityType, item.entityId, vector)
+      this.noteVectorWrite(model, vector.length)
       updated += 1
     }
     this._pruneOldEpisodeVectors()
@@ -2217,12 +3008,12 @@ export class MemoryStore {
 
   _vecRowId(entityType, entityId) {
     // Pack entity type + id into a single integer rowid
-    const typePrefix = { fact: 1, task: 2, signal: 3, episode: 4 }
+    const typePrefix = { fact: 1, task: 2, signal: 3, episode: 4, proposition: 5 }
     return (typePrefix[entityType] ?? 9) * 10000000 + Number(entityId)
   }
 
   _vecRowToEntity(rowid) {
-    const typeMap = { 1: 'fact', 2: 'task', 3: 'signal', 4: 'episode' }
+    const typeMap = { 1: 'fact', 2: 'task', 3: 'signal', 4: 'episode', 5: 'proposition' }
     const typeNum = Math.floor(rowid / 10000000)
     return { entityType: typeMap[typeNum] ?? 'unknown', entityId: rowid % 10000000 }
   }
@@ -2277,6 +3068,19 @@ export class MemoryStore {
       scores[intent] = best
     }
 
+    applyLexicalIntentHints(clean, scores)
+    const scopedEntities = this.resolveQueryEntityScope(clean)
+    if (scopedEntities.length >= 2) {
+      scores.decision = Number((scores.decision + 0.34).toFixed(4))
+      scores.profile = Math.max(0, scores.profile - 0.12)
+      scores.security = Math.max(0, scores.security - 0.1)
+      scores.task = Math.max(0, scores.task - 0.08)
+    } else if (scopedEntities.length === 1 && isRelationQuery(clean)) {
+      scores.decision = Number((scores.decision + 0.18).toFixed(4))
+      scores.profile = Math.max(0, scores.profile - 0.08)
+      scores.security = Math.max(0, scores.security - 0.08)
+    }
+
     const temporal = parseTemporalHint(clean)
     if (temporal) {
       scores.event += 0.28
@@ -2298,7 +3102,7 @@ export class MemoryStore {
 
     if (channelId) {
       rows = this.db.prepare(`
-        SELECT content
+        SELECT id, content
         FROM episodes
         WHERE role = 'user'
           AND kind NOT IN ('schedule-inject', 'event-inject')
@@ -2311,7 +3115,7 @@ export class MemoryStore {
 
     if (rows.length === 0 && userId) {
       rows = this.db.prepare(`
-        SELECT content
+        SELECT id, content
         FROM episodes
         WHERE role = 'user'
           AND kind NOT IN ('schedule-inject', 'event-inject')
@@ -2324,7 +3128,7 @@ export class MemoryStore {
 
     if (rows.length === 0) {
       rows = this.db.prepare(`
-        SELECT content
+        SELECT id, content
         FROM episodes
         WHERE role = 'user'
           AND kind NOT IN ('schedule-inject', 'event-inject')
@@ -2336,7 +3140,7 @@ export class MemoryStore {
 
     if (rows.length === 0) return []
     const vectors = await Promise.all(
-      rows.map(row => embedText(String(cleanMemoryText(row.content)).slice(0, 320))),
+      rows.map(row => this.getStoredVector('episode', row.id, cleanMemoryText(row.content))),
     )
     return averageVectors(vectors)
   }
@@ -2351,8 +3155,13 @@ export class MemoryStore {
       const content = cleanMemoryText(row.content ?? '')
       const contentTokens = tokenizeMemoryText(`${row.subtype ?? ''} ${content}`)
       const overlapCount = contentTokens.reduce((count, token) => count + (tokens.has(token) ? 1 : 0), 0)
+      const entityType = row.type ?? 'fact'
+      const entityId = Number(row.entity_id ?? 0)
+      const rowVector = (vector && entityId > 0)
+        ? await this.getStoredVector(entityType, entityId, `${row.subtype ?? ''} ${content}`)
+        : (vector ? await embedText(String(`${row.subtype ?? ''} ${content}`).slice(0, 320)) : [])
       const semanticSimilarity = vector
-        ? cosineSimilarity(vector, await embedText(String(`${row.subtype ?? ''} ${content}`).slice(0, 320)))
+        ? cosineSimilarity(vector, rowVector)
         : 0
       return {
         ...row,
@@ -2369,7 +3178,46 @@ export class MemoryStore {
 
   async getSeedResultsForIntent(intent, query = '', queryVector = null, limit = 4) {
     const seedLimit = Math.max(1, Number(limit))
+    const candidatePool = Math.max(seedLimit * 6, 18)
+    const includeDoneTasks = isDoneTaskQuery(query)
+    const preferDirectRelation = isRelationQuery(query) && !(/\b(weakness|problem|issue)\b/.test(query.toLowerCase()) || /약점|문제/.test(query))
+    const directRows = []
+    if (query && preferDirectRelation) {
+      try {
+        const tokens = propositionSubjectTokens(query).slice(0, 6)
+        const likePatterns = tokens.map(token => `%${token}%`)
+        const hasTokenSearch = likePatterns.length > 0
+        directRows.push(...this.db.prepare(`
+          SELECT 'entity' AS type, entity_type AS subtype, CAST(id AS TEXT) AS ref, name AS content,
+                 unixepoch(last_seen) AS updated_at, id AS entity_id, 0.8 AS quality_score, 0 AS retrieval_count
+          FROM entities
+          WHERE ${hasTokenSearch ? likePatterns.map(() => `(name LIKE ? OR COALESCE(description, '') LIKE ?)`).join(' OR ') : '1 = 0'}
+          ORDER BY last_seen DESC, id DESC
+          LIMIT ?
+        `).all(...likePatterns.flatMap(pattern => [pattern, pattern]), Math.max(4, seedLimit * 2)))
+        directRows.push(...this.db.prepare(`
+          SELECT 'relation' AS type, relation_type AS subtype, CAST(r.id AS TEXT) AS ref,
+                 trim(se.name || ' -> ' || te.name || CASE WHEN r.description IS NOT NULL AND r.description != '' THEN ' — ' || r.description ELSE '' END) AS content,
+                 unixepoch(r.last_seen) AS updated_at, r.id AS entity_id, r.confidence AS quality_score, 0 AS retrieval_count
+          FROM relations r
+          JOIN entities se ON se.id = r.source_entity_id
+          JOIN entities te ON te.id = r.target_entity_id
+          WHERE ${hasTokenSearch ? likePatterns.map(() => `(se.name LIKE ? OR te.name LIKE ? OR r.relation_type LIKE ? OR COALESCE(r.description, '') LIKE ?)`).join(' OR ') : '1 = 0'}
+          ORDER BY r.confidence DESC, r.last_seen DESC
+          LIMIT ?
+        `).all(...likePatterns.flatMap(pattern => [pattern, pattern, pattern, pattern]), Math.max(4, seedLimit * 2)))
+      } catch { /* ignore */ }
+    }
     if (intent === 'profile') {
+      const profiles = this.db.prepare(`
+        SELECT 'profile' AS type, key AS subtype, key || ': ' || value AS content,
+               unixepoch(last_seen) AS updated_at, 0 AS entity_id,
+               confidence AS quality_score, retrieval_count
+        FROM profiles
+        WHERE status = 'active'
+        ORDER BY confidence DESC, mention_count DESC, last_seen DESC
+        LIMIT ?
+      `).all(Math.max(6, seedLimit * 2))
       const facts = this.db.prepare(`
         SELECT 'fact' AS type, fact_type AS subtype, CAST(id AS TEXT) AS ref, text AS content,
                unixepoch(last_seen) AS updated_at, id AS entity_id,
@@ -2379,7 +3227,7 @@ export class MemoryStore {
           AND fact_type IN ('preference', 'constraint')
         ORDER BY confidence DESC, retrieval_count DESC, mention_count DESC, last_seen DESC
         LIMIT ?
-      `).all(Math.max(1, seedLimit - 1))
+      `).all(candidatePool)
       const signals = this.db.prepare(`
         SELECT 'signal' AS type, kind AS subtype, CAST(id AS TEXT) AS ref, value AS content,
                unixepoch(last_seen) AS updated_at, id AS entity_id,
@@ -2387,9 +3235,17 @@ export class MemoryStore {
         FROM signals
         WHERE kind IN ('language', 'tone')
         ORDER BY score DESC, retrieval_count DESC, last_seen DESC
-        LIMIT 2
-      `).all()
-      const ranked = await this.rankIntentSeedItems([...facts, ...signals], query, queryVector, { minSimilarity: 0.18 })
+        LIMIT ?
+      `).all(Math.max(4, seedLimit * 2))
+      const propositions = this.db.prepare(`
+        SELECT 'proposition' AS type, proposition_kind AS subtype, CAST(id AS TEXT) AS ref, text AS content,
+               unixepoch(last_seen) AS updated_at, id AS entity_id, confidence AS quality_score, retrieval_count
+        FROM propositions
+        WHERE status = 'active'
+        ORDER BY confidence DESC, retrieval_count DESC, last_seen DESC
+        LIMIT ?
+      `).all(Math.max(4, seedLimit * 2))
+      const ranked = await this.rankIntentSeedItems([...profiles, ...facts, ...signals, ...propositions, ...directRows], query, queryVector, { minSimilarity: 0.18 })
       return ranked.slice(0, seedLimit).map(item => ({ ...item, score: -9.2 }))
     }
 
@@ -2400,12 +3256,30 @@ export class MemoryStore {
                unixepoch(last_seen) AS updated_at, id AS entity_id,
                confidence AS quality_score, retrieval_count
         FROM tasks
-        WHERE status IN ('active', 'in_progress', 'paused')
-        ORDER BY CASE priority WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END, retrieval_count DESC, last_seen DESC
+        WHERE status IN (${includeDoneTasks ? "'active', 'in_progress', 'paused', 'done'" : "'active', 'in_progress', 'paused'"})
+        ORDER BY
+          CASE
+            WHEN ${includeDoneTasks ? "status = 'done'" : "0"} THEN 0
+            WHEN priority = 'high' THEN 1
+            WHEN priority = 'normal' THEN 2
+            ELSE 3
+          END,
+          retrieval_count DESC,
+          last_seen DESC
         LIMIT ?
-      `).all(seedLimit)
+      `).all(candidatePool)
       const ranked = await this.rankIntentSeedItems(tasks, query, queryVector, { minSimilarity: 0.12 })
-      return (ranked.length > 0 ? ranked : tasks).slice(0, seedLimit).map(item => ({ ...item, score: -9.1 }))
+      const ordered =
+        includeDoneTasks
+          ? [
+              ...tasks.filter(item => item.subtype === 'done'),
+              ...(ranked.length > 0 ? ranked : tasks),
+            ]
+          : (ranked.length > 0 ? ranked : tasks)
+      return ordered
+        .filter((item, index, arr) => arr.findIndex(candidate => `${candidate.type}:${candidate.entity_id}` === `${item.type}:${item.entity_id}`) === index)
+        .slice(0, seedLimit)
+        .map(item => ({ ...item, score: -9.1 }))
     }
 
     if (intent === 'decision' || intent === 'policy' || intent === 'security') {
@@ -2418,8 +3292,16 @@ export class MemoryStore {
           AND fact_type IN ('decision', 'constraint')
         ORDER BY confidence DESC, retrieval_count DESC, mention_count DESC, last_seen DESC
         LIMIT ?
-      `).all(seedLimit)
-      const ranked = await this.rankIntentSeedItems(facts, query, queryVector, { minSimilarity: 0.14 })
+      `).all(candidatePool)
+      const propositions = this.db.prepare(`
+        SELECT 'proposition' AS type, proposition_kind AS subtype, CAST(id AS TEXT) AS ref, text AS content,
+               unixepoch(last_seen) AS updated_at, id AS entity_id, confidence AS quality_score, retrieval_count
+        FROM propositions
+        WHERE status = 'active'
+        ORDER BY confidence DESC, retrieval_count DESC, last_seen DESC
+        LIMIT ?
+      `).all(candidatePool)
+      const ranked = await this.rankIntentSeedItems([...facts, ...propositions, ...directRows], query, queryVector, { minSimilarity: 0.14 })
       return (ranked.length > 0 ? ranked : facts).slice(0, seedLimit).map(item => ({ ...item, score: -9.1 }))
     }
 
@@ -2435,8 +3317,16 @@ export class MemoryStore {
           AND LENGTH(content) >= 10
         ORDER BY ts DESC
         LIMIT ?
-      `).all(Math.max(1, seedLimit + 1))
-      const ranked = await this.rankIntentSeedItems(episodes, query, queryVector, { minSimilarity: intent === 'event' ? 0.04 : 0.08 })
+      `).all(Math.max(candidatePool, seedLimit + 8))
+      const propositions = this.db.prepare(`
+        SELECT 'proposition' AS type, proposition_kind AS subtype, CAST(id AS TEXT) AS ref, text AS content,
+               unixepoch(last_seen) AS updated_at, id AS entity_id, confidence AS quality_score, retrieval_count
+        FROM propositions
+        WHERE status = 'active'
+        ORDER BY last_seen DESC, retrieval_count DESC
+        LIMIT ?
+      `).all(Math.max(8, seedLimit * 3))
+      const ranked = await this.rankIntentSeedItems([...episodes, ...propositions, ...directRows], query, queryVector, { minSimilarity: intent === 'event' ? 0.04 : 0.08 })
       return (ranked.length > 0 ? ranked : episodes).slice(0, seedLimit).map(item => ({ ...item, score: -8.0 }))
     }
 
@@ -2459,9 +3349,12 @@ export class MemoryStore {
       userId: options.userId,
     })
     const temporal = parseTemporalHint(clean)
+    const queryEntities = options.queryEntities ?? this.resolveQueryEntityScope(clean)
     const dense = await this.searchRelevantDense(clean, limit * 2, queryVector, focusVector)
     const seeded = await this.getSeedResultsForIntent(intent.primary, clean, queryVector, Math.min(4, limit))
-    const sparse = [...seeded, ...this.searchRelevantSparse(clean, limit * 2)]
+    const entityScoped = this.getEntityScopedResults(queryEntities, Math.min(6, limit * 2))
+    const ruleScoped = this.getRuleScopedResults(clean, Math.min(5, limit * 2))
+    const sparse = [...entityScoped, ...ruleScoped, ...seeded, ...this.searchRelevantSparse(clean, limit * 2)]
 
     // Temporal search: add date-matching episodes (deduplicated)
     if (temporal) {
@@ -2469,7 +3362,7 @@ export class MemoryStore {
       try {
         const temporalEpisodes = this.db.prepare(`
           SELECT 'episode' AS type, role AS subtype, CAST(id AS TEXT) AS ref, content,
-                 -1.5 AS score, created_at AS updated_at, id AS entity_id, 0 AS retrieval_count
+                 ? AS score, created_at AS updated_at, id AS entity_id, 0 AS retrieval_count
           FROM episodes
           WHERE day_key >= ? AND day_key <= ?
             AND role = 'user'
@@ -2478,19 +3371,51 @@ export class MemoryStore {
             AND LENGTH(content) >= 10
           ORDER BY ts DESC
           LIMIT 6
-        `).all(temporal.start, temporal.end)
+        `).all(
+          (intent.primary === 'event' || intent.primary === 'history') && temporal.exact ? -4.0 : -1.5,
+          temporal.start,
+          temporal.end,
+        )
         for (const e of temporalEpisodes) {
           if (!seen.has(`episode:${e.entity_id}`)) { sparse.push(e); seen.add(`episode:${e.entity_id}`) }
         }
       } catch {}
     }
 
-    return this.combineRetrievalResults(clean, sparse, dense, limit, intent)
+    if (temporal?.exact && (intent.primary === 'history' || intent.primary === 'event')) {
+      const exactEpisodeLane = this.db.prepare(`
+        SELECT 'episode' AS type, role AS subtype, CAST(id AS TEXT) AS ref, content,
+               -12.0 AS score, created_at AS updated_at, id AS entity_id, 0 AS retrieval_count,
+               NULL AS quality_score, source_ref, ts AS source_ts, kind AS source_kind, backend AS source_backend
+        FROM episodes
+        WHERE day_key = ?
+          AND role = 'user'
+          AND kind = 'message'
+        ORDER BY ts ASC
+        LIMIT ?
+      `).all(temporal.start, Math.max(limit, 6))
+      const seen = new Set(sparse.map(r => `${r.type}:${r.entity_id}`))
+      for (const row of exactEpisodeLane) {
+        if (seen.has(`episode:${row.entity_id}`)) continue
+        sparse.unshift(row)
+        seen.add(`episode:${row.entity_id}`)
+      }
+    }
+
+    let combined = this.combineRetrievalResults(clean, sparse, dense, limit, intent, queryEntities)
+    if (temporal?.exact && (intent.primary === 'history' || intent.primary === 'event')) {
+      const exactDate = temporal.start
+      const exactEpisodeResults = combined.filter(item => item.type === 'episode' && String(item.source_ts ?? item.updated_at ?? '').includes(exactDate))
+      const otherResults = combined.filter(item => !(item.type === 'episode' && String(item.source_ts ?? item.updated_at ?? '').includes(exactDate)))
+      combined = [...exactEpisodeResults, ...otherResults].slice(0, limit)
+    }
+    return combined
   }
 
   searchRelevantSparse(query, limit = 8) {
     const ftsQuery = buildFtsQuery(query)
     const shortTokens = getShortTokensForLike(query)
+    const includeDoneTasks = isDoneTaskQuery(query)
     if (!ftsQuery && shortTokens.length === 0) return []
     const results = []
     const runFts = Boolean(ftsQuery)
@@ -2504,7 +3429,9 @@ export class MemoryStore {
                f.retrieval_count AS retrieval_count,
                f.source_episode_id AS source_episode_id,
                e.source_ref AS source_ref,
-               e.ts AS source_ts
+               e.ts AS source_ts,
+               e.kind AS source_kind,
+               e.backend AS source_backend
         FROM facts_fts
         JOIN facts f ON f.id = facts_fts.rowid
         LEFT JOIN episodes e ON e.id = f.source_episode_id
@@ -2527,12 +3454,14 @@ export class MemoryStore {
                t.retrieval_count AS retrieval_count,
                t.source_episode_id AS source_episode_id,
                e.source_ref AS source_ref,
-               e.ts AS source_ts
+               e.ts AS source_ts,
+               e.kind AS source_kind,
+               e.backend AS source_backend
         FROM tasks_fts
         JOIN tasks t ON t.id = tasks_fts.rowid
         LEFT JOIN episodes e ON e.id = t.source_episode_id
         WHERE tasks_fts MATCH ?
-          AND t.status IN ('active', 'in_progress', 'paused')
+          AND t.status IN (${includeDoneTasks ? "'active', 'in_progress', 'paused', 'done'" : "'active', 'in_progress', 'paused'"})
         ORDER BY score
         LIMIT ?
       `).all(ftsQuery, limit)
@@ -2548,7 +3477,9 @@ export class MemoryStore {
                s.score AS quality_score,
                s.source_episode_id AS source_episode_id,
                e.source_ref AS source_ref,
-               e.ts AS source_ts
+               e.ts AS source_ts,
+               e.kind AS source_kind,
+               e.backend AS source_backend
         FROM signals_fts
         JOIN signals s ON s.id = signals_fts.rowid
         LEFT JOIN episodes e ON e.id = s.source_episode_id
@@ -2561,13 +3492,38 @@ export class MemoryStore {
 
     try {
       if (!runFts) throw 0
+      const propositionHits = this.db.prepare(`
+        SELECT 'proposition' AS type, p.proposition_kind AS subtype, CAST(p.id AS TEXT) AS ref,
+               p.text AS content, bm25(propositions_fts) AS score,
+               unixepoch(p.last_seen) AS updated_at, p.id AS entity_id, p.retrieval_count AS retrieval_count,
+               p.confidence AS quality_score,
+               p.source_episode_id AS source_episode_id,
+               e.source_ref AS source_ref,
+               e.ts AS source_ts,
+               e.kind AS source_kind,
+               e.backend AS source_backend
+        FROM propositions_fts
+        JOIN propositions p ON p.id = propositions_fts.rowid
+        LEFT JOIN episodes e ON e.id = p.source_episode_id
+        WHERE propositions_fts MATCH ?
+          AND p.status = 'active'
+        ORDER BY score
+        LIMIT ?
+      `).all(ftsQuery, limit)
+      results.push(...propositionHits)
+    } catch { /* ignore */ }
+
+    try {
+      if (!runFts) throw 0
       const episodeHits = this.db.prepare(`
         SELECT 'episode' AS type, e.role AS subtype, CAST(e.id AS TEXT) AS ref,
                e.content AS content, bm25(episodes_fts) AS score,
                e.created_at AS updated_at, e.id AS entity_id, 0 AS retrieval_count,
                NULL AS quality_score,
                e.source_ref AS source_ref,
-               e.ts AS source_ts
+               e.ts AS source_ts,
+               e.kind AS source_kind,
+               e.backend AS source_backend
         FROM episodes_fts
         JOIN episodes e ON e.id = episodes_fts.rowid
         WHERE episodes_fts MATCH ?
@@ -2599,8 +3555,9 @@ export class MemoryStore {
                  0 AS score, unixepoch(f.last_seen) AS updated_at, f.id AS entity_id,
                  f.confidence AS quality_score, f.retrieval_count AS retrieval_count,
                  f.source_episode_id AS source_episode_id,
-                 NULL AS source_ref, NULL AS source_ts
+                 e.source_ref AS source_ref, e.ts AS source_ts, e.kind AS source_kind, e.backend AS source_backend
           FROM facts f
+          LEFT JOIN episodes e ON e.id = f.source_episode_id
           WHERE f.status = 'active' AND (${likeConditions})
           LIMIT ?
         `).all(...likeParams, Math.min(limit, 4))
@@ -2619,9 +3576,10 @@ export class MemoryStore {
                  0 AS score, unixepoch(t.last_seen) AS updated_at, t.id AS entity_id,
                  t.confidence AS quality_score, t.retrieval_count AS retrieval_count,
                  t.source_episode_id AS source_episode_id,
-                 NULL AS source_ref, NULL AS source_ts
+                 e.source_ref AS source_ref, e.ts AS source_ts, e.kind AS source_kind, e.backend AS source_backend
           FROM tasks t
-          WHERE t.status IN ('active', 'in_progress', 'paused')
+          LEFT JOIN episodes e ON e.id = t.source_episode_id
+          WHERE t.status IN (${includeDoneTasks ? "'active', 'in_progress', 'paused', 'done'" : "'active', 'in_progress', 'paused'"})
             AND (${shortTokens.map(() => '(t.title LIKE ? OR t.details LIKE ?)').join(' OR ')})
           LIMIT ?
         `).all(...shortTokens.flatMap(t => [`%${t}%`, `%${t}%`]), Math.min(limit, 4))
@@ -2641,9 +3599,24 @@ export class MemoryStore {
     const clean = cleanMemoryText(query)
     if (!clean) return []
     const model = getEmbeddingModelId()
-    await this.ensureEmbeddings({ perTypeLimit: Math.max(limit * 4, 12) })
     const vector = queryVector ?? await embedText(clean)
     if (!Array.isArray(vector) || vector.length === 0) return []
+    const expectedDims = getEmbeddingDims()
+    const vectorModel = this.getMetaValue('embedding.vector_model', '')
+    const vectorDims = Number(this.getMetaValue('embedding.vector_dims', '0')) || 0
+    const hasCurrentModelVectors = Boolean(this.hasVectorModelStmt.get(model)?.ok)
+    if (vectorModel && vectorModel !== model && !hasCurrentModelVectors) {
+      process.stderr.write(`[memory] dense retrieval disabled: current model=${model} indexed model=${vectorModel}; rebuild embeddings required\n`)
+      return []
+    }
+    if (expectedDims && vector.length !== expectedDims) {
+      process.stderr.write(`[memory] dense retrieval disabled: query vector dims=${vector.length} expected=${expectedDims}\n`)
+      return []
+    }
+    if (vectorDims && vector.length !== vectorDims && hasCurrentModelVectors) {
+      process.stderr.write(`[memory] dense retrieval disabled: query vector dims=${vector.length} indexed dims=${vectorDims}\n`)
+      return []
+    }
 
     // sqlite-vec KNN path
     if (this.vecEnabled) {
@@ -2683,6 +3656,7 @@ export class MemoryStore {
       ...this.listDenseFactRowsStmt.all(model),
       ...this.listDenseTaskRowsStmt.all(model),
       ...this.listDenseSignalRowsStmt.all(model),
+      ...this.listDensePropositionRowsStmt.all(model),
       ...this.listDenseEpisodeRowsStmt.all(model),
     ]
 
@@ -2717,8 +3691,11 @@ export class MemoryStore {
           SELECT 'fact' AS type, f.fact_type AS subtype, f.id AS entity_id, f.text AS content,
                  unixepoch(f.last_seen) AS updated_at, f.retrieval_count AS retrieval_count,
                  f.source_episode_id AS source_episode_id,
+                 e.kind AS source_kind, e.backend AS source_backend,
                  mv.vector_json
-          FROM facts f JOIN memory_vectors mv ON mv.entity_type = 'fact' AND mv.entity_id = f.id AND mv.model = ?
+          FROM facts f
+          JOIN memory_vectors mv ON mv.entity_type = 'fact' AND mv.entity_id = f.id AND mv.model = ?
+          LEFT JOIN episodes e ON e.id = f.source_episode_id
           WHERE f.id = ? AND f.status = 'active'
         `).get(model, entityId)
       }
@@ -2728,8 +3705,11 @@ export class MemoryStore {
                  trim(t.title || CASE WHEN t.details != '' THEN ' — ' || t.details ELSE '' END) AS content,
                  unixepoch(t.last_seen) AS updated_at, t.retrieval_count AS retrieval_count,
                  t.source_episode_id AS source_episode_id,
+                 e.kind AS source_kind, e.backend AS source_backend,
                  mv.vector_json
-          FROM tasks t JOIN memory_vectors mv ON mv.entity_type = 'task' AND mv.entity_id = t.id AND mv.model = ?
+          FROM tasks t
+          JOIN memory_vectors mv ON mv.entity_type = 'task' AND mv.entity_id = t.id AND mv.model = ?
+          LEFT JOIN episodes e ON e.id = t.source_episode_id
           WHERE t.id = ? AND t.status IN ('active', 'in_progress', 'paused')
         `).get(model, entityId)
       }
@@ -2738,15 +3718,32 @@ export class MemoryStore {
           SELECT 'signal' AS type, s.kind AS subtype, s.id AS entity_id, s.value AS content,
                  unixepoch(s.last_seen) AS updated_at, s.retrieval_count AS retrieval_count,
                  s.source_episode_id AS source_episode_id,
+                 e.kind AS source_kind, e.backend AS source_backend,
                  mv.vector_json
-          FROM signals s JOIN memory_vectors mv ON mv.entity_type = 'signal' AND mv.entity_id = s.id AND mv.model = ?
+          FROM signals s
+          JOIN memory_vectors mv ON mv.entity_type = 'signal' AND mv.entity_id = s.id AND mv.model = ?
+          LEFT JOIN episodes e ON e.id = s.source_episode_id
           WHERE s.id = ?
+        `).get(model, entityId)
+      }
+      if (entityType === 'proposition') {
+        return this.db.prepare(`
+          SELECT 'proposition' AS type, p.proposition_kind AS subtype, p.id AS entity_id, p.text AS content,
+                 unixepoch(p.last_seen) AS updated_at, p.retrieval_count AS retrieval_count,
+                 p.source_episode_id AS source_episode_id,
+                 e.kind AS source_kind, e.backend AS source_backend,
+                 mv.vector_json
+          FROM propositions p
+          JOIN memory_vectors mv ON mv.entity_type = 'proposition' AND mv.entity_id = p.id AND mv.model = ?
+          LEFT JOIN episodes e ON e.id = p.source_episode_id
+          WHERE p.id = ? AND p.status = 'active'
         `).get(model, entityId)
       }
       if (entityType === 'episode') {
         return this.db.prepare(`
           SELECT 'episode' AS type, e.role AS subtype, e.id AS entity_id, e.content,
                  e.created_at AS updated_at, 0 AS retrieval_count,
+                 e.kind AS source_kind, e.backend AS source_backend,
                  mv.vector_json
           FROM episodes e JOIN memory_vectors mv ON mv.entity_type = 'episode' AND mv.entity_id = e.id AND mv.model = ?
           WHERE e.id = ?
@@ -2756,7 +3753,7 @@ export class MemoryStore {
     return null
   }
 
-  combineRetrievalResults(query, sparseResults, denseResults, limit = 8, intent = null) {
+  combineRetrievalResults(query, sparseResults, denseResults, limit = 8, intent = null, queryEntities = []) {
     const now = Date.now()
     const merged = new Map()
     const queryTokens = new Set(tokenizeMemoryText(query))
@@ -2764,20 +3761,8 @@ export class MemoryStore {
     const primaryIntent = intent?.primary ?? 'decision'
 
     // Entity-filtered retrieval: find matching entities and collect their source episode IDs
-    const entityLinkedEpisodeIds = new Set()
-    if (queryTokens.size > 0) {
-      try {
-        const tokenArray = [...queryTokens]
-        const placeholders = tokenArray.map(() => '?').join(',')
-        const matchedEntities = this.db.prepare(`
-          SELECT id, name, source_episode_id FROM entities
-          WHERE LOWER(name) IN (${placeholders})
-        `).all(...tokenArray)
-        for (const ent of matchedEntities) {
-          if (ent.source_episode_id) entityLinkedEpisodeIds.add(Number(ent.source_episode_id))
-        }
-      } catch { /* ignore entity lookup errors */ }
-    }
+    const scopedEntityIds = new Set(queryEntities.map(item => Number(item.id)).filter(Number.isFinite))
+    const scopedEntityNames = new Set(queryEntities.map(item => String(item.name ?? '').toLowerCase()).filter(Boolean))
 
     const dedupKey = (item) => {
       const contentHash = (item.content || '').slice(0, 50).toLowerCase().replace(/\s+/g, '')
@@ -2819,15 +3804,29 @@ export class MemoryStore {
         const recencyPenalty = Math.min(0.4, (1 - Math.exp(-ageDays / (stabilityFactor * 15))) * 0.4)
         const contentTokens = tokenizeMemoryText(`${item.subtype ?? ''} ${item.content}`)
         const overlapCount = contentTokens.reduce((count, token) => count + (queryTokens.has(token) ? 1 : 0), 0)
+        const overlapRatio = queryTokenCount > 0 ? overlapCount / queryTokenCount : 0
+        const overlapBoost =
+          overlapCount > 0
+            ? -Math.min(
+                isPolicyIntent(primaryIntent) ? 0.42 :
+                (primaryIntent === 'event' || primaryIntent === 'history') ? 0.34 :
+                0.26,
+                overlapRatio * (
+                  isPolicyIntent(primaryIntent) ? 0.42 :
+                  (primaryIntent === 'event' || primaryIntent === 'history') ? 0.34 :
+                  0.26
+                ),
+              )
+            : 0
         const retrievalBoost = -Math.min(0.08, Number(item.retrieval_count ?? 0) * 0.01)
         const focusBoost =
           primaryIntent === 'task' || primaryIntent === 'decision'
             ? -Math.min(0.14, Math.max(0, Number(item.focus_similarity ?? 0)) * 0.12)
             : 0
         const qualityBoost =
-          item.type === 'fact' || item.type === 'task'
+          item.type === 'fact' || item.type === 'task' || item.type === 'relation' || item.type === 'proposition'
             ? -Math.min(0.12, Math.max(0, Number(item.quality_score ?? 0.5) - 0.5) * 0.3)
-            : item.type === 'signal'
+            : item.type === 'signal' || item.type === 'profile' || item.type === 'entity'
               ? -Math.min(0.08, Math.max(0, Number(item.quality_score ?? 0.5) - 0.5) * 0.2)
               : 0
         const typeBoost =
@@ -2839,6 +3838,10 @@ export class MemoryStore {
                 -0.09
               )
             : item.type === 'task' ? -0.10 :
+            item.type === 'proposition' ? -0.12 :
+            item.type === 'entity' ? -0.08 :
+            item.type === 'relation' ? -0.1 :
+            item.type === 'profile' ? -0.08 :
             item.type === 'signal'
               ? (
                   item.subtype === 'tone' ? -0.08 :
@@ -2852,7 +3855,9 @@ export class MemoryStore {
           isProfileIntent(primaryIntent)
             ? (
                 item.type === 'fact' && (item.subtype === 'preference' || item.subtype === 'constraint') ? -0.18 :
+                item.type === 'proposition' ? -0.14 :
                 item.type === 'signal' && (item.subtype === 'tone' || item.subtype === 'language') ? -0.14 :
+                item.type === 'profile' ? -0.22 :
                 item.type === 'task' ? 0.10 :
                 item.type === 'episode' ? 0.12 :
                 0
@@ -2860,6 +3865,7 @@ export class MemoryStore {
             : primaryIntent === 'task'
               ? (
                   item.type === 'task' ? -0.18 :
+                  item.type === 'proposition' ? -0.1 :
                   item.type === 'fact' && item.subtype === 'decision' ? -0.06 :
                   item.type === 'signal' ? 0.08 :
                   item.type === 'episode' ? 0.04 :
@@ -2868,7 +3874,10 @@ export class MemoryStore {
               : isPolicyIntent(primaryIntent)
                 ? (
                     item.type === 'fact' && item.subtype === 'constraint' ? -0.18 :
+                    item.type === 'proposition' ? -0.14 :
                     item.type === 'fact' && item.subtype === 'decision' ? -0.10 :
+                    item.type === 'relation' ? -0.08 :
+                    item.type === 'entity' ? -0.06 :
                     item.type === 'signal' ? -0.04 :
                     item.type === 'task' ? 0.08 :
                     item.type === 'episode' ? 0.04 :
@@ -2877,6 +3886,7 @@ export class MemoryStore {
               : primaryIntent === 'event'
                 ? (
                     item.type === 'episode' ? -0.22 :
+                    item.type === 'proposition' ? -0.12 :
                     item.type === 'task' && item.source_episode_id != null ? -0.06 :
                     item.type === 'fact' && item.source_episode_id != null ? -0.04 :
                     item.type === 'signal' ? 0.08 :
@@ -2885,13 +3895,20 @@ export class MemoryStore {
               : primaryIntent === 'history'
                 ? (
                     item.type === 'episode' ? -0.12 :
+                    item.type === 'proposition' ? -0.12 :
+                    item.type === 'entity' ? -0.1 :
+                    item.type === 'relation' ? -0.1 :
                     item.type === 'task' ? -0.04 :
                     item.type === 'signal' ? 0.06 :
                     0
                   )
                 : (
                     item.type === 'fact' && item.subtype === 'decision' ? -0.10 :
+                    item.type === 'proposition' ? -0.12 :
                     item.type === 'fact' && item.subtype === 'constraint' ? -0.08 :
+                    item.type === 'entity' ? -0.08 :
+                    item.type === 'relation' ? -0.1 :
+                    item.type === 'profile' ? -0.08 :
                     item.type === 'task' ? -0.05 :
                     0
                   )
@@ -2901,16 +3918,20 @@ export class MemoryStore {
           0
         // Entity boost: items linked to a matching entity get a score boost
         const entityBoost =
-          entityLinkedEpisodeIds.size > 0 &&
-          item.source_episode_id != null &&
-          entityLinkedEpisodeIds.has(Number(item.source_episode_id))
-            ? -0.2
+          scopedEntityIds.size > 0
+            ? (
+                item.type === 'entity' && scopedEntityIds.has(Number(item.entity_id)) ? -0.28 :
+                item.type === 'relation' && [...scopedEntityNames].some(name => String(item.content ?? '').toLowerCase().includes(name)) ? -0.24 :
+                item.scoped_entity_id && scopedEntityIds.has(Number(item.scoped_entity_id)) ? -0.26 :
+                0
+              )
             : 0
+        const sourceTrustBoost = computeSourceTrustAdjustment(item, primaryIntent)
         return {
           ...item,
           content: compactRetrievalContent(item),
           overlapCount,
-          weighted_score: sparse + dense + recencyPenalty + typeBoost + intentBoost + retrievalBoost + focusBoost + qualityBoost + densityPenalty + entityBoost,
+          weighted_score: sparse + dense + recencyPenalty + typeBoost + intentBoost + overlapBoost + retrievalBoost + focusBoost + qualityBoost + densityPenalty + entityBoost + sourceTrustBoost,
         }
       })
     const positiveCoreMatches = scored.filter(item =>
@@ -2954,7 +3975,12 @@ export class MemoryStore {
       .sort((a, b) => Number(a.rerank_score) - Number(b.rerank_score))
 
     for (const item of rerankPool) {
-      if (Number(item.rerank_score) > rerankThreshold) continue
+      const allowByOverlap = Number(item.overlapCount) > 0
+      const allowBySparse =
+        item.sparse_score != null &&
+        Number(item.sparse_score) <= 0 &&
+        (primaryIntent === 'decision' || isPolicyIntent(primaryIntent) || primaryIntent === 'event' || primaryIntent === 'history')
+      if (Number(item.rerank_score) > rerankThreshold && !allowByOverlap && !allowBySparse) continue
       const type = String(item.type)
       const cap = typeCaps.get(type) ?? 2
       const count = typeCounts.get(type) ?? 0
@@ -2977,6 +4003,8 @@ export class MemoryStore {
         this.bumpTaskRetrievalStmt.run(now, entityId)
       } else if (item.type === 'signal') {
         this.bumpSignalRetrievalStmt.run(now, entityId)
+      } else if (item.type === 'proposition') {
+        this.bumpPropositionRetrievalStmt.run(now, entityId)
       }
     }
   }
@@ -2988,7 +4016,7 @@ export class MemoryStore {
     // Profile hints removed — profiles are injected once at session start via context.md
 
     const coreFacts = this.db.prepare(`
-      SELECT 'fact' AS type, fact_type AS subtype, text AS content, confidence, last_seen
+      SELECT id, 'fact' AS type, fact_type AS subtype, text AS content, confidence, last_seen
       FROM facts
       WHERE status = 'active'
         AND fact_type IN ('preference', 'constraint')
@@ -2997,7 +4025,7 @@ export class MemoryStore {
     `).all()
 
     const coreSignals = this.db.prepare(`
-      SELECT 'signal' AS type, kind AS subtype, value AS content, score AS confidence, last_seen
+      SELECT id, 'signal' AS type, kind AS subtype, value AS content, score AS confidence, last_seen
       FROM signals
       WHERE kind IN ('language', 'tone')
       ORDER BY score DESC, retrieval_count DESC, last_seen DESC
@@ -3014,7 +4042,8 @@ export class MemoryStore {
     const combined = [...coreFacts, ...coreSignals]
     const semanticScores = vector
       ? await Promise.all(combined.map(async item => {
-          const itemVector = await embedText(`${item.subtype} ${item.content}`.slice(0, 320))
+          const entityType = item.type === 'fact' ? 'fact' : 'signal'
+          const itemVector = await this.getStoredVector(entityType, item.id, `${item.subtype} ${item.content}`)
           return cosineSimilarity(vector, itemVector)
         }))
       : combined.map(() => 0)
@@ -3073,18 +4102,19 @@ export class MemoryStore {
     })
     const workstreamHint = normalizeWorkstream(options.workstreamHint)
     const hintTokens = tokenizedWorkstream(workstreamHint)
+    const includeDone = Boolean(options.includeDone) || isDoneTaskQuery(query)
 
     const rows = this.db.prepare(`
       SELECT id, title, details, workstream, status, priority, confidence, last_seen, retrieval_count, stage, evidence_level
       FROM tasks
-      WHERE status IN ('active', 'in_progress', 'paused')
+      WHERE status IN (${includeDone ? "'active', 'in_progress', 'paused', 'done'" : "'active', 'in_progress', 'paused'"})
       ORDER BY CASE priority WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END, retrieval_count DESC, last_seen DESC
       LIMIT 12
     `).all()
 
     const scored = await Promise.all(rows.map(async row => {
       const content = cleanMemoryText(`${row.title} ${row.details ?? ''}`)
-      const taskVector = await embedText(content.slice(0, 320))
+      const taskVector = await this.getStoredVector('task', row.id, content)
       const querySimilarity =
         Array.isArray(queryVector) && queryVector.length === taskVector.length
           ? cosineSimilarity(queryVector, taskVector)
@@ -3097,6 +4127,11 @@ export class MemoryStore {
         row.priority === 'high' ? 0.35 :
         row.priority === 'normal' ? 0.18 :
         0
+      const statusBoost =
+        includeDone && row.status === 'done' ? 1.0 :
+        includeDone && (row.status === 'active' || row.status === 'in_progress') ? -0.2 :
+        row.status === 'active' || row.status === 'in_progress' ? 0.08 :
+        0
       const workstreamMatch =
         hintTokens.length > 0
           ? tokenizedWorkstream(row.workstream).filter(token => hintTokens.includes(token)).length
@@ -3104,7 +4139,7 @@ export class MemoryStore {
       const recencyBoost = Math.min(0.18, Number(row.retrieval_count ?? 0) * 0.01)
       return {
         ...row,
-        priority_score: querySimilarity * 4 + focusSimilarity * 3 + priorityBoost + workstreamMatch * 1.2 + recencyBoost + Number(row.confidence ?? 0.5),
+        priority_score: querySimilarity * 4 + focusSimilarity * 3 + priorityBoost + statusBoost + workstreamMatch * 1.2 + recencyBoost + Number(row.confidence ?? 0.5),
       }
     }))
 
@@ -3115,7 +4150,7 @@ export class MemoryStore {
 
   async buildInboundMemoryContext(query, options = {}) {
     const clean = cleanMemoryText(query)
-    if (!clean || looksLowSignal(clean)) return ''
+    if (!clean || looksLowSignalQuery(clean)) return ''
 
     const totalStartedAt = Date.now()
     const stageTimings = []
@@ -3130,6 +4165,7 @@ export class MemoryStore {
 
     const limit = Number(options.limit ?? 6)
     const lines = []
+    const seenHintKeys = new Set()
     const queryVector = await measureStage('embed_query', () => embedText(clean))
     const focusVector = await measureStage('build_focus', () => this.buildRecentFocusVector({
       channelId: options.channelId,
@@ -3174,10 +4210,24 @@ export class MemoryStore {
       return `<hint ${attrs.join(' ')}>${text}</hint>`
     }
 
+    const pushHint = (item, overrides = {}) => {
+      const type = overrides.type ?? item.type ?? 'episode'
+      const rawText = String(overrides.text ?? item.content ?? item.text ?? item.value ?? '').trim()
+      if (!rawText) return
+      const normalized = cleanMemoryText(rawText).toLowerCase().replace(/\s+/g, ' ').slice(0, 160)
+      const signalSubtype = String(overrides.subtype ?? item.subtype ?? item.kind ?? '').toLowerCase().trim()
+      const key = type === 'signal'
+        ? `signal:${signalSubtype || normalized}`
+        : `${type}:${normalized}`
+      if (seenHintKeys.has(key)) return
+      seenHintKeys.add(key)
+      lines.push(formatHint(item, overrides))
+    }
+
     const coreMemory = await measureStage('core_memory', () => this.getCoreMemoryItems(clean, intent, queryVector))
     if (coreMemory.length > 0) {
       for (const item of coreMemory) {
-        lines.push(formatHint(item))
+        pushHint(item)
       }
     }
 
@@ -3192,7 +4242,7 @@ export class MemoryStore {
       if (priorityTasks.length > 0) {
         for (const task of priorityTasks) {
           const detail = task.details ? ` — ${task.details}` : ''
-          lines.push(formatHint(task, { type: 'task', text: `${task.title}${detail}` }))
+          pushHint(task, { type: 'task', text: `${task.title}${detail}` })
         }
       }
     } else if (intent.primary === 'decision' || intent.primary === 'policy' || intent.primary === 'security') {
@@ -3206,7 +4256,7 @@ export class MemoryStore {
       `).all()
       if (decisions.length > 0) {
         for (const item of decisions) {
-          lines.push(formatHint(item, { type: 'fact' }))
+          pushHint(item, { type: 'fact' })
         }
       }
     }
@@ -3228,7 +4278,7 @@ export class MemoryStore {
     if (relevant.length > 0) {
       this.recordRetrieval(relevant)
       for (const item of relevant) {
-        lines.push(formatHint(item))
+        pushHint(item)
       }
 
       const hasSignal = intent.primary === 'profile' && relevant.some(item => item.type === 'signal')
@@ -3252,7 +4302,7 @@ export class MemoryStore {
           .filter(item => !seenSignals.has(`${item.kind}:${item.value}`))
           .slice(0, 1)
         for (const signal of extraSignals) {
-          lines.push(formatHint(signal, { type: 'signal', confidence: signal.effectiveScore, text: signal.value }))
+          pushHint(signal, { type: 'signal', confidence: signal.effectiveScore, text: signal.value })
         }
       }
     } else {
@@ -3275,7 +4325,7 @@ export class MemoryStore {
       for (const fact of facts) {
         const confidence = decayConfidence(fact.confidence, fact.last_seen)
         if (confidence < 0.25) continue
-        lines.push(formatHint(fact, { type: 'fact', confidence }))
+        pushHint(fact, { type: 'fact', confidence })
       }
 
       const tasks = this.db.prepare(`
@@ -3290,7 +4340,7 @@ export class MemoryStore {
       for (const task of tasks) {
         const confidence = decayConfidence(task.confidence, task.last_seen)
         if (confidence < 0.25) continue
-        lines.push(formatHint(task, { type: 'task', text: task.title, confidence }))
+        pushHint(task, { type: 'task', text: task.title, confidence })
       }
 
       const signals = this.db.prepare(`
@@ -3306,7 +4356,7 @@ export class MemoryStore {
         }))
         .filter(item => item.effectiveScore >= 0.45)
       for (const signal of activeSignals) {
-        lines.push(formatHint(signal, { type: 'signal', confidence: signal.effectiveScore, text: signal.value }))
+        pushHint(signal, { type: 'signal', confidence: signal.effectiveScore, text: signal.value })
       }
     }
 

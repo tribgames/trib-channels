@@ -299,11 +299,12 @@ export async function consolidateCandidateDay(dayKey, ws, options = {}) {
       const srcEp = candidates[0]?.episode_id ?? null
       const ts = `${dayKey}T23:59:59.000Z`
       store.upsertProfiles(parsed.profiles ?? [], ts, srcEp)
+      store.upsertEntities(parsed.entities ?? [], ts, srcEp)
       await store.upsertFacts(parsed.facts ?? [], ts, srcEp)
       store.upsertTasks(parsed.tasks ?? [], ts, srcEp)
       store.upsertSignals(parsed.signals ?? [], srcEp, ts)
-      store.upsertEntities(parsed.entities ?? [], ts, srcEp)
       store.upsertRelations(parsed.relations ?? [], ts, srcEp)
+      store.rebuildEntityLinks()
       store.markCandidateIdsConsolidated(candidates.map(item => item.id))
       processed += candidates.length
       mergedFacts += (parsed.facts ?? []).length
@@ -331,7 +332,7 @@ async function refreshEmbeddings(ws) {
       const itemsText = items.map((item, i) => [`#${i + 1}`, `key=${item.key}`, `type=${item.entityType}`, item.subtype ? `subtype=${item.subtype}` : '', `content=${item.content}`].filter(Boolean).join('\n')).join('\n\n')
       try {
         const raw = execClaudePrompt(template.replace('{{ITEMS}}', itemsText), { cwd: ws, timeout: 180000 })
-        const parsed = normalizeJsonPayloadToEnglish(extractJsonObject(raw), ws, { label: 'contextualization', timeout: 120000 })
+        const parsed = extractJsonObject(raw)
         for (const row of parsed?.items ?? []) {
           if (row?.key && row?.context) contextMap.set(row.key, row.context)
         }
@@ -617,11 +618,12 @@ export async function runCycle1(ws, config) {
     const ts = new Date().toISOString()
     const srcEp = candidates[0]?.id ?? null
     if (parsed.profiles) store.upsertProfiles(parsed.profiles, ts, srcEp)
+    if (parsed.entities) store.upsertEntities(parsed.entities, ts, srcEp)
     if (parsed.facts) await store.upsertFacts(parsed.facts, ts, srcEp)
     if (parsed.tasks) store.upsertTasks(parsed.tasks, ts, srcEp)
     if (parsed.signals) store.upsertSignals(parsed.signals, srcEp, ts)
-    if (parsed.entities) store.upsertEntities(parsed.entities, ts, srcEp)
     if (parsed.relations) store.upsertRelations(parsed.relations, ts, srcEp)
+    store.rebuildEntityLinks()
 
     totalExtracted += candidates.length
     totalFacts += (parsed.facts || []).length

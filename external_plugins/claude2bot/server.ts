@@ -272,11 +272,11 @@ function stopServerTyping(): void {
 // ── Stop hook file watch (turn-end signal) ─────────────────────────
 const TURN_END_FILE = getTurnEndPath(INSTANCE_ID)
 removeFileIfExists(TURN_END_FILE) // Clean up any stale turn-end marker on startup
-fs.watchFile(TURN_END_FILE, { interval: 500 }, (curr) => {
+fs.watchFile(TURN_END_FILE, { interval: 500 }, async (curr) => {
   if (curr.size > 0) {
-    // Turn ended — stop typing + forward final text
+    // Turn ended — stop typing + forward final text, then clean up marker
     stopServerTyping()
-    void forwarder.forwardFinalText()
+    await forwarder.forwardFinalText()
     removeFileIfExists(TURN_END_FILE)
   }
 })
@@ -1462,12 +1462,18 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
             const type = String(row.type ?? '')
             const subtype = String(row.subtype ?? '')
             const confidence = row.confidence ?? row.score ?? row.quality_score
+            const sourceParts = [
+              row.source_ref ? String(row.source_ref) : null,
+              row.source_ts ? `ts:${String(row.source_ts)}` : null,
+              row.source_kind ? `kind:${String(row.source_kind)}` : null,
+              row.source_backend ? `backend:${String(row.source_backend)}` : null,
+            ].filter(Boolean)
             const meta = [
               type,
               subtype,
               confidence != null ? `conf:${Number(confidence).toFixed(2)}` : null,
             ].filter(Boolean).join(', ')
-            const source = includeSource && row.source_ref ? ` (${String(row.source_ref)})` : ''
+            const source = includeSource && sourceParts.length > 0 ? ` [source ${sourceParts.join(' | ')}]` : ''
             return `[${ts}] ${content} (${meta})${source}`
           }).join('\n')
         }
@@ -2020,10 +2026,22 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           .map((r: Record<string, unknown>) => {
             const ts = r.updated_at ?? r.source_ts
             const date = ts ? new Date(typeof ts === 'number' && ts < 1e12 ? (ts as number) * 1000 : ts as number).toLocaleString() : 'unknown'
-                const meta = [r.type as string, r.retrieval_count ? `retrieved:${r.retrieval_count}` : null].filter(Boolean).join(', ')
+            const meta = [
+              r.type as string,
+              r.subtype ? `subtype:${String(r.subtype)}` : null,
+              r.retrieval_count ? `retrieved:${r.retrieval_count}` : null,
+            ].filter(Boolean).join(', ')
             let line = `[${date}] ${r.content || r.text || ''} (${meta})`
-            if (includeSource && r.source_ref) {
-              line += `\n  └ source: ${r.source_ref}`
+            if (includeSource) {
+              const sourceParts = [
+                r.source_ref ? String(r.source_ref) : null,
+                r.source_ts ? `ts:${String(r.source_ts)}` : null,
+                r.source_kind ? `kind:${String(r.source_kind)}` : null,
+                r.source_backend ? `backend:${String(r.source_backend)}` : null,
+              ].filter(Boolean)
+              if (sourceParts.length > 0) {
+                line += `\n  └ source: ${sourceParts.join(' | ')}`
+              }
             }
             return line
           })
@@ -2239,37 +2257,58 @@ async function handleInbound(
   const messageBody = route.sourceMode === 'monitor' && route.sourceLabel
     ? `[monitor:${route.sourceLabel}] ${text}`
     : text
-  const memoryContext = await memoryStore.buildInboundMemoryContext(messageBody, {
-    channelId: route.targetChatId,
-    userId: msg.userId,
-  })
   const now = new Date().toLocaleString()
-  const content = (memoryContext ? `<system-reminder>\n${memoryContext}\n</system-reminder>\n\n` : '') + `[${now}]\n${messageBody}`
 
+  const notificationMeta = {
+    chat_id: route.targetChatId,
+    message_id: msg.messageId,
+    user: msg.user,
+    user_id: msg.userId,
+    ts: msg.ts,
+    ...(route.sourceMode === 'monitor'
+      ? {
+          source_chat_id: route.sourceChatId,
+          source_mode: route.sourceMode,
+          ...(route.sourceLabel ? { source_label: route.sourceLabel } : {}),
+        }
+      : {}),
+    ...attMeta,
+    ...(msg.imagePath ? { image_path: msg.imagePath } : {}),
+  }
+
+  // Send message to Claude immediately — do not block on memory context
   void mcp.notification({
     method: 'notifications/claude/channel',
     params: {
-      content,
-      meta: {
-        chat_id: route.targetChatId,
-        message_id: msg.messageId,
-        user: msg.user,
-        user_id: msg.userId,
-        ts: msg.ts,
-        ...(route.sourceMode === 'monitor'
-          ? {
-              source_chat_id: route.sourceChatId,
-              source_mode: route.sourceMode,
-              ...(route.sourceLabel ? { source_label: route.sourceLabel } : {}),
-            }
-          : {}),
-        ...attMeta,
-        ...(msg.imagePath ? { image_path: msg.imagePath } : {}),
-      },
+      content: `[${now}]\n${messageBody}`,
+      meta: notificationMeta,
     },
   }).catch(e => {
     process.stderr.write(`claude2bot: notification failed: ${e}\n`)
   })
+
+  // Build memory context in the background and inject as a follow-up notification
+  void (async () => {
+    try {
+      const memoryContext = await memoryStore.buildInboundMemoryContext(messageBody, {
+        channelId: route.targetChatId,
+        userId: msg.userId,
+      })
+      if (memoryContext) {
+        void mcp.notification({
+          method: 'notifications/claude/channel',
+          params: {
+            content: `<memory-context>\n${memoryContext}\n</memory-context>`,
+            meta: { chat_id: route.targetChatId, user: 'system:memory-context' },
+          },
+        }).catch(e => {
+          process.stderr.write(`claude2bot: memory context notification failed: ${e}\n`)
+        })
+      }
+    } catch (e) {
+      process.stderr.write(`claude2bot: buildInboundMemoryContext failed: ${e}\n`)
+    }
+  })()
 
   memoryStore.appendEpisode({
     ts: msg.ts,

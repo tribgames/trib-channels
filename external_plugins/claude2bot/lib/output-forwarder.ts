@@ -381,17 +381,18 @@ export class OutputForwarder {
     }
   }
 
-  /** Forward new assistant text to Discord */
-  async forwardNewText(): Promise<void> {
-    if (!this.channelId || this.sending) return
+  /** Forward new assistant text to Discord. Returns true if text was sent. */
+  async forwardNewText(): Promise<boolean> {
+    if (!this.channelId || this.sending) return false
     this.sending = true
     try {
       const newText = this.extractNewText()
       if (!newText) {
         this.persistState()
-        return
+        return false
       }
       await this.sendOnce(newText)
+      return true
     } finally { this.sending = false }
   }
 
@@ -428,8 +429,14 @@ export class OutputForwarder {
   }
 
   /** Forward final text on session idle */
-  async forwardFinalText(): Promise<void> {
-    if (!this.channelId || this.sending) return
+  async forwardFinalText(retries = 0): Promise<void> {
+    if (!this.channelId) return
+    if (this.sending) {
+      if (retries < 3) {
+        setTimeout(() => void this.forwardFinalText(retries + 1), 300)
+      }
+      return
+    }
     this.sending = true
     try {
       // Remove reaction
@@ -613,10 +620,13 @@ export class OutputForwarder {
     if (this.watchDebounce) clearTimeout(this.watchDebounce)
     this.watchDebounce = setTimeout(() => {
       this.watchDebounce = null
-      void this.forwardNewText()
-      if (this.hasSeenAssistant) {
-        this.resetIdleTimer()
-      }
+      void this.forwardNewText().then(hadText => {
+        // Only reset idle timer when visible text was actually forwarded.
+        // HIDDEN tools (SendMessage, TaskUpdate etc.) should not delay idle detection.
+        if (hadText) {
+          this.resetIdleTimer()
+        }
+      })
     }, 200)
   }
 

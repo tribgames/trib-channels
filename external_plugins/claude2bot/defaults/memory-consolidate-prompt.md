@@ -43,8 +43,7 @@ Rules:
 - Relation types: `uses`, `depends_on`, `part_of`, `created_by`, `integrates_with`, `replaced_by`, `blocks`.
 - Only extract entities/relations that are stable and likely to matter in future conversations.
 - Do not extract ephemeral entities or trivial relationships.
-- Write all JSON string values in English. Preserve proper nouns, product names, and identifiers as-is.
-- Do not leave Korean or Hangul in natural-language strings unless it is part of an exact proper noun or identifier that must remain unchanged.
+- Preserve the original language of each JSON string value whenever possible. Do not translate just to normalize. Preserve proper nouns, product names, identifiers, and mixed-language technical terms as-is.
 - If an "Existing memories" section is provided at the end, use it to avoid duplicates and detect changes.
 - Existing memories may be tagged [similar] or [conflict]:
   - [similar]: High semantic overlap with new candidates. Skip if the meaning is identical. If slightly different, merge into one updated fact.

@@ -1,0 +1,38 @@
+[
+  {
+    "id": "ko-task-current",
+    "query": "지금 진행 중인 작업 뭐야",
+    "expectedIntent": "task",
+    "expectedAny": ["Control MCP message visibility", "Fix MCP singleton shutdown", "Harden MCP process binding"]
+  },
+  {
+    "id": "en-task-current",
+    "query": "What are the current active tasks?",
+    "expectedIntent": "task",
+    "expectedAny": ["Control MCP message visibility", "Fix MCP singleton shutdown", "Harden MCP process binding"]
+  },
+  {
+    "id": "ko-policy-commit",
+    "query": "커밋 먼저 하면 안 되지?",
+    "expectedIntent": "policy",
+    "expectedAny": ["not to run commits/pushes in advance", "not to push commits early"]
+  },
+  {
+    "id": "en-policy-commit",
+    "query": "Is commit/push forbidden unless explicitly requested?",
+    "expectedIntent": "policy",
+    "expectedAny": ["not to run commits/pushes in advance", "not to push commits early"]
+  },
+  {
+    "id": "ko-history-day",
+    "query": "2026-03-30에 무슨 얘기 했지",
+    "expectedIntent": "history",
+    "expectedAny": ["임베딩 생성", "rag 진행에서 llm", "지금 로직의 부하는어느정도야"]
+  },
+  {
+    "id": "ko-decision-rag",
+    "query": "RAG 구조 약점 뭐였지",
+    "expectedIntent": "decision",
+    "expectedAny": ["RAG system had been fully refactored", "RAG + LLM workflow", "RAG message processing"]
+  }
+]

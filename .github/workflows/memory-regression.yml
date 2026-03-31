@@ -1,0 +1,37 @@
+name: memory-regression
+
+on:
+  pull_request:
+    paths:
+      - "external_plugins/claude2bot/**"
+      - ".github/workflows/memory-regression.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "external_plugins/claude2bot/**"
+      - ".github/workflows/memory-regression.yml"
+
+jobs:
+  fixture-regression:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: external_plugins/claude2bot
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: external_plugins/claude2bot/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run memory fixture regression
+        run: npm run test:memory:fixture

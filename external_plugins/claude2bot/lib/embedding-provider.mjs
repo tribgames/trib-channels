@@ -29,14 +29,21 @@ async function loadExtractor() {
 }
 
 async function ollamaEmbed(text) {
-  const resp = await fetch(`${OLLAMA_URL}/api/embeddings`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: ollamaModel, prompt: text }),
-  })
-  if (!resp.ok) throw new Error(`ollama ${resp.status}: ${resp.statusText}`)
-  const data = await resp.json()
-  return data.embedding ?? []
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 5000)
+  try {
+    const resp = await fetch(`${OLLAMA_URL}/api/embeddings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: ollamaModel, prompt: text }),
+      signal: controller.signal,
+    })
+    if (!resp.ok) throw new Error(`ollama ${resp.status}: ${resp.statusText}`)
+    const data = await resp.json()
+    return data.embedding ?? []
+  } finally {
+    clearTimeout(timeout)
+  }
 }
 
 export function getEmbeddingModelId() {

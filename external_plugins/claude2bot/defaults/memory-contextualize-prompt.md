@@ -8,8 +8,7 @@ Rules:
 - Preserve important names, technologies, and nouns.
 - Add surrounding context: why this memory matters, what it relates to, and how it should be retrieved later.
 - Do not restate metadata mechanically.
-- Write every context note in English. Preserve proper nouns, product names, and identifiers as-is.
-- Do not leave Korean or Hangul in natural-language notes unless it is part of an exact proper noun or identifier that must remain unchanged.
+- Keep the note in the same dominant language as the memory item whenever possible. Do not translate just to normalize. Preserve proper nouns, product names, identifiers, and mixed-language technical terms as-is.
 
 Return this exact shape:
 {
