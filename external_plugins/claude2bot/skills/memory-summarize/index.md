@@ -21,9 +21,9 @@ Memory Summarize automatically summarizes each day's conversations and builds a 
 All files are stored in `~/.claude/plugins/data/claude2bot-claude2bot/history/`:
 
 - `daily/YYYY-MM-DD.md` — Daily work summary (~5 lines)
-- `weekly/YYYY-WNN.md` — Weekly rollup
-- `monthly/YYYY-MM.md` — Monthly rollup
-- `yearly/YYYY.md` — Yearly rollup
+- `weekly/YYYY-WNN.md` — Weekly summary archive
+- `monthly/YYYY-MM.md` — Monthly summary archive
+- `yearly/YYYY.md` — Yearly summary archive
 - `lifetime.md` — Cumulative rolling history
 - `identity.md` — User profile (personality, preferences, work style)
 - `ongoing.md` — Active tasks and projects

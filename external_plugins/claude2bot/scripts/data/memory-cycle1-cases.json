@@ -1,0 +1,269 @@
+[
+  {
+    "id": "keep-policy-commit",
+    "episodes": [
+      {
+        "ts": "2026-03-31T09:00:00.000Z",
+        "role": "user",
+        "kind": "message",
+        "content": "커밋이나 푸시는 내가 명시적으로 요청하기 전에는 하지 마. 구현부터 계속 진행해."
+      }
+    ],
+    "llmOutput": {
+      "profiles": [],
+      "facts": [
+        {
+          "type": "constraint",
+          "text": "커밋이나 푸시는 사용자가 명시적으로 요청하기 전에는 실행하지 않는다.",
+          "confidence": 0.96
+        },
+        {
+          "type": "preference",
+          "text": "구현을 먼저 계속 진행하고 커밋은 마지막에 처리하는 방식을 선호한다.",
+          "confidence": 0.91
+        }
+      ],
+      "tasks": [],
+      "signals": []
+    },
+    "expect": {
+      "factsInclude": [
+        "커밋이나 푸시는 사용자가 명시적으로 요청하기 전에는 실행하지 않는다",
+        "구현을 먼저 계속 진행하고 커밋은 마지막에 처리하는 방식을 선호한다"
+      ]
+    }
+  },
+  {
+    "id": "drop-profile-hint-maintenance-fact",
+    "episodes": [
+      {
+        "ts": "2026-03-31T09:05:00.000Z",
+        "role": "user",
+        "kind": "message",
+        "content": "Profile hints는 매 턴마다 보내지 말고 session start에서 한 번만 넣는 쪽이 맞아."
+      }
+    ],
+    "llmOutput": {
+      "profiles": [],
+      "facts": [
+        {
+          "type": "constraint",
+          "text": "Profile hints should not be sent on every turn; profile-like context is injected at session start, while per-turn retrieval should focus on episodic/relevant hints.",
+          "confidence": 0.94
+        }
+      ],
+      "tasks": [
+        {
+          "title": "Move profile hint injection to session start only",
+          "details": "Keep profile-like context out of per-turn hint injection.",
+          "stage": "implementing",
+          "evidence_level": "claimed",
+          "status": "active",
+          "priority": "normal",
+          "confidence": 0.82
+        }
+      ],
+      "signals": []
+    },
+    "expect": {
+      "factsExclude": [
+        "Profile hints should not be sent on every turn"
+      ],
+      "tasksInclude": [
+        "Move profile hint injection to session start only"
+      ]
+    }
+  },
+  {
+    "id": "drop-analysis-request-fact-keep-task",
+    "episodes": [
+      {
+        "ts": "2026-03-31T09:10:00.000Z",
+        "role": "user",
+        "kind": "message",
+        "content": "claude2bot RAG 시스템 전체적으로 분석하고 약점이나 보완점 찾아서 계속 진행해."
+      }
+    ],
+    "llmOutput": {
+      "profiles": [],
+      "facts": [
+        {
+          "type": "decision",
+          "text": "The user asked for direct, hands-on deep analysis of Claude2Bot RAG improvement areas instead of a deferred or purely advisory review.",
+          "confidence": 0.93
+        }
+      ],
+      "tasks": [
+        {
+          "title": "Analyze and improve Claude2Bot RAG pipeline quality and robustness",
+          "details": "Review retrieval quality, extraction quality, ranking behavior, and follow-up fixes.",
+          "stage": "investigating",
+          "evidence_level": "claimed",
+          "status": "active",
+          "priority": "high",
+          "confidence": 0.88
+        }
+      ],
+      "signals": []
+    },
+    "expect": {
+      "factsExclude": [
+        "The user asked for direct, hands-on deep analysis"
+      ],
+      "tasksInclude": [
+        "Analyze and improve Claude2Bot RAG pipeline quality and robustness"
+      ]
+    }
+  },
+  {
+    "id": "keep-json-rule",
+    "episodes": [
+      {
+        "ts": "2026-03-31T09:15:00.000Z",
+        "role": "user",
+        "kind": "message",
+        "content": "JSON으로만 출력하고 지정된 schema를 지켜."
+      }
+    ],
+    "llmOutput": {
+      "profiles": [],
+      "facts": [
+        {
+          "type": "constraint",
+          "text": "출력은 JSON만 사용하고 지정된 schema를 지켜야 한다.",
+          "confidence": 0.95
+        }
+      ],
+      "tasks": [],
+      "signals": []
+    },
+    "expect": {
+      "factsInclude": [
+        "출력은 JSON만 사용하고 지정된 schema를 지켜야 한다"
+      ]
+    }
+  },
+  {
+    "id": "drop-startup-cleanup-fact-keep-task",
+    "episodes": [
+      {
+        "ts": "2026-03-31T09:20:00.000Z",
+        "role": "user",
+        "kind": "message",
+        "content": "새 MCP 세션 시작 시에는 stale process 정리를 더 확실하게 해야 해."
+      }
+    ],
+    "llmOutput": {
+      "profiles": [],
+      "facts": [
+        {
+          "type": "constraint",
+          "text": "On MCP server startup for a main session, stale same-bot processes should be forcibly terminated to prevent connection ownership conflicts.",
+          "confidence": 0.92
+        }
+      ],
+      "tasks": [
+        {
+          "title": "Harden MCP server ownership by killing obsolete sessions on startup",
+          "details": "Replace single-PID cleanup with process-list based cleanup for stale same-bot sessions.",
+          "stage": "implementing",
+          "evidence_level": "claimed",
+          "status": "active",
+          "priority": "high",
+          "confidence": 0.84
+        }
+      ],
+      "signals": []
+    },
+    "expect": {
+      "factsExclude": [
+        "stale same-bot processes should be forcibly terminated"
+      ],
+      "tasksInclude": [
+        "Harden MCP server ownership by killing obsolete sessions on startup"
+      ]
+    }
+  },
+  {
+    "id": "drop-verify-chain-fact-keep-task",
+    "episodes": [
+      {
+        "ts": "2026-03-31T09:25:00.000Z",
+        "role": "user",
+        "kind": "message",
+        "content": "애매한 힌트는 recall_memory verify 체인으로 확인하는 쪽이 맞아."
+      }
+    ],
+    "llmOutput": {
+      "profiles": [],
+      "facts": [
+        {
+          "type": "constraint",
+          "text": "For ambiguous hints, the recall flow should default to a fast verify check first (fact existence, confidence, last_seen, contradiction state) before presenting final answers.",
+          "confidence": 0.93
+        }
+      ],
+      "tasks": [
+        {
+          "title": "Finalize chained fact verification flow for ambiguous requests",
+          "details": "Complete recall-based fact-checking pipeline for uncertain hints before final answers.",
+          "stage": "implementing",
+          "evidence_level": "claimed",
+          "status": "active",
+          "priority": "high",
+          "confidence": 0.87
+        }
+      ],
+      "signals": []
+    },
+    "expect": {
+      "factsExclude": [
+        "For ambiguous hints, the recall flow should default to a fast verify check first"
+      ],
+      "tasksInclude": [
+        "Finalize chained fact verification flow for ambiguous requests"
+      ]
+    }
+  },
+  {
+    "id": "drop-cycle-state-fact-keep-task",
+    "episodes": [
+      {
+        "ts": "2026-03-31T09:30:00.000Z",
+        "role": "user",
+        "kind": "message",
+        "content": "cycle state는 외부 파일에 저장해서 비어 있으면 1->2->3 순서로 catch-up 되게 해야 해."
+      }
+    ],
+    "llmOutput": {
+      "profiles": [],
+      "facts": [
+        {
+          "type": "constraint",
+          "text": "Cycle status should be persisted with timestamps in a JSON-like state file so that missing timestamps trigger immediate execution and cycles can chain 1 -> 2 -> 3.",
+          "confidence": 0.91
+        }
+      ],
+      "tasks": [
+        {
+          "title": "Implement cycle state file and sequential catch-up execution",
+          "details": "Persist cycle run state and trigger catch-up execution when prior timestamps are missing.",
+          "stage": "planned",
+          "evidence_level": "claimed",
+          "status": "active",
+          "priority": "high",
+          "confidence": 0.84
+        }
+      ],
+      "signals": []
+    },
+    "expect": {
+      "factsExclude": [
+        "Cycle status should be persisted with timestamps in a JSON-like state file"
+      ],
+      "tasksInclude": [
+        "Implement cycle state file and sequential catch-up execution"
+      ]
+    }
+  }
+]

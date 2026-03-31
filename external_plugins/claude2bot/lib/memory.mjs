@@ -11,7 +11,30 @@ import {
 import { dirname, join, resolve } from 'path'
 import { homedir } from 'os'
 import { createHash } from 'crypto'
-import { embedText, getEmbeddingModelId, getEmbeddingDims, warmupEmbeddingProvider, configureEmbedding } from './embedding-provider.mjs'
+import { embedText, getEmbeddingModelId, getEmbeddingDims, warmupEmbeddingProvider, configureEmbedding, consumeProviderSwitchEvent } from './embedding-provider.mjs'
+import {
+  cleanMemoryText,
+  composeTaskDetails,
+  shouldKeepFact,
+  shouldKeepSignal,
+} from './memory-extraction.mjs'
+import {
+  buildHintKey,
+  computeHintRelevance,
+  formatHintTag,
+  shouldInjectHint,
+} from './memory-context-utils.mjs'
+import {
+  isProfileIntent,
+  isPolicyIntent,
+  getIntentTypeCaps,
+  getIntentSubtypeBonus,
+  shouldKeepRerankItem,
+  computeSourceTrustAdjustment,
+  compactRetrievalContent,
+  claimSurfaceKey,
+  collapseClaimSurfaceDuplicates,
+} from './memory-ranking-utils.mjs'
 let sqliteVec = null
 try { sqliteVec = await import('sqlite-vec') } catch { /* sqlite-vec not available */ }
 
@@ -23,24 +46,41 @@ function vecToHex(vector) {
 
 function parseTemporalHint(query) {
   const now = new Date()
-  const kst = new Date(now.getTime() + 9 * 60 * 60 * 1000)
-  const today = kst.toISOString().slice(0, 10)
-  const daysAgo = (n) => new Date(kst.getTime() - n * 86400000).toISOString().slice(0, 10)
+  const pad = (value) => String(value).padStart(2, '0')
+  const localDate = (value) => `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())}`
+  const today = localDate(now)
+  const daysAgo = (n) => {
+    const value = new Date(now)
+    value.setDate(value.getDate() - n)
+    return localDate(value)
+  }
+  const weekdayOffset = (now.getDay() + 6) % 7
   if (/yesterday/i.test(query)) return { start: daysAgo(1), end: daysAgo(1) }
   if (/two days ago|day before yesterday/i.test(query)) return { start: daysAgo(2), end: daysAgo(2) }
   if (/last\s*week/i.test(query)) return { start: daysAgo(7), end: daysAgo(1) }
-  if (/this\s*week/i.test(query)) return { start: daysAgo(kst.getDay() || 7), end: today }
+  if (/this[-_\s]*week/i.test(query)) return { start: daysAgo(weekdayOffset), end: today }
   if (/today/i.test(query)) return { start: today, end: today }
   if (/recently/i.test(query)) return { start: daysAgo(3), end: today, exact: false }
   if (/어제/.test(query)) return { start: daysAgo(1), end: daysAgo(1), exact: true }
   if (/그저께|이틀 전/.test(query)) return { start: daysAgo(2), end: daysAgo(2), exact: true }
   if (/오늘/.test(query)) return { start: today, end: today, exact: true }
-  if (/이번 ?주/.test(query)) return { start: daysAgo(kst.getDay() || 7), end: today, exact: false }
+  if (/이번 ?주/.test(query)) return { start: daysAgo(weekdayOffset), end: today, exact: false }
   if (/지난 ?주/.test(query)) return { start: daysAgo(7), end: daysAgo(1), exact: false }
   const isoDateMatch = query.match(/(\d{4})[-.](\d{2})[-.](\d{2})/)
   if (isoDateMatch) {
     const date = `${isoDateMatch[1]}-${isoDateMatch[2]}-${isoDateMatch[3]}`
     return { start: date, end: date, exact: true }
+  }
+  const monthMatch = query.match(/(\d{4})[-.](\d{2})(?![-.]\d{2})/)
+  if (monthMatch) {
+    const year = Number(monthMatch[1])
+    const month = Number(monthMatch[2])
+    if (month >= 1 && month <= 12) {
+      const start = `${monthMatch[1]}-${monthMatch[2]}-01`
+      const nextMonth = month === 12 ? new Date(year + 1, 0, 1) : new Date(year, month, 1)
+      nextMonth.setDate(nextMonth.getDate() - 1)
+      return { start, end: localDate(nextMonth), exact: false }
+    }
   }
   const koreanDateMatch = query.match(/(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일/)
   if (koreanDateMatch) {
@@ -55,14 +95,6 @@ function parseTemporalHint(query) {
     return { start: date, end: date, exact: true }
   }
   return null
-}
-
-function isProfileIntent(intent) {
-  return intent === 'profile'
-}
-
-function isPolicyIntent(intent) {
-  return intent === 'policy' || intent === 'security'
 }
 
 function isDoneTaskQuery(query = '') {
@@ -85,67 +117,6 @@ function isHistoryQuery(query = '') {
   const clean = cleanMemoryText(query).toLowerCase()
   return /\b(history|timeline|discuss|discussion|discussed|happened|what did we discuss|summarize the discussion)\b/.test(clean)
     || /기억|타임라인|논의|대화|얘기|뭐라고 했|요약/.test(query)
-}
-
-function getIntentTypeCaps(intent, options = {}) {
-  const hasTaskCandidate = Boolean(options.hasTaskCandidate)
-  const hasCoreResult = Boolean(options.hasCoreResult)
-  const conciseQuery = Boolean(options.conciseQuery)
-  if (isProfileIntent(intent)) return new Map([['fact', 3], ['proposition', 2], ['task', 0], ['signal', 2], ['profile', 3], ['episode', 0]])
-  if (intent === 'task') return new Map([['fact', 1], ['proposition', 1], ['task', hasTaskCandidate ? 4 : 2], ['signal', 0], ['episode', 1]])
-  if (isPolicyIntent(intent)) return new Map([['fact', 4], ['proposition', 3], ['task', 1], ['signal', 1], ['episode', 0]])
-  if (intent === 'event') return new Map([['fact', 1], ['proposition', 2], ['task', 1], ['signal', 0], ['episode', 4], ['entity', 1], ['relation', 1]])
-  if (intent === 'history') return new Map([['fact', 1], ['proposition', 2], ['task', 1], ['signal', 0], ['episode', 3], ['entity', 1], ['relation', 1]])
-  return new Map([
-    ['fact', 4],
-    ['proposition', 3],
-    ['task', 3],
-    ['signal', 0],
-    ['entity', 2],
-    ['relation', 2],
-    ['episode', hasCoreResult ? (conciseQuery ? 1 : 2) : 2],
-  ])
-}
-
-function getIntentSubtypeBonus(intent, item) {
-  if (isProfileIntent(intent)) {
-    return (
-      item.type === 'fact' && item.subtype === 'preference' ? -0.10 :
-      item.type === 'fact' && item.subtype === 'constraint' ? -0.08 :
-      item.type === 'profile' ? -0.14 :
-      item.type === 'proposition' ? -0.06 :
-      item.type === 'signal' && (item.subtype === 'tone' || item.subtype === 'language') ? -0.08 :
-      0
-    )
-  }
-  if (intent === 'task') {
-    return item.type === 'task' ? -0.10 : 0
-  }
-  if (isPolicyIntent(intent)) {
-    return (
-      item.type === 'fact' && item.subtype === 'constraint' ? -0.10 :
-      item.type === 'proposition' ? -0.08 :
-      item.type === 'fact' && item.subtype === 'decision' ? -0.06 :
-      0
-    )
-  }
-  if (intent === 'event') {
-    return item.type === 'episode' ? -0.14 : 0
-  }
-  if (intent === 'history') {
-    return item.type === 'episode' ? -0.08 : 0
-  }
-  return item.type === 'fact' && item.subtype === 'decision' ? -0.06 : 0
-}
-
-function shouldKeepRerankItem(intent, item, options = {}) {
-  const hasTaskCandidate = Boolean(options.hasTaskCandidate)
-  if (isProfileIntent(intent)) return item.type === 'fact' || item.type === 'signal' || item.type === 'profile' || item.type === 'proposition'
-  if (intent === 'task' && hasTaskCandidate) return item.type === 'task' || (item.type === 'fact' && item.subtype === 'decision')
-  if (isPolicyIntent(intent)) return item.type === 'fact' || item.type === 'signal' || item.type === 'proposition'
-  if (intent === 'event') return item.type === 'episode' || item.type === 'fact' || item.type === 'task'
-  if (intent === 'decision') return item.type === 'fact' || item.type === 'task' || item.type === 'proposition' || item.type === 'entity' || item.type === 'relation'
-  return true
 }
 
 const stores = new Map()
@@ -232,48 +203,7 @@ function firstTextContent(content) {
     .join('\n')
 }
 
-export function cleanMemoryText(text) {
-  return String(text ?? '')
-    .replace(/```[\s\S]*?```/g, '')
-    .replace(/<memory-context>[\s\S]*?<\/memory-context>/gi, '')
-    .replace(/<local-command-caveat>[\s\S]*?<\/local-command-caveat>/gi, '')
-    .replace(/<local-command-stdout>[\s\S]*?<\/local-command-stdout>/gi, '')
-    .replace(/<command-name>[\s\S]*?<\/command-name>/gi, '')
-    .replace(/<command-message>[\s\S]*?<\/command-message>/gi, '')
-    .replace(/<command-args>[\s\S]*?<\/command-args>/gi, '')
-    .replace(/<task-notification>[\s\S]*?<\/task-notification>/gi, '')
-    .replace(/<tool-use-id>[\s\S]*?<\/tool-use-id>/gi, '')
-    .replace(/<output-file>[\s\S]*?<\/output-file>/gi, '')
-    .replace(/^[ \t]*\|.*\|[ \t]*$/gm, '')
-    .replace(/`([^`]+)`/g, '$1')
-    .replace(/\*\*/g, '')
-    .replace(/^#{1,4}\s+/gm, '')
-    .replace(/^>\s?/gm, '')
-    .replace(/^[-*]\s+/gm, '')
-    .replace(/https?:\/\/\S+/g, '')
-    .replace(/<channel[^>]*>\n?([\s\S]*?)\n?<\/channel>/g, '$1')
-    .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '')
-    .replace(/<schedule-context>[\s\S]*?<\/schedule-context>/g, '')
-    .replace(/<teammate-message[\s\S]*?<\/teammate-message>/g, '')
-    .replace(/^This session is being continued from a previous conversation[\s\S]*?(?=\n\n|$)/gim, '')
-    .replace(/^\[[^\]\n]{1,140}\]\s*$/gm, '')
-    .replace(/^\s*●\s.*$/gm, '')
-    .replace(/^\s*Ran .*$/gm, '')
-    .replace(/^\s*Command: .*$/gm, '')
-    .replace(/^\s*Process exited .*$/gm, '')
-    .replace(/^\s*Full transcript available at: .*$/gm, '')
-    .replace(/^\s*Read the output file to retrieve the result: .*$/gm, '')
-    .replace(/^\s*Original token count: .*$/gm, '')
-    .replace(/^\s*Wall time: .*$/gm, '')
-    .replace(/^\s*Chunk ID: .*$/gm, '')
-    .replace(/^\s*tool_uses: .*$/gm, '')
-    .replace(/^\s*menu item .*$/gm, '')
-    .replace(/[\u{1F300}-\u{1FAD6}\u{2600}-\u{27BF}]/gu, '')
-    .replace(/[ \t]+/g, ' ')
-    .replace(/\n{2,}/g, '\n')
-    .replace(/^\s+|\s+$/gm, '')
-    .trim()
-}
+export { cleanMemoryText }
 
 function looksLowSignal(text) {
   const clean = cleanMemoryText(text)
@@ -433,11 +363,30 @@ function candidateScore(text, role) {
     : 0
   const proceduralPenalty = lineCount > 8 && colonCount >= 4 ? 0.18 : 0
   const artifactPenalty = pathCount >= 3 || tagCount >= 2 ? 0.14 : 0
+  const explicitRuleBoost =
+    /\b(do not|don't|must not|should not|forbidden|blocked|explicit approval|explicitly requested|json|schema)\b/i.test(clean)
+      || /하지 마|하면 안|금지|승인|명시|JSON|스키마/.test(clean)
+      ? 0.22
+      : 0
+  const explicitTaskBoost =
+    /\b(fix|implement|verify|review|investigate|refactor|cleanup|deduplicate|stabilize)\b/i.test(clean)
+      || /수정|구현|검증|리뷰|조사|정리|중복 제거|안정화/.test(clean)
+      ? 0.16
+      : 0
+  const metaPenalty =
+    /\b(consolidation-dependent|candidate threshold|backlog control|provider\/model choice configurable|runtime bot settings|context sections|why the pipeline)\b/i.test(clean)
+      || /후보 임계값|컨텍스트 섹션|파이프라인이 비어|설정이 비어|config commentary|cleanup state/.test(clean)
+      ? 0.28
+      : 0
+  const questionPenalty =
+    /\?$/.test(clean) && explicitRuleBoost === 0 && explicitTaskBoost === 0
+      ? 0.08
+      : 0
   return Math.max(
     0,
     Math.min(
       1,
-      Number((0.22 + lenScore * 0.45 + roleBoost + structureBoost - overlongPenalty - proceduralPenalty - artifactPenalty).toFixed(3)),
+      Number((0.22 + lenScore * 0.45 + roleBoost + structureBoost + explicitRuleBoost + explicitTaskBoost - overlongPenalty - proceduralPenalty - artifactPenalty - metaPenalty - questionPenalty).toFixed(3)),
     ),
   )
 }
@@ -507,6 +456,34 @@ function normalizeWorkstream(value) {
     .replace(/-+/g, '-')
     .replace(/^-|-$/g, '')
     .slice(0, 48)
+}
+
+function canonicalKeyTokens(text, maxTokens = 8) {
+  return tokenizeMemoryText(text)
+    .filter(token => token.length >= 2)
+    .slice(0, Math.max(1, Number(maxTokens ?? 8)))
+}
+
+function deriveClaimKey(factType, slot = '', text = '', workstream = '') {
+  const normalizedType = normalizeFactType(factType)
+  const normalizedSlot = normalizeFactSlot(slot)
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+  const normalizedWorkstream = normalizeWorkstream(workstream)
+  const normalizedText = cleanMemoryText(text).toLowerCase()
+  const canonicalValue = canonicalKeyTokens(normalizedText).join('-')
+    || createHash('sha1').update(normalizedText).digest('hex').slice(0, 16)
+  return [normalizedType, normalizedWorkstream, normalizedSlot || canonicalValue].filter(Boolean).join(':').slice(0, 160)
+}
+
+function deriveTaskKey(title = '', workstream = '') {
+  const normalizedWorkstream = normalizeWorkstream(workstream)
+  const normalizedTitle = cleanMemoryText(title).toLowerCase()
+  const canonicalTitle = canonicalKeyTokens(normalizedTitle).join('-')
+    || createHash('sha1').update(normalizedTitle).digest('hex').slice(0, 16)
+  return [normalizedWorkstream || 'task', canonicalTitle].join(':').slice(0, 160)
 }
 
 function normalizeFactType(factType) {
@@ -685,84 +662,10 @@ function applyLexicalIntentHints(clean, scores) {
   }
 }
 
-function computeSourceTrustAdjustment(item, primaryIntent = 'decision') {
-  const sourceKind = String(item?.source_kind ?? '').toLowerCase().trim()
-  const sourceBackend = String(item?.source_backend ?? '').toLowerCase().trim()
-
-  if (sourceKind === 'message') {
-    return item?.type === 'episode' ? -0.1 : -0.14
-  }
-  if (sourceKind === 'transcript') {
-    if (item?.type === 'episode' && (primaryIntent === 'event' || primaryIntent === 'history')) return 0.04
-    return item?.type === 'episode' ? 0.08 : 0.14
-  }
-  if (sourceKind === 'turn') {
-    return 0.05
-  }
-  if (sourceBackend === 'discord') {
-    return -0.03
-  }
-  if (sourceBackend === 'claude-session') {
-    return 0.04
-  }
-  return 0
-}
-
-function compactClause(label, value) {
-  const clean = cleanMemoryText(value)
-  if (!clean) return ''
-  return `${label}: ${clean}`
-}
-
 function tokenizedWorkstream(value) {
   return normalizeWorkstream(value).split('-').filter(Boolean)
 }
 
-function composeTaskDetails(task = {}) {
-  const base = cleanMemoryText(task?.details ?? '')
-  const extras = [
-    compactClause('Goal', task?.goal),
-    compactClause('Integration', task?.integration_point),
-    compactClause('Blocked by', task?.blocked_by),
-    compactClause('Next', task?.next_step),
-    Array.isArray(task?.related_to) && task.related_to.length
-      ? compactClause('Related', task.related_to.join(', '))
-      : compactClause('Related', task?.related_to),
-  ].filter(Boolean)
-  if (!base && extras.length === 0) return ''
-  if (!base) return extras.join(' | ')
-  if (extras.length === 0) return base
-  return `${base} | ${extras.join(' | ')}`
-}
-
-function shouldKeepFact(factType, text, confidence) {
-  const clean = cleanMemoryText(text)
-  if (!clean) return false
-  const compact = clean.replace(/\s+/g, '')
-  if (compact.length < 18) return false
-  const words = clean.split(/\s+/).filter(Boolean).length
-  if (words < 4) return false
-  const score = Number(confidence ?? 0.6)
-  const minScore =
-    factType === 'decision' ? 0.82 :
-    factType === 'constraint' ? 0.75 :
-    factType === 'preference' ? 0.74 :
-    0.86
-  const minWords =
-    factType === 'decision' || factType === 'fact' ? 6 : 5
-  if (words < minWords) return false
-  return score >= minScore
-}
-
-function shouldKeepSignal(kind, value, score) {
-  const clean = cleanMemoryText(value)
-  if (!clean) return false
-  const compact = clean.replace(/\s+/g, '')
-  if (compact.length < 18) return false
-  const words = clean.split(/\s+/).filter(Boolean).length
-  if (words < 5) return false
-  return Number(score ?? 0.5) >= 0.72
-}
 
 function cosineSimilarity(a, b) {
   if (!Array.isArray(a) || !Array.isArray(b) || a.length === 0 || a.length !== b.length) return 0
@@ -840,15 +743,6 @@ function contextualizeEmbeddingInput(item) {
   return content
 }
 
-function compactRetrievalContent(item) {
-  const raw = cleanMemoryText(item?.content ?? '')
-  if (!raw) return ''
-  if (item?.type === 'episode') {
-    return raw.slice(0, 160)
-  }
-  return raw.slice(0, 260)
-}
-
 export class MemoryStore {
   constructor(dataDir) {
     this.dataDir = dataDir
@@ -859,6 +753,7 @@ export class MemoryStore {
     this.vecEnabled = false
     this._loadVecExtension()
     this.init()
+    this.backfillCanonicalKeys()
     this.rebuildDerivedIndexes()
     this.syncEmbeddingMetadata()
   }
@@ -1051,6 +946,7 @@ export class MemoryStore {
         id INTEGER PRIMARY KEY,
         fact_type TEXT NOT NULL,
         slot TEXT,
+        claim_key TEXT,
         workstream TEXT,
         text TEXT NOT NULL,
         confidence REAL NOT NULL DEFAULT 0.5,
@@ -1069,6 +965,7 @@ export class MemoryStore {
       CREATE TABLE IF NOT EXISTS tasks (
         id INTEGER PRIMARY KEY,
         title TEXT NOT NULL UNIQUE,
+        task_key TEXT,
         details TEXT,
         workstream TEXT,
         stage TEXT NOT NULL DEFAULT 'planned',
@@ -1221,6 +1118,9 @@ export class MemoryStore {
       this.db.exec(`ALTER TABLE facts ADD COLUMN slot TEXT;`)
     } catch { /* already present */ }
     try {
+      this.db.exec(`ALTER TABLE facts ADD COLUMN claim_key TEXT;`)
+    } catch { /* already present */ }
+    try {
       this.db.exec(`ALTER TABLE facts ADD COLUMN workstream TEXT;`)
     } catch { /* already present */ }
     try {
@@ -1234,6 +1134,9 @@ export class MemoryStore {
     } catch { /* already present */ }
     try {
       this.db.exec(`ALTER TABLE tasks ADD COLUMN retrieval_count INTEGER NOT NULL DEFAULT 0;`)
+    } catch { /* already present */ }
+    try {
+      this.db.exec(`ALTER TABLE tasks ADD COLUMN task_key TEXT;`)
     } catch { /* already present */ }
     try {
       this.db.exec(`ALTER TABLE tasks ADD COLUMN last_retrieved_at TEXT;`)
@@ -1266,6 +1169,8 @@ export class MemoryStore {
       this.db.exec(`ALTER TABLE signals ADD COLUMN status TEXT NOT NULL DEFAULT 'active';`)
     } catch { /* already present */ }
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_facts_slot ON facts(slot);`)
+    this.db.exec(`CREATE INDEX IF NOT EXISTS idx_facts_claim_key ON facts(claim_key);`)
+    this.db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_task_key ON tasks(task_key);`)
 
     this.insertEpisodeStmt = this.db.prepare(`
       INSERT OR IGNORE INTO episodes (
@@ -1330,16 +1235,36 @@ export class MemoryStore {
       WHERE key = ?
     `)
     this.upsertFactStmt = this.db.prepare(`
-      INSERT INTO facts (fact_type, slot, workstream, text, confidence, first_seen, last_seen, source_episode_id, status, mention_count)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', 1)
+      INSERT INTO facts (fact_type, slot, claim_key, workstream, text, confidence, first_seen, last_seen, source_episode_id, status, mention_count)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 1)
       ON CONFLICT(fact_type, text) DO UPDATE SET
         slot = COALESCE(excluded.slot, facts.slot),
+        claim_key = COALESCE(excluded.claim_key, facts.claim_key),
         workstream = COALESCE(excluded.workstream, facts.workstream),
         confidence = MAX(facts.confidence, excluded.confidence),
         last_seen = excluded.last_seen,
         source_episode_id = COALESCE(excluded.source_episode_id, facts.source_episode_id),
         status = 'active',
         mention_count = facts.mention_count + 1
+    `)
+    this.getFactRowByClaimKeyStmt = this.db.prepare(`
+      SELECT id, fact_type, slot, claim_key, workstream, text, confidence
+      FROM facts
+      WHERE fact_type = ? AND claim_key = ? AND status = 'active'
+      ORDER BY confidence DESC, mention_count DESC, last_seen DESC
+      LIMIT 1
+    `)
+    this.updateFactByIdStmt = this.db.prepare(`
+      UPDATE facts
+      SET slot = ?, claim_key = ?, workstream = ?, text = ?, confidence = ?, last_seen = ?,
+          source_episode_id = COALESCE(?, source_episode_id), status = 'active',
+          mention_count = mention_count + 1
+      WHERE id = ?
+    `)
+    this.bumpFactSeenStmt = this.db.prepare(`
+      UPDATE facts
+      SET last_seen = ?, mention_count = mention_count + 1
+      WHERE id = ?
     `)
     this.staleFactSlotStmt = this.db.prepare(`
       UPDATE facts
@@ -1354,9 +1279,10 @@ export class MemoryStore {
     this.deleteFactFtsStmt = this.db.prepare(`DELETE FROM facts_fts WHERE rowid = ?`)
     this.insertFactFtsStmt = this.db.prepare(`INSERT INTO facts_fts(rowid, text) VALUES (?, ?)`)
     this.upsertTaskStmt = this.db.prepare(`
-      INSERT INTO tasks (title, details, workstream, stage, evidence_level, status, priority, confidence, first_seen, last_seen, source_episode_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO tasks (title, task_key, details, workstream, stage, evidence_level, status, priority, confidence, first_seen, last_seen, source_episode_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(title) DO UPDATE SET
+        task_key = COALESCE(excluded.task_key, tasks.task_key),
         details = excluded.details,
         workstream = COALESCE(excluded.workstream, tasks.workstream),
         stage = excluded.stage,
@@ -1366,6 +1292,20 @@ export class MemoryStore {
         confidence = MAX(tasks.confidence, excluded.confidence),
         last_seen = excluded.last_seen,
         source_episode_id = COALESCE(excluded.source_episode_id, tasks.source_episode_id)
+    `)
+    this.getTaskRowByKeyStmt = this.db.prepare(`
+      SELECT id, title, status, stage, evidence_level
+      FROM tasks
+      WHERE task_key = ?
+      ORDER BY confidence DESC, last_seen DESC
+      LIMIT 1
+    `)
+    this.updateTaskByIdStmt = this.db.prepare(`
+      UPDATE tasks
+      SET title = ?, task_key = ?, details = ?, workstream = ?, stage = ?, evidence_level = ?,
+          status = ?, priority = ?, confidence = MAX(confidence, ?), last_seen = ?,
+          source_episode_id = COALESCE(?, source_episode_id)
+      WHERE id = ?
     `)
     this.getTaskRowStmt = this.db.prepare(`
       SELECT id, status, stage, evidence_level FROM tasks WHERE title = ?
@@ -1605,14 +1545,47 @@ export class MemoryStore {
     if (extra.vectorModel) this.setMetaValue('embedding.vector_model', extra.vectorModel)
     if (extra.vectorDims) this.setMetaValue('embedding.vector_dims', String(extra.vectorDims))
     if (extra.reason) this.setMetaValue('embedding.last_reason', extra.reason)
+    if (extra.reindexRequired != null) this.setMetaValue('embedding.reindex_required', extra.reindexRequired ? '1' : '0')
+    if (extra.reindexReason) this.setMetaValue('embedding.reindex_reason', extra.reindexReason)
+    if (extra.reindexCompleted) {
+      this.setMetaValue('embedding.reindex_required', '0')
+      this.setMetaValue('embedding.reindex_reason', '')
+    }
   }
 
   noteVectorWrite(model, dims) {
+    const switchEvent = consumeProviderSwitchEvent()
     this.syncEmbeddingMetadata({
       vectorModel: model,
       vectorDims: dims,
-      reason: 'vector_write',
+      reason: switchEvent ? `vector_write_after_${switchEvent.phase}_switch` : 'vector_write',
+      reindexRequired: switchEvent ? 1 : 0,
+      reindexReason: switchEvent
+        ? `${switchEvent.previousModelId} -> ${switchEvent.currentModelId} (${switchEvent.phase}: ${switchEvent.reason})`
+        : '',
     })
+  }
+
+  backfillCanonicalKeys() {
+    const factRows = this.db.prepare(`
+      SELECT id, fact_type, slot, workstream, text
+      FROM facts
+      WHERE claim_key IS NULL OR claim_key = ''
+    `).all()
+    for (const row of factRows) {
+      const claimKey = deriveClaimKey(row.fact_type, row.slot, row.text, row.workstream)
+      this.db.prepare(`UPDATE facts SET claim_key = ? WHERE id = ?`).run(claimKey, row.id)
+    }
+
+    const taskRows = this.db.prepare(`
+      SELECT id, title, workstream
+      FROM tasks
+      WHERE task_key IS NULL OR task_key = ''
+    `).all()
+    for (const row of taskRows) {
+      const taskKey = deriveTaskKey(row.title, row.workstream)
+      this.db.prepare(`UPDATE tasks SET task_key = ? WHERE id = ?`).run(taskKey, row.id)
+    }
   }
 
   deriveSubjectKey(text, propositionKind = 'fact') {
@@ -1857,7 +1830,7 @@ export class MemoryStore {
       results.push(...this.db.prepare(`
         SELECT 'proposition' AS type, proposition_kind AS subtype, CAST(id AS TEXT) AS ref, text AS content,
                unixepoch(last_seen) AS updated_at, id AS entity_id, retrieval_count,
-               confidence AS quality_score, source_episode_id
+               confidence AS quality_score, source_episode_id, source_fact_id
         FROM propositions
         WHERE status = 'active'
           AND (${patterns.map(() => 'text LIKE ?').join(' OR ')})
@@ -1879,8 +1852,8 @@ export class MemoryStore {
    * @returns {number[]} embedding vector
    */
   async getStoredVector(entityType, entityId, text) {
-    const model = getEmbeddingModelId()
-    const existing = this.getVectorStmt.get(entityType, entityId, model)
+    const lookupModel = getEmbeddingModelId()
+    const existing = this.getVectorStmt.get(entityType, entityId, lookupModel)
     if (existing?.vector_json) {
       try {
         const parsed = JSON.parse(existing.vector_json)
@@ -1889,10 +1862,11 @@ export class MemoryStore {
     }
     const vector = await embedText(String(text).slice(0, 320))
     if (Array.isArray(vector) && vector.length > 0) {
+      const activeModel = getEmbeddingModelId()
       const contentHash = hashEmbeddingInput(text)
-      this.upsertVectorStmt.run(entityType, entityId, model, vector.length, JSON.stringify(vector), contentHash)
+      this.upsertVectorStmt.run(entityType, entityId, activeModel, vector.length, JSON.stringify(vector), contentHash)
       this._syncToVecTable(entityType, entityId, vector)
-      this.noteVectorWrite(model, vector.length)
+      this.noteVectorWrite(activeModel, vector.length)
     }
     return vector
   }
@@ -1973,9 +1947,9 @@ export class MemoryStore {
   }
 
   _embedEpisodeAsync(episodeId, content) {
-    const model = getEmbeddingModelId()
+    const lookupModel = getEmbeddingModelId()
     const contentHash = hashEmbeddingInput(content)
-    const existing = this.getVectorStmt.get('episode', episodeId, model)
+    const existing = this.getVectorStmt.get('episode', episodeId, lookupModel)
     if (existing?.content_hash === contentHash) return
     // Persist to DB queue for crash recovery
     try {
@@ -1985,9 +1959,10 @@ export class MemoryStore {
     const task = async () => {
       const vector = await embedText(content.slice(0, 320))
       if (!Array.isArray(vector) || vector.length === 0) return
-      this.upsertVectorStmt.run('episode', episodeId, model, vector.length, JSON.stringify(vector), contentHash)
+      const activeModel = getEmbeddingModelId()
+      this.upsertVectorStmt.run('episode', episodeId, activeModel, vector.length, JSON.stringify(vector), contentHash)
       this._syncToVecTable('episode', episodeId, vector)
-      this.noteVectorWrite(model, vector.length)
+      this.noteVectorWrite(activeModel, vector.length)
       try { this.db.prepare('DELETE FROM pending_embeds WHERE entity_type = ? AND entity_id = ?').run('episode', episodeId) } catch {}
     }
     if (!this._embedQueue) this._embedQueue = Promise.resolve()
@@ -1997,15 +1972,15 @@ export class MemoryStore {
   async processPendingEmbeds() {
     const pending = this.db.prepare('SELECT entity_type, entity_id, content FROM pending_embeds ORDER BY id LIMIT 50').all()
     if (pending.length === 0) return 0
-    const model = getEmbeddingModelId()
     let processed = 0
     for (const item of pending) {
       const vector = await embedText(item.content.slice(0, 320))
       if (!Array.isArray(vector) || vector.length === 0) continue
+      const activeModel = getEmbeddingModelId()
       const contentHash = hashEmbeddingInput(item.content)
-      this.upsertVectorStmt.run(item.entity_type, item.entity_id, model, vector.length, JSON.stringify(vector), contentHash)
+      this.upsertVectorStmt.run(item.entity_type, item.entity_id, activeModel, vector.length, JSON.stringify(vector), contentHash)
       this._syncToVecTable(item.entity_type, item.entity_id, vector)
-      this.noteVectorWrite(model, vector.length)
+      this.noteVectorWrite(activeModel, vector.length)
       this.db.prepare('DELETE FROM pending_embeds WHERE entity_type = ? AND entity_id = ?').run(item.entity_type, item.entity_id)
       processed += 1
     }
@@ -2066,6 +2041,351 @@ export class MemoryStore {
     `).all(dayKey)
   }
 
+  getEpisodeDayKey(episodeId) {
+    return this.db.prepare(`
+      SELECT day_key
+      FROM episodes
+      WHERE id = ?
+    `).get(episodeId)?.day_key ?? null
+  }
+
+  getProfileRecallRows(query = '', limit = 5) {
+    const clean = String(query ?? '').trim()
+    const queryLike = `%${clean}%`
+    const rows = clean
+      ? this.db.prepare(`
+          SELECT 'profile' AS type, key AS subtype, value AS content, confidence, last_seen
+          FROM profiles
+          WHERE status = 'active'
+            AND (key LIKE ? OR value LIKE ?)
+          ORDER BY confidence DESC, last_seen DESC
+          LIMIT ?
+        `).all(queryLike, queryLike, limit)
+      : this.db.prepare(`
+          SELECT 'profile' AS type, key AS subtype, value AS content, confidence, last_seen
+          FROM profiles
+          WHERE status = 'active'
+          ORDER BY confidence DESC, last_seen DESC
+          LIMIT ?
+        `).all(limit)
+
+    const signalRows = clean
+      ? this.db.prepare(`
+          SELECT 'signal' AS type, kind AS subtype, value AS content, score AS confidence, last_seen
+          FROM signals
+          WHERE kind IN ('language', 'tone', 'response_style')
+            AND value LIKE ?
+          ORDER BY score DESC, last_seen DESC
+          LIMIT ?
+        `).all(queryLike, Math.max(1, Math.ceil(limit / 2)))
+      : this.db.prepare(`
+          SELECT 'signal' AS type, kind AS subtype, value AS content, score AS confidence, last_seen
+          FROM signals
+          WHERE kind IN ('language', 'tone', 'response_style')
+          ORDER BY score DESC, last_seen DESC
+          LIMIT ?
+        `).all(Math.max(1, Math.ceil(limit / 2)))
+
+    return [...rows, ...signalRows].slice(0, limit)
+  }
+
+  getPolicyRecallRows(query = '', limit = 5, options = {}) {
+    const factTypes = ['constraint', 'preference', 'decision', 'fact']
+    const clean = String(query ?? '').trim()
+    const queryLike = `%${clean}%`
+    const { startDate = null, endDate = null } = options
+    const timeClause = startDate && endDate ? ` AND last_seen >= ? AND last_seen <= ?` : ''
+    const params = [
+      ...factTypes,
+      ...(clean ? [queryLike] : []),
+      ...(startDate && endDate ? [startDate, `${endDate}T23:59:59`] : []),
+      limit,
+    ]
+    return this.db.prepare(`
+      SELECT 'fact' AS type, fact_type AS subtype, text AS content, confidence, last_seen, source_episode_id
+      FROM facts
+      WHERE status = 'active'
+        AND fact_type IN (${factTypes.map(() => '?').join(', ')})
+        ${clean ? 'AND text LIKE ?' : ''}
+        ${timeClause}
+      ORDER BY confidence DESC, retrieval_count DESC, mention_count DESC, last_seen DESC
+      LIMIT ?
+    `).all(...params)
+  }
+
+  getEntityRecallRows(query = '', limit = 5) {
+    const clean = String(query ?? '').trim()
+    const queryLike = `%${clean}%`
+    return this.db.prepare(`
+      SELECT 'entity' AS type, entity_type AS subtype, name AS content, description, last_seen
+      FROM entities
+      WHERE ${clean ? '(name LIKE ? OR description LIKE ?)' : '1=1'}
+      ORDER BY last_seen DESC, id DESC
+      LIMIT ?
+    `).all(...(clean ? [queryLike, queryLike, limit] : [limit]))
+  }
+
+  getRelationRecallRows(query = '', limit = 5) {
+    const clean = String(query ?? '').trim()
+    const queryLike = `%${clean}%`
+    return this.db.prepare(`
+      SELECT 'relation' AS type, r.relation_type AS subtype,
+             trim(se.name || ' -> ' || te.name || CASE WHEN r.description IS NOT NULL AND r.description != '' THEN ' — ' || r.description ELSE '' END) AS content,
+             r.confidence, r.last_seen
+      FROM relations r
+      JOIN entities se ON se.id = r.source_entity_id
+      JOIN entities te ON te.id = r.target_entity_id
+      WHERE r.status = 'active'
+        ${clean ? "AND (se.name LIKE ? OR te.name LIKE ? OR r.relation_type LIKE ? OR COALESCE(r.description, '') LIKE ?)" : ''}
+      ORDER BY r.confidence DESC, r.last_seen DESC
+      LIMIT ?
+    `).all(...(clean ? [queryLike, queryLike, queryLike, queryLike, limit] : [limit]))
+  }
+
+  async verifyMemoryClaim(query, options = {}) {
+    const clean = String(query ?? '').trim()
+    if (!clean) return []
+    const verifyLimit = Math.max(1, Math.min(Number(options.limit ?? 3), 5))
+    const queryVector = options.queryVector ?? await embedText(clean)
+    const ftsQuery = String(options.ftsQuery ?? '').trim()
+    const matchesById = new Map()
+
+    const registerMatch = (fact, extras = {}) => {
+      const id = Number(fact.id ?? extras.id ?? 0)
+      if (!id) return
+      const previous = matchesById.get(id) ?? {}
+      const merged = { ...previous, ...fact, ...extras, type: 'fact' }
+      const normalizedQuery = clean.toLowerCase()
+      const normalizedText = cleanMemoryText(merged.text ?? merged.content ?? '').toLowerCase()
+      const queryTokens = tokenizeMemoryText(clean)
+      const lexicalHits = queryTokens.filter(token => normalizedText.includes(token)).length
+      const lexicalOverlap = queryTokens.length > 0 ? lexicalHits / queryTokens.length : 0
+      const literalMatch = normalizedText.includes(normalizedQuery)
+      const similarity = Number(merged.similarity ?? previous.similarity ?? 0)
+      const exactBoost = literalMatch ? 0.18 : 0
+      const lexicalBoost = Math.min(0.45, lexicalOverlap * 0.45)
+      const semanticBoost = Math.min(0.55, Math.max(0, similarity) * 0.55)
+      const verifyScore = Number(Math.min(1, semanticBoost + lexicalBoost + exactBoost).toFixed(3))
+      const accepted = literalMatch
+        || verifyScore >= 0.72
+        || (similarity >= 0.92)
+        || (similarity >= 0.8 && lexicalOverlap >= 0.18)
+      matchesById.set(id, {
+        ...merged,
+        lexical_overlap: lexicalOverlap,
+        literal_match: literalMatch,
+        verify_score: verifyScore,
+        accepted,
+      })
+    }
+
+    if (this.vecEnabled && Array.isArray(queryVector) && queryVector.length > 0) {
+      try {
+        const hex = vecToHex(queryVector)
+        const knnRows = this.db.prepare(
+          `SELECT rowid, distance FROM vec_memory WHERE embedding MATCH X'${hex}' ORDER BY distance LIMIT ?`
+        ).all(verifyLimit * 3)
+        for (const knn of knnRows) {
+          const { entityType, entityId } = this._vecRowToEntity(knn.rowid)
+          if (entityType !== 'fact') continue
+          const fact = this.db.prepare(
+            `SELECT id, text, confidence, mention_count, last_seen, status FROM facts WHERE id = ? AND status = 'active'`
+          ).get(entityId)
+          if (fact) registerMatch(fact, { similarity: Number((1 - knn.distance).toFixed(3)), source: 'vector' })
+        }
+      } catch { /* ignore vec failure */ }
+    }
+
+    if (ftsQuery) {
+      try {
+        const ftsMatches = this.db.prepare(`
+          SELECT f.id, f.text, f.confidence, f.mention_count, f.last_seen, f.status
+          FROM facts_fts
+          JOIN facts f ON f.id = facts_fts.rowid
+          WHERE facts_fts MATCH ? AND f.status = 'active'
+          ORDER BY bm25(facts_fts)
+          LIMIT ?
+        `).all(ftsQuery, verifyLimit * 2)
+        for (const fact of ftsMatches) registerMatch(fact, { source: 'fts' })
+      } catch { /* ignore FTS failure */ }
+    }
+
+    return Array.from(matchesById.values())
+      .sort((a, b) => {
+        const verifyDelta = Number(b.verify_score ?? 0) - Number(a.verify_score ?? 0)
+        if (verifyDelta !== 0) return verifyDelta
+        const lexicalDelta = Number(b.lexical_overlap ?? 0) - Number(a.lexical_overlap ?? 0)
+        if (lexicalDelta !== 0) return lexicalDelta
+        return Number(b.confidence ?? b.similarity ?? 0) - Number(a.confidence ?? a.similarity ?? 0)
+      })
+      .slice(0, verifyLimit)
+  }
+
+  async getEpisodeRecallRows(options = {}) {
+    const {
+      query = '',
+      startDate,
+      endDate,
+      limit = 5,
+      queryVector = null,
+      ftsQuery = '',
+    } = options
+    const clean = String(query ?? '').trim()
+    const queryLimit = Math.max(1, Number(limit))
+    let episodes = []
+
+    if (this.vecEnabled && Array.isArray(queryVector) && queryVector.length > 0) {
+      try {
+        const hex = vecToHex(queryVector)
+        const knnRows = this.db.prepare(
+          `SELECT rowid, distance FROM vec_memory WHERE embedding MATCH X'${hex}' ORDER BY distance LIMIT ?`
+        ).all(queryLimit * 5)
+        for (const knn of knnRows) {
+          const { entityType, entityId } = this._vecRowToEntity(knn.rowid)
+          if (entityType !== 'episode') continue
+          const ep = this.db.prepare(`
+            SELECT id, ts, day_key, role, kind, content, source_ref, backend AS source_backend
+            FROM episodes
+            WHERE id = ? AND day_key >= ? AND day_key <= ?
+              AND kind NOT IN ('schedule-inject', 'event-inject')
+          `).get(entityId, startDate, endDate)
+          if (ep) episodes.push({ ...ep, similarity: 1 - knn.distance })
+        }
+      } catch { /* ignore vec failure */ }
+    }
+
+    if (episodes.length === 0 && clean) {
+      try {
+        episodes = this.db.prepare(`
+          SELECT e.id, e.ts, e.day_key, e.role, e.kind, e.content, e.source_ref, e.backend AS source_backend, bm25(episodes_fts) AS score
+          FROM episodes_fts
+          JOIN episodes e ON e.id = episodes_fts.rowid
+          WHERE episodes_fts MATCH ? AND e.day_key >= ? AND e.day_key <= ?
+            AND e.kind NOT IN ('schedule-inject', 'event-inject')
+          ORDER BY score
+          LIMIT ?
+        `).all(ftsQuery, startDate, endDate, queryLimit * 2)
+      } catch { /* ignore FTS failure */ }
+    }
+
+    if (episodes.length === 0 && !clean) {
+      episodes = this.db.prepare(`
+        SELECT e.id, e.ts, e.day_key, e.role, e.kind, e.content, e.source_ref, e.backend AS source_backend
+        FROM episodes e
+        WHERE e.day_key >= ? AND e.day_key <= ?
+          AND e.kind NOT IN ('schedule-inject', 'event-inject')
+        ORDER BY e.ts DESC
+        LIMIT ?
+      `).all(startDate, endDate, queryLimit)
+    }
+
+    const seen = new Set()
+    return episodes.filter(row => {
+      const id = Number(row.id ?? row.entity_id ?? 0)
+      if (!id || seen.has(id)) return false
+      seen.add(id)
+      return true
+    }).slice(0, queryLimit)
+  }
+
+  async bulkVerifyHints(hints = [], options = {}) {
+    const details = []
+    let confirmed = 0
+    let outdated = 0
+    let unknown = 0
+
+    for (const rawHint of hints) {
+      const clean = String(rawHint ?? '').trim()
+      if (!clean) {
+        unknown += 1
+        details.push({ hint: clean, status: '?' })
+        continue
+      }
+      const ftsQuery = clean.replace(/['"]/g, '')
+      const matches = await this.verifyMemoryClaim(clean, { limit: 1, ftsQuery })
+      const bestMatch = matches[0]
+      if (bestMatch) {
+        const status = bestMatch.status === 'active' && bestMatch.accepted !== false ? '✓' : '✗'
+        if (status === '✓') confirmed += 1
+        else outdated += 1
+        details.push({
+          hint: clean,
+          status,
+          fact: String(bestMatch.text ?? bestMatch.content ?? ''),
+          confidence: Number(bestMatch.confidence ?? bestMatch.similarity ?? 0).toFixed(2),
+          mention_count: Number(bestMatch.mention_count ?? 0),
+        })
+      } else {
+        unknown += 1
+        details.push({ hint: clean, status: '?' })
+      }
+    }
+
+    return {
+      summary: `✓ confirmed(${confirmed}) ✗ outdated(${outdated}) ? unknown(${unknown})`,
+      details,
+    }
+  }
+
+  getRecallShortcutRows(kind = 'all', limit = 5, options = {}) {
+    const queryLimit = Math.max(1, Number(limit))
+    const { startDate = null, endDate = null } = options
+    const timeClause = startDate && endDate ? ` AND last_seen >= ? AND last_seen <= ?` : ''
+    const timeParams = startDate && endDate ? [startDate, `${endDate}T23:59:59`] : []
+    let rows = []
+
+    if (kind === 'all' || kind === 'facts') {
+      rows.push(...this.db.prepare(`
+        SELECT 'fact' AS type, fact_type AS subtype, text AS content, confidence, mention_count, last_seen, status
+        FROM facts
+        WHERE status = 'active'${timeClause}
+        ORDER BY confidence DESC, mention_count DESC, last_seen DESC
+        LIMIT ?
+      `).all(...timeParams, kind === 'all' ? Math.ceil(queryLimit / 2) : queryLimit))
+    }
+    if (kind === 'all' || kind === 'tasks') {
+      rows.push(...this.db.prepare(`
+        SELECT 'task' AS type, stage AS subtype, title AS content, confidence, last_seen, status, priority
+        FROM tasks
+        WHERE status IN ('active', 'in_progress', 'paused')${timeClause}
+        ORDER BY CASE priority WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END, last_seen DESC
+        LIMIT ?
+      `).all(...timeParams, kind === 'all' ? Math.ceil(queryLimit / 3) : queryLimit))
+    }
+    if (kind === 'all' || kind === 'signals') {
+      rows.push(...this.db.prepare(`
+        SELECT 'signal' AS type, kind AS subtype, value AS content, score AS confidence, last_seen
+        FROM signals${startDate && endDate ? ' WHERE last_seen >= ? AND last_seen <= ?' : ''}
+        ORDER BY score DESC, last_seen DESC
+        LIMIT ?
+      `).all(...timeParams, kind === 'all' ? Math.ceil(queryLimit / 3) : queryLimit))
+    }
+    if (kind === 'all' || kind === 'profiles') {
+      rows.push(...this.getProfileRecallRows('', kind === 'all' ? Math.ceil(queryLimit / 3) : queryLimit))
+    }
+    if (kind === 'all' || kind === 'episodes') {
+      rows.push(...this.db.prepare(`
+        SELECT 'episode' AS type, role AS subtype, content, ts AS last_seen
+        FROM episodes
+        WHERE role = 'user'
+          AND kind NOT IN ('schedule-inject', 'event-inject')
+          AND content NOT LIKE 'You are consolidating%'
+          AND LENGTH(content) >= 10
+          ${startDate && endDate ? 'AND day_key >= ? AND day_key <= ?' : ''}
+        ORDER BY ts DESC
+        LIMIT ?
+      `).all(...(startDate && endDate ? [startDate, endDate, kind === 'all' ? Math.ceil(queryLimit / 3) : queryLimit] : [kind === 'all' ? Math.ceil(queryLimit / 3) : queryLimit])))
+    }
+    if (kind === 'all' || kind === 'entities') {
+      rows.push(...this.getEntityRecallRows('', kind === 'all' ? Math.ceil(queryLimit / 4) : queryLimit))
+    }
+    if (kind === 'all' || kind === 'relations') {
+      rows.push(...this.getRelationRecallRows('', kind === 'all' ? Math.ceil(queryLimit / 4) : queryLimit))
+    }
+
+    return rows
+  }
+
   getEpisodesSince(timestamp) {
     const ts = typeof timestamp === 'number'
       ? new Date(timestamp).toISOString()
@@ -2108,6 +2428,133 @@ export class MemoryStore {
       ORDER BY mc.day_key DESC
       LIMIT ?
     `).all(minCount, limit)
+  }
+
+  getDecayRows(kind = 'fact') {
+    if (kind === 'fact') {
+      return this.db.prepare(`
+        SELECT id, mention_count, retrieval_count, last_seen
+        FROM facts
+        WHERE status = 'active'
+      `).all()
+    }
+    if (kind === 'task') {
+      return this.db.prepare(`
+        SELECT id, retrieval_count, last_seen
+        FROM tasks
+        WHERE status = 'active'
+      `).all()
+    }
+    if (kind === 'signal') {
+      return this.db.prepare(`
+        SELECT id, retrieval_count, last_seen
+        FROM signals
+        WHERE status = 'active'
+      `).all()
+    }
+    return []
+  }
+
+  markRowsDeprecated(kind = 'fact', ids = [], seenAt = null) {
+    const normalizedIds = [...new Set(ids.map(id => Number(id)).filter(Number.isFinite))]
+    if (normalizedIds.length === 0 || !seenAt) return 0
+    const placeholders = normalizedIds.map(() => '?').join(', ')
+    if (kind === 'fact') {
+      return Number(this.db.prepare(`
+        UPDATE facts
+        SET status = 'deprecated', last_seen = ?
+        WHERE id IN (${placeholders})
+      `).run(seenAt, ...normalizedIds).changes ?? 0)
+    }
+    if (kind === 'task') {
+      return Number(this.db.prepare(`
+        UPDATE tasks
+        SET status = 'deprecated', last_seen = ?
+        WHERE id IN (${placeholders})
+      `).run(seenAt, ...normalizedIds).changes ?? 0)
+    }
+    if (kind === 'signal') {
+      return Number(this.db.prepare(`
+        UPDATE signals
+        SET status = 'deprecated', last_seen = ?
+        WHERE id IN (${placeholders})
+      `).run(seenAt, ...normalizedIds).changes ?? 0)
+    }
+    return 0
+  }
+
+  listDeprecatedIds(kind = 'fact', olderThan = '') {
+    if (!olderThan) return []
+    if (kind === 'fact') {
+      return this.db.prepare(`
+        SELECT id
+        FROM facts
+        WHERE status = 'deprecated' AND last_seen < ?
+      `).all(olderThan).map(row => Number(row.id)).filter(Number.isFinite)
+    }
+    if (kind === 'task') {
+      return this.db.prepare(`
+        SELECT id
+        FROM tasks
+        WHERE status = 'deprecated' AND last_seen < ?
+      `).all(olderThan).map(row => Number(row.id)).filter(Number.isFinite)
+    }
+    if (kind === 'signal') {
+      return this.db.prepare(`
+        SELECT id
+        FROM signals
+        WHERE status = 'deprecated' AND last_seen < ?
+      `).all(olderThan).map(row => Number(row.id)).filter(Number.isFinite)
+    }
+    return []
+  }
+
+  deleteRowsByIds(kind = 'fact', ids = []) {
+    const normalizedIds = [...new Set(ids.map(id => Number(id)).filter(Number.isFinite))]
+    if (normalizedIds.length === 0) return 0
+    const placeholders = normalizedIds.map(() => '?').join(', ')
+    if (kind === 'fact') {
+      for (const id of normalizedIds) this.deleteFactFtsStmt.run(id)
+      this.db.prepare(`DELETE FROM memory_vectors WHERE entity_type = 'fact' AND entity_id IN (${placeholders})`).run(...normalizedIds)
+      return Number(this.db.prepare(`DELETE FROM facts WHERE id IN (${placeholders})`).run(...normalizedIds).changes ?? 0)
+    }
+    if (kind === 'task') {
+      for (const id of normalizedIds) this.deleteTaskFtsStmt.run(id)
+      this.db.prepare(`DELETE FROM memory_vectors WHERE entity_type = 'task' AND entity_id IN (${placeholders})`).run(...normalizedIds)
+      this.db.prepare(`DELETE FROM task_events WHERE task_id IN (${placeholders})`).run(...normalizedIds)
+      return Number(this.db.prepare(`DELETE FROM tasks WHERE id IN (${placeholders})`).run(...normalizedIds).changes ?? 0)
+    }
+    if (kind === 'signal') {
+      for (const id of normalizedIds) this.deleteSignalFtsStmt.run(id)
+      this.db.prepare(`DELETE FROM memory_vectors WHERE entity_type = 'signal' AND entity_id IN (${placeholders})`).run(...normalizedIds)
+      return Number(this.db.prepare(`DELETE FROM signals WHERE id IN (${placeholders})`).run(...normalizedIds).changes ?? 0)
+    }
+    return 0
+  }
+
+  resetEmbeddingIndex(options = {}) {
+    this.clearVectorsStmt.run()
+    try { this.db.prepare('DELETE FROM pending_embeds').run() } catch { /* ignore */ }
+    if (this.vecEnabled) {
+      try {
+        this.db.exec('DROP TABLE IF EXISTS vec_memory')
+        this.db.exec(`CREATE VIRTUAL TABLE vec_memory USING vec0(embedding float[${getEmbeddingDims()}])`)
+      } catch { /* ignore vec reset failure */ }
+    }
+    this.syncEmbeddingMetadata({
+      reason: options.reason ?? 'reset_embedding_index',
+      reindexRequired: 1,
+      reindexReason: options.reindexReason ?? 'embedding index reset',
+    })
+  }
+
+  vacuumDatabase() {
+    try {
+      this.db.exec('VACUUM')
+      return true
+    } catch {
+      return false
+    }
   }
 
   getRecentCandidateDays(limit = 7) {
@@ -2385,25 +2832,55 @@ export class MemoryStore {
   }
 
   async upsertFacts(facts = [], seenAt = null, sourceEpisodeId = null, options = {}) {
-    const model = getEmbeddingModelId()
     const deprecateOnHighSimilarity = Boolean(options.deprecateOnHighSimilarity)
     for (const fact of facts) {
       const text = cleanMemoryText(fact?.text)
       const factType = normalizeFactType(fact?.type)
       const confidence = Number(fact?.confidence ?? 0.6)
       if (!text || !factType || !shouldKeepFact(factType, text, confidence)) continue
+      const slot = normalizeFactSlot(fact?.slot)
+      const workstream = normalizeWorkstream(fact?.workstream)
+      const claimKey = deriveClaimKey(factType, slot, text, workstream)
 
       // Semantic dedup: check if a similar active fact already exists
       const existingExact = this.getFactIdStmt.get(factType, text)
+      const existingByKey = !existingExact && claimKey ? this.getFactRowByClaimKeyStmt.get(factType, claimKey) : null
+      if (existingByKey?.id) {
+        this.updateFactByIdStmt.run(
+          slot || null,
+          claimKey || null,
+          workstream || null,
+          text,
+          confidence,
+          seenAt,
+          sourceEpisodeId,
+          existingByKey.id,
+        )
+        this.deleteFactFtsStmt.run(existingByKey.id)
+        this.insertFactFtsStmt.run(existingByKey.id, text)
+        this.linkMemoryToEntities(text, 'fact', existingByKey.id, sourceEpisodeId)
+        this.upsertPropositions([
+          {
+            subjectKey: fact?.subject_key,
+            propositionKind: propositionKindForFact(factType, slot),
+            text,
+            occurredOn: extractExplicitDate(text),
+            confidence,
+          },
+        ], seenAt, sourceEpisodeId, existingByKey.id)
+        if (slot) this.staleFactSlotStmt.run(slot, text)
+        continue
+      }
       if (!existingExact) {
         const newVector = await embedText(text)
         if (Array.isArray(newVector) && newVector.length > 0) {
+          const activeModel = getEmbeddingModelId()
           const samTypeFacts = this.db.prepare(`
             SELECT f.id, f.text, f.confidence, mv.vector_json
             FROM facts f
             JOIN memory_vectors mv ON mv.entity_type = 'fact' AND mv.entity_id = f.id AND mv.model = ?
             WHERE f.fact_type = ? AND f.status = 'active'
-          `).all(model, factType)
+          `).all(activeModel, factType)
 
           let merged = false
           for (const existing of samTypeFacts) {
@@ -2440,11 +2917,10 @@ export class MemoryStore {
       }
 
       this.reviveFactsStmt.run(factType, text)
-      const slot = normalizeFactSlot(fact?.slot)
-      const workstream = normalizeWorkstream(fact?.workstream)
       this.upsertFactStmt.run(
         factType,
         slot || null,
+        claimKey || null,
         workstream || null,
         text,
         confidence,
@@ -2510,11 +2986,43 @@ export class MemoryStore {
       if (!title) continue
       const details = composeTaskDetails(task)
       const workstream = normalizeWorkstream(task?.workstream)
+      const taskKey = deriveTaskKey(title, workstream)
       const stage = normalizeTaskStage(task?.stage, details)
       const evidenceLevel = normalizeEvidenceLevel(task?.evidence_level, details)
-      const prev = this.getTaskRowStmt.get(title)
+      const prev = this.getTaskRowByKeyStmt.get(taskKey) ?? this.getTaskRowStmt.get(title)
+      if (prev?.id && prev.title && prev.title !== title) {
+        this.updateTaskByIdStmt.run(
+          title,
+          taskKey,
+          details || null,
+          workstream || null,
+          stage,
+          evidenceLevel,
+          normalizeTaskStatus(task?.status, details),
+          normalizeTaskPriority(task?.priority),
+          Number(task?.confidence ?? 0.6),
+          seenAt,
+          sourceEpisodeId,
+          prev.id,
+        )
+        this.deleteTaskFtsStmt.run(prev.id)
+        this.insertTaskFtsStmt.run(prev.id, title, details)
+        this.linkMemoryToEntities(`${title} ${details ?? ''}`, 'task', prev.id, sourceEpisodeId)
+        this.insertTaskEventStmt.run(
+          prev.id,
+          seenAt,
+          'projection_update',
+          stage,
+          evidenceLevel,
+          normalizeTaskStatus(task?.status, details),
+          details || null,
+          sourceEpisodeId,
+        )
+        continue
+      }
       this.upsertTaskStmt.run(
         title,
+        taskKey,
         details || null,
         workstream || null,
         stage,
@@ -2822,6 +3330,78 @@ export class MemoryStore {
       parts.push(`## Signals\n${activeSignals.map(item => `- [${item.kind}] ${item.value}`).join('\n')}`)
     }
 
+    // ## Recent — direct recent episode slices first, stored summaries only as fallback/supplement
+    const recentSections = []
+    const recentSectionKeys = new Set()
+    const recentRows = this.db.prepare(`
+      SELECT day_key, ts, role, content
+      FROM episodes
+      WHERE kind = 'message'
+        AND content NOT LIKE 'You are consolidating%'
+        AND content NOT LIKE 'You are improving%'
+        AND content NOT LIKE 'You are analyzing%'
+      ORDER BY day_key DESC, ts ASC, id ASC
+      LIMIT 40
+    `).all()
+    const grouped = new Map()
+    for (const row of recentRows) {
+      const dayKey = String(row.day_key ?? '').trim()
+      if (!dayKey) continue
+      if (!grouped.has(dayKey) && grouped.size >= 2) continue
+      const bucket = grouped.get(dayKey) ?? []
+      bucket.push(row)
+      grouped.set(dayKey, bucket)
+    }
+    for (const [dayKey, rows] of Array.from(grouped.entries())) {
+      const lines = rows
+        .slice(-4)
+        .map(row => `- ${row.role === 'user' ? 'u' : 'a'}: ${cleanMemoryText(row.content).slice(0, 180)}`)
+      if (lines.length === 0) continue
+      recentSections.push(`### ${dayKey}\n${lines.join('\n')}`)
+      recentSectionKeys.add(dayKey)
+    }
+    if (recentSections.length < 2) {
+      const dailyDocs = this.db.prepare(`
+        SELECT doc_key, content
+        FROM documents
+        WHERE kind = 'daily'
+        ORDER BY doc_key DESC
+        LIMIT 2
+      `).all()
+      for (const row of dailyDocs) {
+        const docKey = String(row.doc_key ?? '').trim()
+        const content = String(row.content ?? '').trim()
+        if (!docKey || !content || recentSectionKeys.has(docKey)) continue
+        recentSections.push(`### ${docKey}\n${content}`)
+        recentSectionKeys.add(docKey)
+        if (recentSections.length >= 2) break
+      }
+    }
+    if (recentSections.length < 2) {
+      const dailyDir = join(this.historyDir, 'daily')
+      if (existsSync(dailyDir)) {
+        const files = readdirSync(dailyDir)
+          .filter(name => name.endsWith('.md'))
+          .sort()
+          .slice(-2)
+          .reverse()
+        for (const name of files) {
+          const docKey = name.replace(/\.md$/, '')
+          if (recentSectionKeys.has(docKey)) continue
+          try {
+            const content = readFileSync(join(dailyDir, name), 'utf8').trim()
+            if (!content) continue
+            recentSections.push(`### ${docKey}\n${content}`)
+            recentSectionKeys.add(docKey)
+            if (recentSections.length >= 2) break
+          } catch { /* ignore unreadable summary */ }
+        }
+      }
+    }
+    if (recentSections.length > 0) {
+      parts.push(`## Recent\n${recentSections.join('\n\n')}`)
+    }
+
     // Fallback — all sections empty → recent dialogues
     if (parts.length === 0) {
       const recentEpisodes = this.db.prepare(`
@@ -2965,32 +3545,33 @@ export class MemoryStore {
   }
 
   async ensureEmbeddings(options = {}) {
-    const model = getEmbeddingModelId()
     const candidates = this.getEmbeddableItems(options)
     const contextMap = options.contextMap instanceof Map ? options.contextMap : new Map()
 
     let updated = 0
     for (const item of candidates) {
+      const lookupModel = getEmbeddingModelId()
       const contextText = contextMap.get(item.key)
       const embedInput = contextText
         ? cleanMemoryText(`${contextText}\n${item.content}`)
         : contextualizeEmbeddingInput(item)
       if (!embedInput) continue
       const contentHash = hashEmbeddingInput(embedInput)
-      const existing = this.getVectorStmt.get(item.entityType, item.entityId, model)
+      const existing = this.getVectorStmt.get(item.entityType, item.entityId, lookupModel)
       if (existing?.content_hash === contentHash) continue
       const vector = await embedText(embedInput)
       if (!Array.isArray(vector) || vector.length === 0) continue
+      const activeModel = getEmbeddingModelId()
       this.upsertVectorStmt.run(
         item.entityType,
         item.entityId,
-        model,
+        activeModel,
         vector.length,
         JSON.stringify(vector),
         contentHash,
       )
       this._syncToVecTable(item.entityType, item.entityId, vector)
-      this.noteVectorWrite(model, vector.length)
+      this.noteVectorWrite(activeModel, vector.length)
       updated += 1
     }
     this._pruneOldEpisodeVectors()
@@ -3239,7 +3820,7 @@ export class MemoryStore {
       `).all(Math.max(4, seedLimit * 2))
       const propositions = this.db.prepare(`
         SELECT 'proposition' AS type, proposition_kind AS subtype, CAST(id AS TEXT) AS ref, text AS content,
-               unixepoch(last_seen) AS updated_at, id AS entity_id, confidence AS quality_score, retrieval_count
+               unixepoch(last_seen) AS updated_at, id AS entity_id, confidence AS quality_score, retrieval_count, source_fact_id
         FROM propositions
         WHERE status = 'active'
         ORDER BY confidence DESC, retrieval_count DESC, last_seen DESC
@@ -3295,7 +3876,7 @@ export class MemoryStore {
       `).all(candidatePool)
       const propositions = this.db.prepare(`
         SELECT 'proposition' AS type, proposition_kind AS subtype, CAST(id AS TEXT) AS ref, text AS content,
-               unixepoch(last_seen) AS updated_at, id AS entity_id, confidence AS quality_score, retrieval_count
+               unixepoch(last_seen) AS updated_at, id AS entity_id, confidence AS quality_score, retrieval_count, source_fact_id
         FROM propositions
         WHERE status = 'active'
         ORDER BY confidence DESC, retrieval_count DESC, last_seen DESC
@@ -3320,7 +3901,7 @@ export class MemoryStore {
       `).all(Math.max(candidatePool, seedLimit + 8))
       const propositions = this.db.prepare(`
         SELECT 'proposition' AS type, proposition_kind AS subtype, CAST(id AS TEXT) AS ref, text AS content,
-               unixepoch(last_seen) AS updated_at, id AS entity_id, confidence AS quality_score, retrieval_count
+               unixepoch(last_seen) AS updated_at, id AS entity_id, confidence AS quality_score, retrieval_count, source_fact_id
         FROM propositions
         WHERE status = 'active'
         ORDER BY last_seen DESC, retrieval_count DESC
@@ -3498,6 +4079,7 @@ export class MemoryStore {
                unixepoch(p.last_seen) AS updated_at, p.id AS entity_id, p.retrieval_count AS retrieval_count,
                p.confidence AS quality_score,
                p.source_episode_id AS source_episode_id,
+               p.source_fact_id AS source_fact_id,
                e.source_ref AS source_ref,
                e.ts AS source_ts,
                e.kind AS source_kind,
@@ -3598,13 +4180,19 @@ export class MemoryStore {
   async searchRelevantDense(query, limit = 8, queryVector = null, focusVector = null) {
     const clean = cleanMemoryText(query)
     if (!clean) return []
-    const model = getEmbeddingModelId()
     const vector = queryVector ?? await embedText(clean)
     if (!Array.isArray(vector) || vector.length === 0) return []
+    const model = getEmbeddingModelId()
     const expectedDims = getEmbeddingDims()
     const vectorModel = this.getMetaValue('embedding.vector_model', '')
     const vectorDims = Number(this.getMetaValue('embedding.vector_dims', '0')) || 0
+    const reindexRequired = this.getMetaValue('embedding.reindex_required', '0') === '1'
+    const reindexReason = this.getMetaValue('embedding.reindex_reason', '')
     const hasCurrentModelVectors = Boolean(this.hasVectorModelStmt.get(model)?.ok)
+    if (reindexRequired) {
+      process.stderr.write(`[memory] dense retrieval disabled: embeddings require reindex (${reindexReason || 'provider/model switch'})\n`)
+      return []
+    }
     if (vectorModel && vectorModel !== model && !hasCurrentModelVectors) {
       process.stderr.write(`[memory] dense retrieval disabled: current model=${model} indexed model=${vectorModel}; rebuild embeddings required\n`)
       return []
@@ -3730,6 +4318,7 @@ export class MemoryStore {
         return this.db.prepare(`
           SELECT 'proposition' AS type, p.proposition_kind AS subtype, p.id AS entity_id, p.text AS content,
                  unixepoch(p.last_seen) AS updated_at, p.retrieval_count AS retrieval_count,
+                 p.source_fact_id AS source_fact_id,
                  p.source_episode_id AS source_episode_id,
                  e.kind AS source_kind, e.backend AS source_backend,
                  mv.vector_json
@@ -3765,7 +4354,8 @@ export class MemoryStore {
     const scopedEntityNames = new Set(queryEntities.map(item => String(item.name ?? '').toLowerCase()).filter(Boolean))
 
     const dedupKey = (item) => {
-      const contentHash = (item.content || '').slice(0, 50).toLowerCase().replace(/\s+/g, '')
+      const normalized = cleanMemoryText(String(item.content ?? '')).toLowerCase()
+      const contentHash = createHash('sha1').update(normalized.slice(0, 240)).digest('hex').slice(0, 16)
       return `${item.type}:${item.subtype}:${contentHash}`
     }
 
@@ -3939,7 +4529,7 @@ export class MemoryStore {
       (item.type === 'fact' || item.type === 'task'),
     ).length
     const hasPositiveOverlap = scored.some(item => Number(item.overlapCount) > 0)
-    const ranked = scored
+    const ranked = collapseClaimSurfaceDuplicates(scored, 'weighted_score')
       .map(item => {
         const overlapAdjustment =
           Number(item.overlapCount) > 0
@@ -3964,7 +4554,7 @@ export class MemoryStore {
     const typeCounts = new Map()
     const selected = []
     const rerankThreshold = -0.5
-    const rerankPool = ranked.slice(0, Math.max(limit * 2, 10))
+    const rerankPool = collapseClaimSurfaceDuplicates(ranked.slice(0, Math.max(limit * 2, 10)), 'rerank_score')
       .map(item => {
         return {
           ...item,
@@ -4166,6 +4756,7 @@ export class MemoryStore {
     const limit = Number(options.limit ?? 6)
     const lines = []
     const seenHintKeys = new Set()
+    const queryTokenCount = Math.max(1, tokenizeMemoryText(clean).length)
     const queryVector = await measureStage('embed_query', () => embedText(clean))
     const focusVector = await measureStage('build_focus', () => this.buildRecentFocusVector({
       channelId: options.channelId,
@@ -4182,46 +4773,15 @@ export class MemoryStore {
       LIMIT 1
     `).get()?.workstream ?? ''
 
-    const formatAge = (ts) => {
-      if (!ts) return ''
-      const msTs = typeof ts === 'number' && ts < 1e12 ? ts * 1000 : new Date(ts).getTime()
-      const diff = Date.now() - msTs
-      if (diff < 0) return '0m'
-      const mins = Math.floor(diff / 60000)
-      if (mins < 60) return `${mins}m`
-      const hours = Math.floor(mins / 60)
-      if (hours < 24) return `${hours}h`
-      const days = Math.floor(hours / 24)
-      return `${days}d`
-    }
-
-    const formatHint = (item, overrides = {}) => {
-      const type = overrides.type ?? item.type ?? 'episode'
-      const attrs = [`type="${type}"`]
-      const conf = overrides.confidence ?? item.confidence ?? item.quality_score ?? item.effectiveScore
-      if (conf != null) attrs.push(`confidence="${Number(conf).toFixed(2)}"`)
-      const stage = overrides.stage ?? item.stage ?? item.status
-      if (stage && (type === 'task' || type === 'signal')) attrs.push(`stage="${stage}"`)
-      const ts = overrides.ts ?? item.updated_at ?? item.last_seen ?? item.source_ts ?? item.created_at
-      if (ts) attrs.push(`age="${formatAge(ts)}"`)
-      const rel = item.weighted_score ?? item.priority_score ?? item.rankScore
-      if (rel != null) attrs.push(`relevance="${Math.abs(Number(rel)).toFixed(2)}"`)
-      const text = String(overrides.text ?? item.content ?? item.text ?? item.value ?? '').slice(0, 200)
-      return `<hint ${attrs.join(' ')}>${text}</hint>`
-    }
-
     const pushHint = (item, overrides = {}) => {
-      const type = overrides.type ?? item.type ?? 'episode'
       const rawText = String(overrides.text ?? item.content ?? item.text ?? item.value ?? '').trim()
       if (!rawText) return
-      const normalized = cleanMemoryText(rawText).toLowerCase().replace(/\s+/g, ' ').slice(0, 160)
-      const signalSubtype = String(overrides.subtype ?? item.subtype ?? item.kind ?? '').toLowerCase().trim()
-      const key = type === 'signal'
-        ? `signal:${signalSubtype || normalized}`
-        : `${type}:${normalized}`
+      if (!shouldInjectHint(item, overrides, { queryTokenCount })) return
+      const key = buildHintKey(item, overrides)
+      if (!key) return
       if (seenHintKeys.has(key)) return
       seenHintKeys.add(key)
-      lines.push(formatHint(item, overrides))
+      lines.push(formatHintTag(item, overrides, { queryTokenCount, nowTs: totalStartedAt }))
     }
 
     const coreMemory = await measureStage('core_memory', () => this.getCoreMemoryItems(clean, intent, queryVector))

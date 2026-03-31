@@ -305,7 +305,11 @@ export class OutputForwarder {
               // Plain text resets grouping sequences.
               this.inExplorerSequence = false
               this.inRecallSequence = false
-              parts.push(c.text.trim())
+              // Strip system XML tags (channel, memory-context, system-reminder, event) before forwarding
+              let cleaned = c.text.trim()
+                .replace(/<(channel|memory-context|system-reminder|event)\b[^>]*>[\s\S]*?<\/\1>/g, '')
+                .trim()
+              if (cleaned) parts.push(cleaned)
             } else if (c.type === 'tool_use') {
               this.lastToolName = c.name || ''
               this.lastToolFilePath = c.input?.file_path || ''
@@ -319,7 +323,7 @@ export class OutputForwarder {
                   if (c.name === 'Read') target = c.input?.file_path ? basename(c.input.file_path) : ''
                   else if (c.name === 'Grep') target = '"' + (c.input?.pattern || '').substring(0, 25) + '"'
                   else if (c.name === 'Glob') target = (c.input?.pattern || '').substring(0, 25)
-                  if (parts.length > 0) parts.push('\u3164')
+                  if (parts.length > 0) parts.push('')
                   parts.push('● **Explorer** (' + (target || c.name) + ')')
                 }
                 // Ignore subsequent search steps in the same sequence.
@@ -330,7 +334,7 @@ export class OutputForwarder {
               if (OutputForwarder.isRecallMemory(c.name)) {
                 if (!this.inRecallSequence) {
                   this.inRecallSequence = true
-                  if (parts.length > 0) parts.push('\u3164')
+                  if (parts.length > 0) parts.push('')
                   parts.push('● **recall_memory**')
                 }
                 continue
@@ -341,7 +345,7 @@ export class OutputForwarder {
               this.inRecallSequence = false
               const toolLine = OutputForwarder.buildToolLine(c.name, c.input)
               if (toolLine) {
-                if (parts.length > 0) parts.push('\u3164')
+                if (parts.length > 0) parts.push('')
                 parts.push(toolLine)
               }
             }

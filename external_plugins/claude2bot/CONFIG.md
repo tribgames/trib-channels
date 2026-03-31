@@ -81,7 +81,7 @@ Memory cycle configuration. The system runs three cycles:
 
 - **cycle1**: Lightweight extraction — runs on an interval or immediately on new episodes
 - **cycle2**: Consolidation — daily deep processing of pending candidates
-- **cycle3**: Weekly rollup — weekly summary and cleanup
+- **cycle3**: Weekly decay — gradual cleanup and retention control
 
 ### `memory.cycle1`
 
@@ -115,9 +115,9 @@ Memory cycle configuration. The system runs three cycles:
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `schedule` | string | `"03:00"` | Time of day to run weekly rollup (`"HH:MM"`) |
+| `schedule` | string | `"03:00"` | Time of day to run weekly decay (`"HH:MM"`) |
 | `day` | string | `"sunday"` | Day of week: `"monday"` through `"sunday"` |
-| `provider` | object | cli (claude) | LLM provider for weekly rollup |
+| `provider` | object | cli (claude) | LLM provider for weekly decay |
 | `provider.connection` | string | `"cli"` | Provider type |
 | `provider.model` | string | `"sonnet"` | Model identifier |
 | `provider.effort` | string | — | Reasoning effort level |

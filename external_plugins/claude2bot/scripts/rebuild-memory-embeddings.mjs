@@ -28,9 +28,16 @@ process.stdout.write(`target_model=${getEmbeddingModelId()}\n`)
 process.stdout.write(`target_dims=${getEmbeddingDims()}\n`)
 process.stdout.write(`stored_vector_model=${store.getMetaValue('embedding.vector_model', '')}\n`)
 process.stdout.write(`stored_vector_dims=${store.getMetaValue('embedding.vector_dims', '')}\n`)
+process.stdout.write(`reindex_required_before=${store.getMetaValue('embedding.reindex_required', '0')}\n`)
+
+store.resetEmbeddingIndex({
+  reason: 'rebuild_memory_embeddings',
+  reindexReason: 'manual embedding rebuild requested',
+})
 
 const updated = await store.ensureEmbeddings({ all: true })
 store.writeContextFile()
-store.syncEmbeddingMetadata({ reason: 'rebuild_memory_embeddings' })
+store.syncEmbeddingMetadata({ reason: 'rebuild_memory_embeddings', reindexCompleted: true })
 
 process.stdout.write(`updated_vectors=${updated}\n`)
+process.stdout.write(`reindex_required_after=${store.getMetaValue('embedding.reindex_required', '0')}\n`)

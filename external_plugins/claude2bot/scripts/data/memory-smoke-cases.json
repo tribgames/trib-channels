@@ -1,0 +1,118 @@
+[
+  {
+    "id": "policy-commit",
+    "query": "커밋 먼저 하면 안 되지?",
+    "acceptableIntents": ["policy", "decision"],
+    "expectedAny": [
+      "not to run commits/pushes in advance",
+      "not to push commits early"
+    ]
+  },
+  {
+    "id": "policy-build",
+    "query": "빌드나 배포는 명시 요청 전엔 하면 안 되지?",
+    "acceptableIntents": ["policy", "decision"],
+    "expectedAny": [
+      "Build and deploy actions are only allowed when explicitly requested",
+      "build/deploy"
+    ]
+  },
+  {
+    "id": "profile-language",
+    "query": "언어 선호 뭐야",
+    "acceptableIntents": ["profile"],
+    "expectedAny": [
+      "Korean",
+      "한국어"
+    ]
+  },
+  {
+    "id": "profile-tone",
+    "query": "응답 톤은 어떻게 해야 해?",
+    "acceptableIntents": ["profile"],
+    "expectedAny": [
+      "honesty checking",
+      "flattering responses",
+      "Concise"
+    ]
+  },
+  {
+    "id": "decision-storage",
+    "query": "장기 메모리 저장 구조 결정 뭐였지?",
+    "acceptableIntents": ["decision"],
+    "expectedAny": [
+      "SQLite",
+      "context.md",
+      "source_episode_id"
+    ]
+  },
+  {
+    "id": "decision-rag",
+    "query": "RAG 관련 현재 방향 뭐야",
+    "acceptableIntents": ["decision", "task"],
+    "expectedAny": [
+      "RAG area has been fully refactored",
+      "RAG + LLM workflow",
+      "hybrid retrieval"
+    ]
+  },
+  {
+    "id": "task-current",
+    "query": "지금 진행 중인 주요 작업 뭐야",
+    "acceptableIntents": ["task"],
+    "expectedAny": [
+      "Review and finalize the completed RAG refactor",
+      "Validate hybrid retrieval stack performance and accuracy",
+      "Sanitize Discord and MCP outputs"
+    ]
+  },
+  {
+    "id": "task-message",
+    "query": "duplicate message 쪽 작업 뭐 남아 있어?",
+    "acceptableIntents": ["task", "history"],
+    "expectedAny": [
+      "Trace duplicate-message episodes by time window",
+      "duplicate messages",
+      "message repeating"
+    ]
+  },
+  {
+    "id": "history-duplicate",
+    "query": "중복 메시지 이슈 관련해서 뭐라고 했지?",
+    "acceptableIntents": ["history", "event"],
+    "expectedAny": [
+      "duplicate messages appearing twice",
+      "same sentence/message repeating",
+      "message suppression"
+    ]
+  },
+  {
+    "id": "entity-discord",
+    "query": "claude2bot이 Discord랑 어떻게 연결돼?",
+    "acceptableIntents": ["decision"],
+    "expectedAny": [
+      "claude2bot",
+      "Discord",
+      "uses"
+    ]
+  },
+  {
+    "id": "entity-recall",
+    "query": "recall_memory가 claude2bot에서 무슨 역할이야?",
+    "acceptableIntents": ["decision", "policy"],
+    "expectedAny": [
+      "recall_memory",
+      "claude2bot",
+      "part_of"
+    ]
+  },
+  {
+    "id": "rule-json",
+    "query": "JSON 출력 제약도 있지?",
+    "acceptableIntents": ["policy", "decision"],
+    "expectedAny": [
+      "output strictly in JSON",
+      "specified schema"
+    ]
+  }
+]

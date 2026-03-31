@@ -140,7 +140,8 @@
     "expectedAny": [
       "현재 RAG 구조의 약점은 transcript 오염이다",
       "현재 RAG 구조의 약점은 임베딩 차원 불일치 fallback이다",
-      "현재 RAG 구조의 약점은 policy/history 리랭크가 약한 점이다"
+      "현재 RAG 구조의 약점은 policy/history 리랭크가 약한 점이다",
+      "memory retrieval 쪽 약점은 policy/history 리랭크가 약한 점이다"
     ]
   },
   {
@@ -154,7 +155,8 @@
     ],
     "expectedIntent": "decision",
     "expectedAny": [
-      "장기 메모리는 SQLite를 중심으로 두고 session-start용 context.md도 유지한다"
+      "장기 메모리는 SQLite를 중심으로 두고 session-start용 context.md도 유지한다",
+      "long-term memory storage architecture keeps SQLite as the primary store while preserving context.md for session start"
     ]
   },
   {

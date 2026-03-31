@@ -7,6 +7,24 @@ let ollamaModel = process.env.CLAUDE2BOT_OLLAMA_EMBED_MODEL || OLLAMA_DEFAULT_MO
 let extractorPromise = null
 let warmupPromise = null
 let cachedDims = null
+let lastProviderSwitch = null
+
+function switchProviderToLocal(reason, phase = 'runtime') {
+  const previousModelId = provider === 'ollama' ? `ollama/${ollamaModel}` : provider
+  if (provider !== 'local') {
+    provider = 'local'
+    warmupPromise = null
+    cachedDims = 384
+    lastProviderSwitch = {
+      previousModelId,
+      currentModelId: LOCAL_MODEL,
+      phase,
+      reason: String(reason ?? ''),
+      ts: new Date().toISOString(),
+    }
+    process.stderr.write(`[embed] ${phase} provider switch: ${previousModelId} -> ${LOCAL_MODEL} (${reason})\n`)
+  }
+}
 
 export function configureEmbedding(config = {}) {
   if (config.provider) provider = config.provider
@@ -55,6 +73,12 @@ export function getEmbeddingDims() {
   return provider === 'ollama' ? 768 : 384
 }
 
+export function consumeProviderSwitchEvent() {
+  const event = lastProviderSwitch
+  lastProviderSwitch = null
+  return event
+}
+
 export async function warmupEmbeddingProvider() {
   if (!warmupPromise) {
     warmupPromise = (async () => {
@@ -64,8 +88,7 @@ export async function warmupEmbeddingProvider() {
           cachedDims = vec.length
           return true
         } catch (e) {
-          process.stderr.write(`[embed] ollama warmup failed (${e.message}), falling back to local\n`)
-          provider = 'local'
+          switchProviderToLocal(e.message, 'warmup')
         }
       }
       const extractor = await loadExtractor()
@@ -87,8 +110,7 @@ export async function embedText(text) {
       if (!cachedDims && vec.length > 0) cachedDims = vec.length
       return vec
     } catch (e) {
-      // Fallback to local on ollama failure
-      process.stderr.write(`[embed] ollama failed, using local: ${e.message}\n`)
+      switchProviderToLocal(e.message, 'runtime')
     }
   }
 

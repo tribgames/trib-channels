@@ -1213,14 +1213,14 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: 'recall_memory',
       annotations: { title: 'Memory Recall' },
-      description: 'Search memory DB for relevant facts, tasks, signals, profiles, entities, relations, and episodes. Use silently.\n\nParameters:\n- mode: search | verify | episodes | bulk | tasks | policy | profile\n- query: target fact/event/rule/profile/work description; optional for episodes when timerange-only browsing is intended\n- timerange: optional date filter for all modes, formats: "3d", "1w", "2026-03-28", "2026-03-25~2026-03-28"\n- type: optional search-only filter\n- hints: bulk-only\n- source/context: episodes-only when trace or nearby turns are needed\n\nSearch guide:\n- date-only recall -> episodes + timerange\n- event/topic recall -> episodes + query (+ timerange if known)\n- rule/restriction recall -> verify or policy\n- current work recall -> tasks\n- language/tone/address recall -> profile\n\nCanonical calls:\n- recall_memory(mode="episodes", timerange="2026-03-28")\n- recall_memory(mode="episodes", query="event", timerange="2026-03-28")\n- recall_memory(mode="policy", query="rule or restriction")\n- recall_memory(mode="tasks", query="current work")\n- recall_memory(mode="profile", query="language or tone")\n- recall_memory(mode="verify", query="claim")',
+      description: 'Search memory DB for relevant facts, tasks, signals, profiles, entities, relations, and episodes. Use silently.\n\nParameters:\n- mode: search | verify | episodes | bulk | tasks | policy | profile\n- query: target fact/event/rule/profile/work description; optional for episodes when timerange-only browsing is intended\n- timerange: optional date filter for all modes, formats: "today", "this-week", "3d", "1w", "2026-03", "2026-03-28", "2026-03-25~2026-03-28"\n- type: optional search-only filter\n- hints: bulk-only\n- source/context: episodes-only when trace or nearby turns are needed\n\nSearch guide:\n- date-only recall -> episodes + timerange\n- event/topic recall -> episodes + query (+ timerange if known)\n- rule/restriction recall -> verify or policy\n- current work recall -> tasks\n- language/tone/address recall -> profile\n\nCanonical calls:\n- recall_memory(mode="episodes", timerange="2026-03-28")\n- recall_memory(mode="episodes", query="event", timerange="2026-03-28", context=2, source=true)\n- recall_memory(mode="policy", query="rule or restriction")\n- recall_memory(mode="tasks", query="current work")\n- recall_memory(mode="profile", query="language or tone")\n- recall_memory(mode="verify", query="claim")',
       inputSchema: {
         type: 'object' as const,
         properties: {
           query: { type: 'string', description: 'Search text or shortcut. Shortcuts: "all", "hints", "hint:0,2", "facts", "episodes", "profiles", "tasks", "signals", "entities", "relations". Free text for normal recall. Optional in episodes mode if timerange-only browsing is intended.' },
           mode: { type: 'string', enum: ['search', 'verify', 'episodes', 'bulk', 'tasks', 'policy', 'profile'], default: 'search', description: 'Recall strategy.' },
           type: { type: 'string', enum: ['all', 'facts', 'tasks', 'signals', 'episodes', 'profiles', 'entities', 'relations'], default: 'all', description: 'Search-only memory type filter.' },
-          timerange: { type: 'string', description: 'Time filter for all modes. Formats: "3d"(days), "1w"(weeks), "2026-03-28"(date), "2026-03-25~2026-03-28"(range)' },
+          timerange: { type: 'string', description: 'Time filter for all modes. Formats: "today", "this-week", "3d"(days), "1w"(weeks), "2026-03"(month), "2026-03-28"(date), "2026-03-25~2026-03-28"(range)' },
           limit: { type: 'number', default: 5, description: 'Max results' },
           source: { type: 'boolean', default: false, description: 'Episodes-only: include source trace.' },
           context: { type: ['number', 'string'], description: 'Episodes-only: surrounding turns count or "semantic".' },
@@ -1399,20 +1399,49 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         const contextArg = args.context as string | number | undefined
         const useCompact = args.compact !== false // default true
 
+        const addUtcDays = (value: Date, days: number) => {
+          const next = new Date(value)
+          next.setDate(next.getDate() + days)
+          return next
+        }
+        const monthRange = (value: string) => {
+          const match = String(value).trim().match(/^(\d{4})-(\d{2})$/)
+          if (!match) return null
+          const year = Number(match[1])
+          const month = Number(match[2])
+          if (!Number.isFinite(year) || !Number.isFinite(month) || month < 1 || month > 12) return null
+          const start = `${match[1]}-${match[2]}-01`
+          const nextMonth = month === 12 ? { year: year + 1, month: 1 } : { year, month: month + 1 }
+          const endDate = new Date(Date.UTC(nextMonth.year, nextMonth.month - 1, 1))
+          endDate.setUTCDate(endDate.getUTCDate() - 1)
+          return { start, end: endDate.toISOString().slice(0, 10) }
+        }
+
         // ── Parse timerange (common for all modes) ──
         const timerangeArg = args.timerange as string | undefined
         let trStart: string | null = null
         let trEnd: string | null = null
         if (timerangeArg) {
           const now = new Date()
-          const kst = new Date(now.getTime() + 9 * 60 * 60 * 1000)
-          const today = kst.toISOString().slice(0, 10)
-          const daysAgo = (n: number) => new Date(kst.getTime() - n * 86400000).toISOString().slice(0, 10)
+          const localDate = (value: Date) => {
+            const year = value.getFullYear()
+            const month = String(value.getMonth() + 1).padStart(2, '0')
+            const day = String(value.getDate()).padStart(2, '0')
+            return `${year}-${month}-${day}`
+          }
+          const today = localDate(now)
+          const weekdayOffset = (now.getDay() + 6) % 7
+          const weekStart = localDate(addUtcDays(now, -weekdayOffset))
+          const lastWeekStart = localDate(addUtcDays(now, -(weekdayOffset + 7)))
+          const lastWeekEnd = localDate(addUtcDays(now, -(weekdayOffset + 1)))
+          const daysAgo = (n: number) => localDate(addUtcDays(now, -n))
+          const normalizedTimerange = String(timerangeArg).trim().toLowerCase()
 
-          const dMatch = timerangeArg.match(/^(\d+)d$/i)
-          const wMatch = timerangeArg.match(/^(\d+)w$/i)
-          const rangeMatch = timerangeArg.match(/^(\d{4}-\d{2}-\d{2})~(\d{4}-\d{2}-\d{2})$/)
-          const dateMatch = timerangeArg.match(/^(\d{4}-\d{2}-\d{2})$/)
+          const dMatch = normalizedTimerange.match(/^(\d+)d$/)
+          const wMatch = normalizedTimerange.match(/^(\d+)w$/)
+          const rangeMatch = normalizedTimerange.match(/^(\d{4}-\d{2}-\d{2})~(\d{4}-\d{2}-\d{2})$/)
+          const dateMatch = normalizedTimerange.match(/^(\d{4}-\d{2}-\d{2})$/)
+          const monthMatch = monthRange(normalizedTimerange)
 
           if (dMatch) {
             trStart = daysAgo(Number(dMatch[1]))
@@ -1420,9 +1449,24 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           } else if (wMatch) {
             trStart = daysAgo(Number(wMatch[1]) * 7)
             trEnd = today
+          } else if (normalizedTimerange === 'today' || normalizedTimerange === '오늘') {
+            trStart = today
+            trEnd = today
+          } else if (normalizedTimerange === 'yesterday' || normalizedTimerange === '어제') {
+            trStart = daysAgo(1)
+            trEnd = daysAgo(1)
+          } else if (normalizedTimerange === 'this-week' || normalizedTimerange === 'this week' || normalizedTimerange === 'this_week' || normalizedTimerange === '이번주' || normalizedTimerange === '이번 주') {
+            trStart = weekStart
+            trEnd = today
+          } else if (normalizedTimerange === 'last-week' || normalizedTimerange === 'last week' || normalizedTimerange === 'last_week' || normalizedTimerange === '지난주' || normalizedTimerange === '지난 주') {
+            trStart = lastWeekStart
+            trEnd = lastWeekEnd
           } else if (rangeMatch) {
             trStart = rangeMatch[1]
             trEnd = rangeMatch[2]
+          } else if (monthMatch) {
+            trStart = monthMatch.start
+            trEnd = monthMatch.end
           } else if (dateMatch) {
             trStart = dateMatch[1]
             trEnd = dateMatch[1]
@@ -1431,7 +1475,53 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
 
         const queryLower = query.toLowerCase().trim()
         const queryLike = `%${query.trim()}%`
+        const ftsQuery = query.replace(/['"]/g, ' ').trim()
         const trWhere = trStart && trEnd ? ` AND last_seen >= '${trStart}' AND last_seen <= '${trEnd}T23:59:59'` : ''
+        const normalizeRecallText = (value: unknown) => String(value ?? '').trim().toLowerCase()
+        const tokenizeRecallText = (value: unknown) => {
+          return Array.from(new Set(
+            normalizeRecallText(value)
+              .split(/[^0-9a-zA-Z\u3131-\u318E\uAC00-\uD7A3\u3040-\u30FF\u3400-\u9FFF_-]+/)
+              .filter(token => token.length >= 2),
+          ))
+        }
+        const computeLexicalOverlap = (needle: unknown, haystack: unknown) => {
+          const tokens = tokenizeRecallText(needle)
+          if (tokens.length === 0) return 0
+          const normalizedHaystack = normalizeRecallText(haystack)
+          let hits = 0
+          for (const token of tokens) {
+            if (normalizedHaystack.includes(token)) hits += 1
+          }
+          return Number((hits / tokens.length).toFixed(3))
+        }
+        const buildSourceParts = (row: Record<string, unknown>) => {
+          return [
+            row.source_ref ? String(row.source_ref) : null,
+            row.source_ts ? `ts:${String(row.source_ts)}` : null,
+            row.source_kind ? `kind:${String(row.source_kind)}` : null,
+            row.source_backend ? `backend:${String(row.source_backend)}` : null,
+          ].filter(Boolean) as string[]
+        }
+        const formatEpisodeLine = (ep: Record<string, unknown>, marker = ' ') => {
+          const role = useCompact ? (ep.role === 'user' ? 'u' : ep.role === 'assistant' ? 'a' : ep.role) : ep.role
+          const ts = useCompact ? String(ep.ts ?? '').replace(/:\d{2}\.\d+/, '') : String(ep.ts ?? '')
+          const sourceParts = includeSource ? buildSourceParts(ep) : []
+          const sourceSuffix = sourceParts.length > 0 ? ` [source ${sourceParts.join(' | ')}]` : ''
+          const markerPrefix = marker && marker !== ' ' ? `${marker}` : ''
+          return `${markerPrefix}[${ts}] ${role}: ${String(ep.content ?? '')}${sourceSuffix}`
+        }
+        const dedupeEpisodeRows = (rows: Array<Record<string, unknown>>) => {
+          const seen = new Set<number>()
+          const deduped: Array<Record<string, unknown>> = []
+          for (const row of rows) {
+            const id = Number(row.id ?? row.entity_id ?? 0)
+            if (!id || seen.has(id)) continue
+            seen.add(id)
+            deduped.push(row)
+          }
+          return deduped
+        }
         const inferredIntent = query
           ? await memoryStore.classifyQueryIntent(query)
           : { primary: 'decision', scores: {} as Record<string, number> }
@@ -1462,12 +1552,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
             const type = String(row.type ?? '')
             const subtype = String(row.subtype ?? '')
             const confidence = row.confidence ?? row.score ?? row.quality_score
-            const sourceParts = [
-              row.source_ref ? String(row.source_ref) : null,
-              row.source_ts ? `ts:${String(row.source_ts)}` : null,
-              row.source_kind ? `kind:${String(row.source_kind)}` : null,
-              row.source_backend ? `backend:${String(row.source_backend)}` : null,
-            ].filter(Boolean)
+            const sourceParts = buildSourceParts(row)
             const meta = [
               type,
               subtype,
@@ -1479,75 +1564,19 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         }
 
         const loadProfileRows = () => {
-          const rows: Array<Record<string, unknown>> = []
-          if (query) {
-            rows.push(...memoryStore.db.prepare(`
-              SELECT 'profile' AS type, key AS subtype, value AS content, confidence, last_seen
-              FROM profiles
-              WHERE status = 'active'
-                AND (key LIKE ? OR value LIKE ?)
-              ORDER BY confidence DESC, last_seen DESC
-              LIMIT ?
-            `).all(queryLike, queryLike, limit) as Array<Record<string, unknown>>)
-          } else {
-            rows.push(...memoryStore.db.prepare(`
-              SELECT 'profile' AS type, key AS subtype, value AS content, confidence, last_seen
-              FROM profiles
-              WHERE status = 'active'
-              ORDER BY confidence DESC, last_seen DESC
-              LIMIT ?
-            `).all(limit) as Array<Record<string, unknown>>)
-          }
-          const signalRows = memoryStore.db.prepare(`
-            SELECT 'signal' AS type, kind AS subtype, value AS content, score AS confidence, last_seen
-            FROM signals
-            WHERE kind IN ('language', 'tone', 'response_style')
-              ${query ? 'AND value LIKE ?' : ''}
-            ORDER BY score DESC, last_seen DESC
-            LIMIT ?
-          `).all(...(query ? [queryLike, Math.max(1, Math.ceil(limit / 2))] : [Math.max(1, Math.ceil(limit / 2))])) as Array<Record<string, unknown>>
-          rows.push(...signalRows)
-          return rows.slice(0, limit)
+          return memoryStore.getProfileRecallRows(query, limit) as Array<Record<string, unknown>>
         }
 
         const loadPolicyRows = () => {
-          const factTypes = ['constraint', 'preference', 'decision', 'fact']
-          const rows = memoryStore.db.prepare(`
-            SELECT 'fact' AS type, fact_type AS subtype, text AS content, confidence, last_seen, source_episode_id
-            FROM facts
-            WHERE status = 'active'
-              AND fact_type IN (${factTypes.map(() => '?').join(', ')})
-              ${query ? 'AND text LIKE ?' : ''}
-              ${trWhere}
-            ORDER BY confidence DESC, retrieval_count DESC, mention_count DESC, last_seen DESC
-            LIMIT ?
-          `).all(...factTypes, ...(query ? [queryLike] : []), limit) as Array<Record<string, unknown>>
-          return rows
+          return memoryStore.getPolicyRecallRows(query, limit, { startDate: trStart, endDate: trEnd }) as Array<Record<string, unknown>>
         }
 
         const loadEntityRows = () => {
-          return memoryStore.db.prepare(`
-            SELECT 'entity' AS type, entity_type AS subtype, name AS content, description, last_seen
-            FROM entities
-            WHERE ${query ? '(name LIKE ? OR description LIKE ?)' : '1=1'}
-            ORDER BY last_seen DESC, id DESC
-            LIMIT ?
-          `).all(...(query ? [queryLike, queryLike, limit] : [limit])) as Array<Record<string, unknown>>
+          return memoryStore.getEntityRecallRows(query, limit) as Array<Record<string, unknown>>
         }
 
         const loadRelationRows = () => {
-          return memoryStore.db.prepare(`
-            SELECT 'relation' AS type, r.relation_type AS subtype,
-                   trim(se.name || ' -> ' || te.name || CASE WHEN r.description IS NOT NULL AND r.description != '' THEN ' — ' || r.description ELSE '' END) AS content,
-                   r.confidence, r.last_seen
-            FROM relations r
-            JOIN entities se ON se.id = r.source_entity_id
-            JOIN entities te ON te.id = r.target_entity_id
-            WHERE r.status = 'active'
-              ${query ? "AND (se.name LIKE ? OR te.name LIKE ? OR r.relation_type LIKE ? OR COALESCE(r.description, '') LIKE ?)" : ''}
-            ORDER BY r.confidence DESC, r.last_seen DESC
-            LIMIT ?
-          `).all(...(query ? [queryLike, queryLike, queryLike, queryLike, limit] : [limit])) as Array<Record<string, unknown>>
+          return memoryStore.getRelationRecallRows(query, limit) as Array<Record<string, unknown>>
         }
 
         const loadDirectTypeRows = (kind: string) => {
@@ -1568,49 +1597,33 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
             const verifyLimit = Math.min(limit, 3)
             const { embedText: embedFn } = await import('./lib/embedding-provider.mjs')
             const vector = await embedFn(query)
-            let matches: Array<Record<string, unknown>> = []
+            const matches = await memoryStore.verifyMemoryClaim(query, {
+              limit: verifyLimit,
+              queryVector: vector,
+              ftsQuery,
+            }) as Array<Record<string, unknown>>
 
-            if (memoryStore.vecEnabled && Array.isArray(vector) && vector.length > 0) {
-              const hex = Buffer.from(new Float32Array(vector).buffer).toString('hex')
-              const knnRows = memoryStore.db.prepare(
-                `SELECT rowid, distance FROM vec_memory WHERE embedding MATCH X'${hex}' ORDER BY distance LIMIT ?`
-              ).all(verifyLimit * 3) as Array<{ rowid: number; distance: number }>
-
-              for (const knn of knnRows) {
-                const { entityType, entityId } = memoryStore._vecRowToEntity(knn.rowid)
-                if (entityType !== 'fact') continue
-                const fact = memoryStore.db.prepare(
-                  `SELECT id, text, confidence, mention_count, last_seen, status FROM facts WHERE id = ? AND status = 'active'`
-                ).get(entityId) as Record<string, unknown> | undefined
-                if (fact) {
-                  matches.push({ ...fact, type: 'fact', similarity: 1 - knn.distance })
-                }
+            const best = matches[0]
+            if (!best || !best.accepted) {
+              result = {
+                content: [{
+                  type: 'text',
+                  text: JSON.stringify({
+                    matched: false,
+                    fact: null,
+                    query,
+                    best_candidate: best
+                      ? {
+                          fact: best.text ?? best.content ?? '',
+                          confidence: Number(best.confidence ?? best.similarity ?? 0).toFixed(2),
+                          lexical_overlap: Number(best.lexical_overlap ?? 0).toFixed(2),
+                          verify_score: Number(best.verify_score ?? 0).toFixed(2),
+                        }
+                      : null,
+                  }),
+                }],
               }
-            }
-
-            // Fallback: FTS on facts
-            if (matches.length === 0) {
-              try {
-                const ftsMatches = memoryStore.db.prepare(`
-                  SELECT f.id, f.text, f.confidence, f.mention_count, f.last_seen, f.status
-                  FROM facts_fts
-                  JOIN facts f ON f.id = facts_fts.rowid
-                  WHERE facts_fts MATCH ? AND f.status = 'active'
-                  ORDER BY bm25(facts_fts)
-                  LIMIT ?
-                `).all(query.replace(/['"]/g, ''), verifyLimit) as Array<Record<string, unknown>>
-                for (const f of ftsMatches) {
-                  matches.push({ ...f, similarity: 0.5 })
-                }
-              } catch { /* FTS may fail on special chars */ }
-            }
-
-            matches = matches.slice(0, verifyLimit)
-
-            if (matches.length === 0) {
-              result = { content: [{ type: 'text', text: JSON.stringify({ matched: false, fact: null, query }) }] }
             } else {
-              const best = matches[0]
               result = {
                 content: [{
                   type: 'text',
@@ -1620,11 +1633,15 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
                     mention_count: best.mention_count ?? 0,
                     last_seen: best.last_seen ?? null,
                     confidence: Number(best.confidence ?? best.similarity ?? 0).toFixed(2),
+                    lexical_overlap: Number(best.lexical_overlap ?? 0).toFixed(2),
+                    verify_score: Number(best.verify_score ?? 0).toFixed(2),
                     status: best.status ?? 'active',
                     all_matches: matches.map(m => ({
                       fact: m.text ?? m.content ?? '',
                       mention_count: m.mention_count ?? 0,
                       confidence: Number(m.confidence ?? m.similarity ?? 0).toFixed(2),
+                      lexical_overlap: Number(m.lexical_overlap ?? 0).toFixed(2),
+                      verify_score: Number(m.verify_score ?? 0).toFixed(2),
                     })),
                   }),
                 }],
@@ -1657,61 +1674,65 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
 
             const { embedText: embedFn } = await import('./lib/embedding-provider.mjs')
             const vector = query ? await embedFn(query) : []
-            let episodes: Array<Record<string, unknown>> = []
-
-            if (memoryStore.vecEnabled && Array.isArray(vector) && vector.length > 0) {
-              const hex = Buffer.from(new Float32Array(vector).buffer).toString('hex')
-              const knnRows = memoryStore.db.prepare(
-                `SELECT rowid, distance FROM vec_memory WHERE embedding MATCH X'${hex}' ORDER BY distance LIMIT ?`
-              ).all(limit * 5) as Array<{ rowid: number; distance: number }>
-
-              for (const knn of knnRows) {
-                const { entityType, entityId } = memoryStore._vecRowToEntity(knn.rowid)
-                if (entityType !== 'episode') continue
-                const ep = memoryStore.db.prepare(
-                  `SELECT id, ts, day_key, role, content FROM episodes WHERE id = ? AND role = 'user' AND day_key >= ? AND day_key <= ?`
-                ).get(entityId, startDate, endDate) as Record<string, unknown> | undefined
-                if (ep) {
-                  episodes.push({ ...ep, similarity: 1 - knn.distance })
-                }
-              }
-            }
-
-            // Fallback: FTS + date filter on episodes
-            if (episodes.length === 0 && query) {
-              try {
-                episodes = memoryStore.db.prepare(`
-                  SELECT e.id, e.ts, e.day_key, e.role, e.content, bm25(episodes_fts) AS score
-                  FROM episodes_fts
-                  JOIN episodes e ON e.id = episodes_fts.rowid
-                  WHERE episodes_fts MATCH ? AND e.role = 'user' AND e.day_key >= ? AND e.day_key <= ?
-                  ORDER BY score
-                  LIMIT ?
-                `).all(query.replace(/['"]/g, ''), startDate, endDate, limit) as Array<Record<string, unknown>>
-              } catch { /* FTS may fail */ }
-            }
-
-            if (episodes.length === 0 && !query) {
-              episodes = memoryStore.db.prepare(`
-                SELECT e.id, e.ts, e.day_key, e.role, e.content
-                FROM episodes e
-                WHERE e.role = 'user' AND e.day_key >= ? AND e.day_key <= ?
-                ORDER BY e.ts DESC
-                LIMIT ?
-              `).all(startDate, endDate, limit) as Array<Record<string, unknown>>
-            }
-
-            episodes = episodes.slice(0, limit)
+            const episodes = await memoryStore.getEpisodeRecallRows({
+              query,
+              startDate,
+              endDate,
+              limit,
+              queryVector: vector,
+              ftsQuery,
+            }) as Array<Record<string, unknown>>
 
             if (episodes.length === 0) {
               result = { content: [{ type: 'text', text: '(no episodes found in date range)' }] }
             } else {
-              const lines = episodes.map(ep => {
-                const role = useCompact ? (ep.role === 'user' ? 'u' : 'a') : ep.role
-                const ts = useCompact ? String(ep.ts ?? '').replace(/:\d{2}\.\d+/, '') : String(ep.ts ?? '')
-                return `[${ts}] ${role}: ${ep.content}`
-              })
-              result = { content: [{ type: 'text', text: lines.join('\n') }] }
+              const lines = episodes.map(ep => formatEpisodeLine(ep))
+              const contextBlocks: string[] = []
+
+              if (query && contextArg !== undefined) {
+                for (const matched of episodes) {
+                  const matchedId = Number(matched.id ?? matched.entity_id ?? 0)
+                  if (!matchedId || !matched.day_key) continue
+                  const dayEpisodes = memoryStore.getEpisodesForDate(String(matched.day_key))
+                    .map((ep: Record<string, unknown>) => ({
+                      ...ep,
+                      day_key: matched.day_key,
+                      source_ref: matched.source_ref ?? null,
+                      source_backend: matched.source_backend ?? null,
+                    }))
+                  if (contextArg === 'semantic') {
+                    const plan = await buildSemanticDayPlan(dayEpisodes)
+                    const idx = plan.rows.findIndex((row: Record<string, unknown>) => Number(row.id) === matchedId)
+                    if (idx >= 0) {
+                      const seg = plan.segments.find((s: { start: number; end: number }) => idx >= s.start && idx <= s.end)
+                      if (seg) {
+                        contextBlocks.push(`--- context (semantic, ${matched.day_key}) ---`)
+                        for (let i = seg.start; i <= seg.end; i += 1) {
+                          const row = dayEpisodes.find((ep: Record<string, unknown>) => Number(ep.id) === Number(plan.rows[i]?.id))
+                          if (!row) continue
+                          contextBlocks.push(formatEpisodeLine(row, Number(row.id) === matchedId ? '*' : ' '))
+                        }
+                      }
+                    }
+                  } else {
+                    const n = Math.max(1, Number(contextArg))
+                    const matchIdx = dayEpisodes.findIndex((ep: Record<string, unknown>) => Number(ep.id) === matchedId)
+                    if (matchIdx >= 0) {
+                      const start = Math.max(0, matchIdx - n)
+                      const end = Math.min(dayEpisodes.length - 1, matchIdx + n)
+                      contextBlocks.push(`--- context (±${n}, ${matched.day_key}) ---`)
+                      for (let i = start; i <= end; i += 1) {
+                        contextBlocks.push(formatEpisodeLine(dayEpisodes[i], i === matchIdx ? '*' : ' '))
+                      }
+                    }
+                  }
+                }
+              }
+
+              const output = contextBlocks.length > 0
+                ? `--- matches ---\n${lines.join('\n')}\n\n${contextBlocks.join('\n')}`
+                : lines.join('\n')
+              result = { content: [{ type: 'text', text: output }] }
             }
           } catch (e: unknown) {
             result = { content: [{ type: 'text', text: `episodes error: ${e instanceof Error ? e.message : String(e)}` }], isError: true }
@@ -1728,72 +1749,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           }
           try {
             const { embedText: embedFn } = await import('./lib/embedding-provider.mjs')
-            const details: Array<{ hint: string; status: string; fact?: string; confidence?: string; mention_count?: number }> = []
-            let confirmed = 0, outdated = 0, unknown = 0
-
-            for (const hint of hints) {
-              const clean = hint.trim()
-              if (!clean) { unknown++; details.push({ hint: clean, status: '?' }); continue }
-
-              let bestMatch: Record<string, unknown> | null = null
-
-              // Vector search on facts
-              try {
-                const vector = await embedFn(clean)
-                if (memoryStore.vecEnabled && Array.isArray(vector) && vector.length > 0) {
-                  const hex = Buffer.from(new Float32Array(vector).buffer).toString('hex')
-                  const knnRows = memoryStore.db.prepare(
-                    `SELECT rowid, distance FROM vec_memory WHERE embedding MATCH X'${hex}' ORDER BY distance LIMIT 3`
-                  ).all() as Array<{ rowid: number; distance: number }>
-
-                  for (const knn of knnRows) {
-                    const { entityType, entityId } = memoryStore._vecRowToEntity(knn.rowid)
-                    if (entityType !== 'fact') continue
-                    const fact = memoryStore.db.prepare(
-                      `SELECT id, text, confidence, mention_count, last_seen, status FROM facts WHERE id = ? AND status = 'active'`
-                    ).get(entityId) as Record<string, unknown> | undefined
-                    if (fact) {
-                      const similarity = 1 - knn.distance
-                      if (similarity > 0.5) {
-                        bestMatch = { ...fact, type: 'fact', similarity }
-                        break
-                      }
-                    }
-                  }
-                }
-              } catch { /* vector search failed */ }
-
-              // Fallback: FTS
-              if (!bestMatch) {
-                try {
-                  const fts = memoryStore.db.prepare(`
-                    SELECT f.id, f.text, f.confidence, f.mention_count, f.last_seen, f.status
-                    FROM facts_fts JOIN facts f ON f.id = facts_fts.rowid
-                    WHERE facts_fts MATCH ? AND f.status = 'active'
-                    ORDER BY bm25(facts_fts) LIMIT 1
-                  `).get(clean.replace(/['"]/g, '')) as Record<string, unknown> | undefined
-                  if (fts) bestMatch = { ...fts, similarity: 0.5 }
-                } catch { /* FTS fail */ }
-              }
-
-              if (bestMatch) {
-                const status = bestMatch.status === 'active' ? '✓' : '✗'
-                if (status === '✓') confirmed++; else outdated++
-                details.push({
-                  hint: clean,
-                  status,
-                  fact: String(bestMatch.text ?? bestMatch.content ?? ''),
-                  confidence: Number(bestMatch.confidence ?? bestMatch.similarity ?? 0).toFixed(2),
-                  mention_count: Number(bestMatch.mention_count ?? 0),
-                })
-              } else {
-                unknown++
-                details.push({ hint: clean, status: '?' })
-              }
-            }
-
-            const summary = `✓ confirmed(${confirmed}) ✗ outdated(${outdated}) ? unknown(${unknown})`
-            result = { content: [{ type: 'text', text: JSON.stringify({ summary, details }, null, useCompact ? 0 : 2) }] }
+            const summary = await memoryStore.bulkVerifyHints(hints, { embedFn }) as Record<string, unknown>
+            result = { content: [{ type: 'text', text: JSON.stringify(summary, null, useCompact ? 0 : 2) }] }
           } catch (e: unknown) {
             result = { content: [{ type: 'text', text: `bulk error: ${e instanceof Error ? e.message : String(e)}` }], isError: true }
           }
@@ -1841,58 +1798,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         // Special query shortcuts for direct DB access
         if (queryLower === 'all' || queryLower === 'facts' || queryLower === 'episodes' || queryLower === 'profiles' || queryLower === 'tasks' || queryLower === 'signals' || queryLower === 'entities' || queryLower === 'relations') {
           try {
-            let rows: Array<Record<string, unknown>> = []
-
-            if (queryLower === 'all' || queryLower === 'facts') {
-              const facts = memoryStore.db.prepare(`
-                SELECT 'fact' AS type, fact_type AS subtype, text AS content, confidence, mention_count, last_seen, status
-                FROM facts WHERE status = 'active'${trWhere}
-                ORDER BY confidence DESC, mention_count DESC, last_seen DESC
-                LIMIT ?
-              `).all(queryLower === 'all' ? Math.ceil(limit / 2) : limit) as Array<Record<string, unknown>>
-              rows.push(...facts)
-            }
-            if (queryLower === 'all' || queryLower === 'tasks') {
-              const tasks = memoryStore.db.prepare(`
-                SELECT 'task' AS type, stage AS subtype, title AS content, confidence, last_seen, status, priority
-                FROM tasks WHERE status IN ('active', 'in_progress', 'paused')${trWhere}
-                ORDER BY CASE priority WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END, last_seen DESC
-                LIMIT ?
-              `).all(queryLower === 'all' ? Math.ceil(limit / 3) : limit) as Array<Record<string, unknown>>
-              rows.push(...tasks)
-            }
-            if (queryLower === 'all' || queryLower === 'signals') {
-              const signals = memoryStore.db.prepare(`
-                SELECT 'signal' AS type, kind AS subtype, value AS content, score AS confidence, last_seen
-                FROM signals${trStart && trEnd ? ` WHERE last_seen >= '${trStart}' AND last_seen <= '${trEnd}T23:59:59'` : ''}
-                ORDER BY score DESC, last_seen DESC
-                LIMIT ?
-              `).all(queryLower === 'all' ? Math.ceil(limit / 3) : limit) as Array<Record<string, unknown>>
-              rows.push(...signals)
-            }
-            if (queryLower === 'all' || queryLower === 'profiles') {
-              rows.push(...loadProfileRows().slice(0, queryLower === 'all' ? Math.ceil(limit / 3) : limit))
-            }
-            if (queryLower === 'all' || queryLower === 'episodes') {
-              const episodes = memoryStore.db.prepare(`
-                SELECT 'episode' AS type, role AS subtype, content, ts AS last_seen
-                FROM episodes
-                WHERE role = 'user'
-                  AND kind NOT IN ('schedule-inject', 'event-inject')
-                  AND content NOT LIKE 'You are consolidating%'
-                  AND LENGTH(content) >= 10
-                  ${trStart && trEnd ? `AND day_key >= '${trStart}' AND day_key <= '${trEnd}'` : ''}
-                ORDER BY ts DESC
-                LIMIT ?
-              `).all(queryLower === 'all' ? Math.ceil(limit / 3) : limit) as Array<Record<string, unknown>>
-              rows.push(...episodes)
-            }
-            if (queryLower === 'all' || queryLower === 'entities') {
-              rows.push(...loadEntityRows().slice(0, queryLower === 'all' ? Math.ceil(limit / 4) : limit))
-            }
-            if (queryLower === 'all' || queryLower === 'relations') {
-              rows.push(...loadRelationRows().slice(0, queryLower === 'all' ? Math.ceil(limit / 4) : limit))
-            }
+            const rows = memoryStore.getRecallShortcutRows(queryLower, limit, { startDate: trStart, endDate: trEnd }) as Array<Record<string, unknown>>
 
             if (rows.length === 0) {
               result = { content: [{ type: 'text', text: `(no ${queryLower} found)` }] }
@@ -1981,9 +1887,9 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           for (const r of episodeResults) {
             const matchedId = Number(r.entity_id ?? r.id ?? 0)
             if (!matchedId) continue
-            const matchedEp = memoryStore.db.prepare('SELECT day_key FROM episodes WHERE id = ?').get(matchedId) as { day_key?: string } | undefined
-            if (!matchedEp?.day_key) continue
-            const dayEpisodes = memoryStore.getEpisodesForDate(matchedEp.day_key)
+            const dayKey = memoryStore.getEpisodeDayKey(matchedId)
+            if (!dayKey) continue
+            const dayEpisodes = memoryStore.getEpisodesForDate(dayKey)
             if (contextArg === 'semantic') {
               const plan = await buildSemanticDayPlan(dayEpisodes)
               const idx = plan.rows.findIndex((row: Record<string, unknown>) => Number(row.id) === matchedId)
@@ -1994,7 +1900,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
                   const endIdx = dayEpisodes.findIndex((e: Record<string, unknown>) => Number(e.id) === Number(plan.rows[seg.end]?.id))
                   if (startIdx >= 0 && endIdx >= 0) {
                     const slice = dayEpisodes.slice(startIdx, endIdx + 1)
-                    contextEpisodes.push(`--- context (semantic segment, ${matchedEp.day_key}) ---`)
+                    contextEpisodes.push(`--- context (semantic segment, ${dayKey}) ---`)
                     for (const ep of slice) {
                       const role = useCompact ? (ep.role === 'user' ? 'u' : 'a') : ep.role
                       const ts = useCompact ? String(ep.ts ?? '').replace(/:\d{2}\.\d+/, '') : String(ep.ts ?? '')
@@ -2009,7 +1915,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
               if (matchIdx >= 0) {
                 const start = Math.max(0, matchIdx - n)
                 const end = Math.min(dayEpisodes.length - 1, matchIdx + n)
-                contextEpisodes.push(`--- context (±${n}, ${matchedEp.day_key}) ---`)
+                contextEpisodes.push(`--- context (±${n}, ${dayKey}) ---`)
                 for (let i = start; i <= end; i++) {
                   const ep = dayEpisodes[i]
                   const role = useCompact ? (ep.role === 'user' ? 'u' : 'a') : ep.role
@@ -2276,39 +2182,33 @@ async function handleInbound(
     ...(msg.imagePath ? { image_path: msg.imagePath } : {}),
   }
 
-  // Send message to Claude immediately — do not block on memory context
+  // Build memory context first, then send message + context together
+  let memoryContextBlock = ''
+  try {
+    const memoryContext = await memoryStore.buildInboundMemoryContext(messageBody, {
+      channelId: route.targetChatId,
+      userId: msg.userId,
+    })
+    if (memoryContext) {
+      memoryContextBlock = `<memory-context>\n${memoryContext}\n</memory-context>`
+    }
+  } catch (e) {
+    process.stderr.write(`claude2bot: buildInboundMemoryContext failed: ${e}\n`)
+  }
+
+  const notificationContent = memoryContextBlock
+    ? `${memoryContextBlock}\n\n[${now}]\n${messageBody}`
+    : `[${now}]\n${messageBody}`
+
   void mcp.notification({
     method: 'notifications/claude/channel',
     params: {
-      content: `[${now}]\n${messageBody}`,
+      content: notificationContent,
       meta: notificationMeta,
     },
   }).catch(e => {
     process.stderr.write(`claude2bot: notification failed: ${e}\n`)
   })
-
-  // Build memory context in the background and inject as a follow-up notification
-  void (async () => {
-    try {
-      const memoryContext = await memoryStore.buildInboundMemoryContext(messageBody, {
-        channelId: route.targetChatId,
-        userId: msg.userId,
-      })
-      if (memoryContext) {
-        void mcp.notification({
-          method: 'notifications/claude/channel',
-          params: {
-            content: `<memory-context>\n${memoryContext}\n</memory-context>`,
-            meta: { chat_id: route.targetChatId, user: 'system:memory-context' },
-          },
-        }).catch(e => {
-          process.stderr.write(`claude2bot: memory context notification failed: ${e}\n`)
-        })
-      }
-    } catch (e) {
-      process.stderr.write(`claude2bot: buildInboundMemoryContext failed: ${e}\n`)
-    }
-  })()
 
   memoryStore.appendEpisode({
     ts: msg.ts,

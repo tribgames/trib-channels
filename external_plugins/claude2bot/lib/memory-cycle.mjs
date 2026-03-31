@@ -126,28 +126,6 @@ function extractJsonObject(text) {
   try { return JSON.parse(candidate.slice(start, end + 1)) } catch { return null }
 }
 
-function containsHangul(text) {
-  return /[\u1100-\u11FF\u3130-\u318F\uAC00-\uD7AF]/.test(String(text ?? ''))
-}
-
-function jsonPayloadContainsHangul(value) {
-  if (typeof value === 'string') return containsHangul(value)
-  if (Array.isArray(value)) return value.some(item => jsonPayloadContainsHangul(item))
-  if (value && typeof value === 'object') return Object.values(value).some(item => jsonPayloadContainsHangul(item))
-  return false
-}
-
-function normalizeJsonPayloadToEnglish(payload, ws, options = {}) {
-  if (!payload || typeof payload !== 'object' || !jsonPayloadContainsHangul(payload)) return payload
-  const label = String(options.label ?? 'memory payload').trim() || 'memory payload'
-  const serialized = JSON.stringify(payload, null, 2)
-  const prompt = `Rewrite every natural-language string value in this ${label} JSON object into concise English.\nRules:\n- Return JSON only.\n- Preserve the exact JSON shape, keys, arrays, nulls, booleans, and numbers.\n- Preserve proper nouns, product names, file paths, URLs, emails, IDs, numbers, code symbols.\n- Avoid Hangul unless it is part of an exact identifier or proper noun.\n\n${serialized}`
-  try {
-    const rewritten = extractJsonObject(execClaudePrompt(prompt, { cwd: ws, timeout: Number(options.timeout ?? 120000) }))
-    return rewritten && typeof rewritten === 'object' ? rewritten : payload
-  } catch { return payload }
-}
-
 function cosineSimilarity(a, b) {
   if (!Array.isArray(a) || !Array.isArray(b) || a.length === 0 || a.length !== b.length) return 0
   let dot = 0, na = 0, nb = 0
@@ -258,10 +236,29 @@ async function prepareConsolidationCandidates(candidates, maxPerBatch, dayEpisod
   return prepared
 }
 
+async function resolveCycleLlmOutput(prompt, ws, options = {}) {
+  if (typeof options.llm === 'function') {
+    return await options.llm({
+      prompt,
+      ws,
+      provider: options.provider ?? null,
+      timeout: options.timeout ?? null,
+      mode: options.mode ?? 'cycle',
+      batchIndex: options.batchIndex ?? 0,
+      dayKey: options.dayKey ?? null,
+      candidates: options.candidates ?? [],
+    })
+  }
+  if (options.provider) {
+    return await callLLM(prompt, options.provider, { timeout: options.timeout ?? 180000, cwd: ws })
+  }
+  return execClaudePrompt(prompt, { cwd: ws, timeout: options.timeout ?? 180000 })
+}
+
 // ── Public API ──
 
 export async function consolidateCandidateDay(dayKey, ws, options = {}) {
-  const store = getStore()
+  const store = options.store ?? getStore()
   const maxPerBatch = Math.max(1, Number(options.maxCandidatesPerBatch ?? MAX_MEMORY_CANDIDATES_PER_DAY))
   const maxBatches = Math.max(1, Number(options.maxBatches ?? MAX_MEMORY_CONSOLIDATE_BATCHES_PER_DAY))
   let processed = 0, mergedFacts = 0, mergedTasks = 0, mergedSignals = 0
@@ -290,10 +287,14 @@ export async function consolidateCandidateDay(dayKey, ws, options = {}) {
 
     const prompt = template.replace('{{DATE}}', dayKey).replace('{{CANDIDATES}}', candidateText + existingMemorySection)
     try {
-      const provider = options.provider ?? null
-      const raw = provider
-        ? await callLLM(prompt, provider, { timeout: 180000, cwd: ws })
-        : execClaudePrompt(prompt, { cwd: ws, timeout: 180000 })
+      const raw = await resolveCycleLlmOutput(prompt, ws, {
+        ...options,
+        mode: 'cycle2',
+        dayKey,
+        batchIndex: batch,
+        candidates,
+        timeout: 180000,
+      })
       const parsed = extractJsonObject(raw)
       if (!parsed) { process.stderr.write(`[memory-cycle] consolidate ${dayKey}: invalid JSON\n`); break }
       const srcEp = candidates[0]?.episode_id ?? null
@@ -545,8 +546,8 @@ const DEFAULT_CYCLE1_PROVIDER = { connection: 'codex', model: 'gpt-5.3-codex-spa
 const MAX_CYCLE1_CANDIDATES_PER_BATCH = 50
 const MAX_CYCLE1_BATCHES = 5
 
-export async function runCycle1(ws, config) {
-  const store = getStore()
+export async function runCycle1(ws, config, options = {}) {
+  const store = options.store ?? getStore()
   const cycleConfig = readCycleConfig()
   const lastRun = cycleConfig.lastCycle1At || 0
 
@@ -602,7 +603,14 @@ export async function runCycle1(ws, config) {
     // Call LLM via provider abstraction
     let raw
     try {
-      raw = await callLLM(extractionPrompt, provider, { timeout, cwd: ws })
+      raw = await resolveCycleLlmOutput(extractionPrompt, ws, {
+        ...options,
+        mode: 'cycle1',
+        batchIndex: batch,
+        candidates,
+        provider,
+        timeout,
+      })
     } catch (e) {
       process.stderr.write(`[memory-cycle1] batch ${batch} LLM error: ${e.message}\n`)
       break
@@ -640,7 +648,7 @@ export async function runCycle1(ws, config) {
   cycleState.cycle1.lastRunAt = new Date().toISOString()
   saveCycleState(cycleState)
 
-  if (!cycleState.cycle2.lastRunAt) {
+  if (!options.skipWaterfall && !cycleState.cycle2.lastRunAt) {
     process.stderr.write('[memory-cycle1] cycle2 never ran — triggering waterfall chain\n')
     try {
       await sleepCycle(ws)
@@ -679,7 +687,7 @@ export function parseCycle3Day(day) {
 
 // ── Cycle3: Weekly gradual decay ──
 
-const CYCLE3_HEAT_THRESHOLD = 0.3
+const CYCLE3_HEAT_THRESHOLD = 0.6
 const CYCLE3_DEPRECATED_GRACE_DAYS = 30
 
 function computeHeatScore(row) {
@@ -687,8 +695,10 @@ function computeHeatScore(row) {
   const retrievalCount = Number(row.retrieval_count ?? 0)
   const lastSeen = row.last_seen ? new Date(row.last_seen).getTime() : 0
   const daysSinceLastSeen = lastSeen ? Math.max(0, (Date.now() - lastSeen) / 86400000) : 999
-  const recencyBonus = Math.max(0, 30 - daysSinceLastSeen) / 30
-  return (mentionCount * 2) + (retrievalCount * 3) + recencyBonus
+  const mentionTerm = Math.log1p(Math.max(0, mentionCount)) * 0.7
+  const retrievalTerm = Math.log1p(Math.max(0, retrievalCount)) * 0.95
+  const recencyTerm = Math.exp(-daysSinceLastSeen / 21) * 0.55
+  return Number((mentionTerm + retrievalTerm + recencyTerm).toFixed(3))
 }
 
 export async function runCycle3(ws, options = {}) {
@@ -707,87 +717,33 @@ export async function runCycle3(ws, options = {}) {
 
   // Phase 1: Compute heat scores and deprecate cold items
   // Facts
-  const activeFacts = store.db.prepare(
-    `SELECT id, mention_count, retrieval_count, last_seen FROM facts WHERE status = 'active'`
-  ).all()
-  for (const row of activeFacts) {
-    const heat = computeHeatScore(row)
-    if (heat < threshold) {
-      store.db.prepare(`UPDATE facts SET status = 'deprecated', last_seen = ? WHERE id = ?`).run(nowISO, row.id)
-      deprecatedFacts++
-    }
-  }
+  const coldFactIds = store.getDecayRows('fact')
+    .filter(row => computeHeatScore(row) < threshold)
+    .map(row => row.id)
+  deprecatedFacts = store.markRowsDeprecated('fact', coldFactIds, nowISO)
 
   // Tasks
-  const activeTasks = store.db.prepare(
-    `SELECT id, retrieval_count, last_seen FROM tasks WHERE status = 'active'`
-  ).all()
-  for (const row of activeTasks) {
-    const heat = computeHeatScore(row)
-    if (heat < threshold) {
-      store.db.prepare(`UPDATE tasks SET status = 'deprecated', last_seen = ? WHERE id = ?`).run(nowISO, row.id)
-      deprecatedTasks++
-    }
-  }
+  const coldTaskIds = store.getDecayRows('task')
+    .filter(row => computeHeatScore(row) < threshold)
+    .map(row => row.id)
+  deprecatedTasks = store.markRowsDeprecated('task', coldTaskIds, nowISO)
 
   // Signals
-  const activeSignals = store.db.prepare(
-    `SELECT id, retrieval_count, last_seen FROM signals WHERE status = 'active'`
-  ).all()
-  for (const row of activeSignals) {
-    const heat = computeHeatScore(row)
-    if (heat < threshold) {
-      store.db.prepare(`UPDATE signals SET status = 'deprecated', last_seen = ? WHERE id = ?`).run(nowISO, row.id)
-      deprecatedSignals++
-    }
-  }
+  const coldSignalIds = store.getDecayRows('signal')
+    .filter(row => computeHeatScore(row) < threshold)
+    .map(row => row.id)
+  deprecatedSignals = store.markRowsDeprecated('signal', coldSignalIds, nowISO)
 
   // Phase 2: Hard delete deprecated items past grace period
   const graceThreshold = new Date(Date.now() - graceDays * 86400000).toISOString()
 
-  const staleFactIds = store.db.prepare(
-    `SELECT id FROM facts WHERE status = 'deprecated' AND last_seen < ?`
-  ).all(graceThreshold).map(r => r.id)
-  if (staleFactIds.length > 0) {
-    for (const id of staleFactIds) {
-      try { store.db.prepare(`DELETE FROM facts_fts WHERE rowid = ?`).run(id) } catch { /* ok */ }
-      try { store.db.prepare(`DELETE FROM memory_vectors WHERE entity_type = 'fact' AND entity_id = ?`).run(id) } catch { /* ok */ }
-    }
-    const placeholders = staleFactIds.map(() => '?').join(',')
-    store.db.prepare(`DELETE FROM facts WHERE id IN (${placeholders})`).run(...staleFactIds)
-    deletedFacts = staleFactIds.length
-  }
-
-  const staleTaskIds = store.db.prepare(
-    `SELECT id FROM tasks WHERE status = 'deprecated' AND last_seen < ?`
-  ).all(graceThreshold).map(r => r.id)
-  if (staleTaskIds.length > 0) {
-    for (const id of staleTaskIds) {
-      try { store.db.prepare(`DELETE FROM tasks_fts WHERE rowid = ?`).run(id) } catch { /* ok */ }
-      try { store.db.prepare(`DELETE FROM memory_vectors WHERE entity_type = 'task' AND entity_id = ?`).run(id) } catch { /* ok */ }
-      try { store.db.prepare(`DELETE FROM task_events WHERE task_id = ?`).run(id) } catch { /* ok */ }
-    }
-    const placeholders = staleTaskIds.map(() => '?').join(',')
-    store.db.prepare(`DELETE FROM tasks WHERE id IN (${placeholders})`).run(...staleTaskIds)
-    deletedTasks = staleTaskIds.length
-  }
-
-  const staleSignalIds = store.db.prepare(
-    `SELECT id FROM signals WHERE status = 'deprecated' AND last_seen < ?`
-  ).all(graceThreshold).map(r => r.id)
-  if (staleSignalIds.length > 0) {
-    for (const id of staleSignalIds) {
-      try { store.db.prepare(`DELETE FROM signals_fts WHERE rowid = ?`).run(id) } catch { /* ok */ }
-      try { store.db.prepare(`DELETE FROM memory_vectors WHERE entity_type = 'signal' AND entity_id = ?`).run(id) } catch { /* ok */ }
-    }
-    const placeholders = staleSignalIds.map(() => '?').join(',')
-    store.db.prepare(`DELETE FROM signals WHERE id IN (${placeholders})`).run(...staleSignalIds)
-    deletedSignals = staleSignalIds.length
-  }
+  deletedFacts = store.deleteRowsByIds('fact', store.listDeprecatedIds('fact', graceThreshold))
+  deletedTasks = store.deleteRowsByIds('task', store.listDeprecatedIds('task', graceThreshold))
+  deletedSignals = store.deleteRowsByIds('signal', store.listDeprecatedIds('signal', graceThreshold))
 
   // Phase 3: Optional vacuum
   if (deletedFacts + deletedTasks + deletedSignals > 0) {
-    try { store.db.exec('VACUUM') } catch { /* ok */ }
+    store.vacuumDatabase()
   }
 
   // Phase 4: Refresh context
