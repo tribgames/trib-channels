@@ -107,9 +107,9 @@ export const DEFAULT_MEMORY_TUNING = Object.freeze({
       windowDays: 15,
     },
     overlap: {
-      defaultMax: 0.26,
-      policyMax: 0.42,
-      historyMax: 0.34,
+      defaultMax: 0.38,
+      policyMax: 0.50,
+      historyMax: 0.42,
     },
     retrieval: {
       maxBoost: 0.08,

@@ -31,6 +31,7 @@ import {
   propositionSubjectTokens,
   shortTokenMatchScore,
   tokenizeMemoryText,
+  generateQueryVariants,
 } from './memory-text-utils.mjs'
 import {
   SCOPED_LANE_PRIOR,
@@ -3003,6 +3004,19 @@ export class MemoryStore {
       filters: options.filters,
     })
     const { sparse, dense } = await buildHybridRetrievalInputs(this, plan, queryVector, focusVector)
+    // Multi-query: 변형 쿼리로 추가 검색
+    const variants = generateQueryVariants(clean)
+    if (variants.length > 1) {
+      for (const variant of variants.slice(1)) {
+        const variantVector = await embedText(variant)
+        const variantSparse = this.searchRelevantSparse(variant, limit)
+        const variantDense = await this.searchRelevantDense(variant, limit, variantVector, focusVector, {
+          includeDoneTasks: plan.includeDoneTasks,
+        })
+        sparse.push(...variantSparse)
+        dense.push(...variantDense)
+      }
+    }
     const combined = this.combineRetrievalResults(clean, sparse, dense, limit, intent, plan.queryEntities, {
       graphFirst: plan.graphFirst,
       tuning,

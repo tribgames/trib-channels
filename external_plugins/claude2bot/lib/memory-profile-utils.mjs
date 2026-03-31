@@ -154,7 +154,11 @@ export function applyLexicalIntentHints(clean, scores) {
     add('history', 0.18)
   }
   if (/\b(event|incident|meeting|discussion)\b/.test(lowered) || /이벤트|사건|회의|대화|논의/.test(clean)) {
-    add('event', 0.22)
+    if (/구현|동작|hooks|자동화|설정|위치|implement|config|where/.test(clean.toLowerCase())) {
+      add('policy', 0.30)
+    } else {
+      add('event', 0.22)
+    }
   }
   if (/\b(identity|secret|credential|api key|sensitive)\b/.test(lowered)) {
     scores.security = Math.max(0, scores.security - 0.08)

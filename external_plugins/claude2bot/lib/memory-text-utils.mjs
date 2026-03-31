@@ -276,3 +276,36 @@ export function insertCandidateUnits(insertStmt, episodeId, ts, dayKey, role, co
   }
   return inserted
 }
+
+export function generateQueryVariants(query) {
+  const clean = cleanMemoryText(query)
+  if (!clean) return [clean]
+
+  const variants = [clean]
+  const tokens = tokenizeMemoryText(clean)
+
+  // 1. Token alias 적용 버전 (한→영)
+  const aliasedTokens = tokens.map(t => {
+    const alias = MEMORY_TOKEN_ALIASES.get(t)
+    return alias && alias !== t ? alias : t
+  })
+  const aliased = aliasedTokens.join(' ')
+  if (aliased !== tokens.join(' ')) variants.push(aliased)
+
+  // 2. 한국어 조사 제거 + 영문 키워드 보강
+  const koToEn = {
+    '수정': 'fix', '상태': 'status', '구조': 'structure', '방식': 'method',
+    '설정': 'config settings', '작업': 'task work', '규칙': 'rule policy',
+    '목록': 'list', '관련': 'related', '현재': 'current', '진행': 'progress',
+    '이관': 'migration', '정리': 'cleanup', '안정화': 'stabilize',
+    '아키텍처': 'architecture', '검색': 'search retrieval', '저장': 'storage',
+    '인증': 'authentication auth', '메모리': 'memory', '언어': 'language',
+    '호칭': 'address name honorific', '응답': 'response', '형식': 'format style',
+    '캐주얼': 'casual informal', '누적': 'accumulate',
+  }
+  const translated = tokens.map(t => koToEn[t] ?? t).join(' ')
+  if (translated !== tokens.join(' ')) variants.push(translated)
+
+  // 중복 제거
+  return [...new Set(variants)].slice(0, 3)
+}
