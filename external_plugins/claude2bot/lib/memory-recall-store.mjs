@@ -285,7 +285,7 @@ export async function bulkVerifyHints(store, hints = []) {
       details.push({ hint: clean, status: '?' })
       continue
     }
-    const ftsQuery = clean.replace(/['"]/g, '')
+    const ftsQuery = clean.replace(/['"*\-(){}[\]^~:]/g, ' ').replace(/\b(OR|AND|NOT|NEAR)\b/gi, '').trim()
     const matches = await verifyMemoryClaim(store, clean, { limit: 1, ftsQuery })
     const bestMatch = matches[0]
     if (bestMatch) {

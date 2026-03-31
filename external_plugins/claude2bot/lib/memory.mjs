@@ -43,13 +43,11 @@ import {
   computeSecondStageRerankScore,
   getSecondStageThreshold,
   compactRetrievalContent,
-  claimSurfaceKey,
   collapseClaimSurfaceDuplicates,
 } from './memory-ranking-utils.mjs'
 import {
   buildMemoryQueryPlan,
   isDoneTaskQuery,
-  isHistoryQuery,
   isOngoingTaskQuery,
   isRelationQuery,
   isRuleQuery,
@@ -94,7 +92,7 @@ import {
 } from './memory-maintenance-store.mjs'
 import { buildInboundMemoryContext as buildInboundMemoryContextImpl } from './memory-context-builder.mjs'
 import { DEFAULT_MEMORY_TUNING, mergeMemoryTuning } from './memory-tuning.mjs'
-import { detectDevQueryBias, inferTaskActivity, inferTaskScope, isDevWorkstream, isDevelopmentFacet, shouldIncludeDevWorklogTask } from './memory-dev-utils.mjs'
+import { detectDevQueryBias, inferTaskActivity, inferTaskScope, isDevWorkstream, isDevelopmentFacet } from './memory-dev-utils.mjs'
 import {
   applyLexicalIntentHints,
   detectProfileQuerySlot,
@@ -222,14 +220,6 @@ function isTranscriptQuarantineContent(text) {
   if (/return this exact shape:/i.test(clean)) return true
   if (/output json only/i.test(clean) && /(memory system|claude2bot|c2b)/i.test(clean)) return true
   return false
-}
-
-function decayConfidence(confidence, lastSeen) {
-  const base = Number(confidence ?? 0.5)
-  if (!lastSeen) return base
-  const ageDays = Math.max(0, (Date.now() - new Date(lastSeen).getTime()) / (1000 * 60 * 60 * 24))
-  const penalty = Math.min(0.25, ageDays / 180 * 0.25)
-  return Math.max(0.15, Number((base - penalty).toFixed(3)))
 }
 
 function staleCutoffDays(kind) {
@@ -1208,6 +1198,29 @@ export class MemoryStore {
       WHERE mv.entity_type = 'episode'
         AND mv.model = ?
         AND e.kind IN (${RECALL_EPISODE_KIND_SQL})
+    `)
+    this.listDenseEntityRowsStmt = this.db.prepare(`
+      SELECT 'entity' AS type, en.entity_type AS subtype, en.id AS entity_id,
+             trim(en.name || CASE WHEN en.description IS NOT NULL AND en.description != '' THEN ' — ' || en.description ELSE '' END) AS content,
+             unixepoch(en.last_seen) AS updated_at, 0 AS retrieval_count,
+             NULL AS source_ref, NULL AS source_ts, NULL AS source_kind, NULL AS source_backend, mv.vector_json AS vector_json
+      FROM memory_vectors mv
+      JOIN entities en ON en.id = mv.entity_id
+      WHERE mv.entity_type = 'entity'
+        AND mv.model = ?
+    `)
+    this.listDenseRelationRowsStmt = this.db.prepare(`
+      SELECT 'relation' AS type, r.relation_type AS subtype, r.id AS entity_id,
+             trim(se.name || ' -> ' || te.name || CASE WHEN r.description IS NOT NULL AND r.description != '' THEN ' — ' || r.description ELSE '' END) AS content,
+             unixepoch(r.last_seen) AS updated_at, 0 AS retrieval_count,
+             NULL AS source_ref, NULL AS source_ts, NULL AS source_kind, NULL AS source_backend, mv.vector_json AS vector_json
+      FROM memory_vectors mv
+      JOIN relations r ON r.id = mv.entity_id
+      JOIN entities se ON se.id = r.source_entity_id
+      JOIN entities te ON te.id = r.target_entity_id
+      WHERE mv.entity_type = 'relation'
+        AND mv.model = ?
+        AND r.status = 'active'
     `)
   }
 
@@ -2778,6 +2791,45 @@ export class MemoryStore {
       })
     }
 
+    // Entity embeddings
+    const entityRows = this.db.prepare(`
+      SELECT id, entity_type AS subtype,
+             trim(name || CASE WHEN description IS NOT NULL AND description != '' THEN ' — ' || description ELSE '' END) AS content
+      FROM entities
+      ORDER BY last_seen DESC, id DESC
+      LIMIT ?
+    `).all(Math.max(8, Math.floor(perTypeLimit / 2)))
+    for (const row of entityRows) {
+      items.push({
+        key: embeddingItemKey('entity', row.id),
+        entityType: 'entity',
+        entityId: row.id,
+        subtype: row.subtype,
+        content: row.content,
+      })
+    }
+
+    // Relation embeddings
+    const relationRows = this.db.prepare(`
+      SELECT r.id, r.relation_type AS subtype,
+             trim(se.name || ' -> ' || te.name || CASE WHEN r.description IS NOT NULL AND r.description != '' THEN ' — ' || r.description ELSE '' END) AS content
+      FROM relations r
+      JOIN entities se ON se.id = r.source_entity_id
+      JOIN entities te ON te.id = r.target_entity_id
+      WHERE r.status = 'active'
+      ORDER BY r.confidence DESC, r.last_seen DESC, r.id DESC
+      LIMIT ?
+    `).all(Math.max(8, Math.floor(perTypeLimit / 2)))
+    for (const row of relationRows) {
+      items.push({
+        key: embeddingItemKey('relation', row.id),
+        entityType: 'relation',
+        entityId: row.id,
+        subtype: row.subtype,
+        content: row.content,
+      })
+    }
+
     return items
   }
 
@@ -2838,12 +2890,12 @@ export class MemoryStore {
 
   _vecRowId(entityType, entityId) {
     // Pack entity type + id into a single integer rowid
-    const typePrefix = { fact: 1, task: 2, signal: 3, episode: 4, proposition: 5 }
+    const typePrefix = { fact: 1, task: 2, signal: 3, episode: 4, proposition: 5, entity: 6, relation: 7 }
     return (typePrefix[entityType] ?? 9) * 10000000 + Number(entityId)
   }
 
   _vecRowToEntity(rowid) {
-    const typeMap = { 1: 'fact', 2: 'task', 3: 'signal', 4: 'episode', 5: 'proposition' }
+    const typeMap = { 1: 'fact', 2: 'task', 3: 'signal', 4: 'episode', 5: 'proposition', 6: 'entity', 7: 'relation' }
     const typeNum = Math.floor(rowid / 10000000)
     return { entityType: typeMap[typeNum] ?? 'unknown', entityId: rowid % 10000000 }
   }
@@ -3440,6 +3492,8 @@ export class MemoryStore {
       ...this.listDenseSignalRowsStmt.all(model),
       ...this.listDensePropositionRowsStmt.all(model),
       ...this.listDenseEpisodeRowsStmt.all(model),
+      ...this.listDenseEntityRowsStmt.all(model),
+      ...this.listDenseRelationRowsStmt.all(model),
     ]
 
     return rows
@@ -3532,6 +3586,32 @@ export class MemoryStore {
           FROM episodes e JOIN memory_vectors mv ON mv.entity_type = 'episode' AND mv.entity_id = e.id AND mv.model = ?
           WHERE e.id = ?
             AND e.kind IN (${RECALL_EPISODE_KIND_SQL})
+        `).get(model, entityId)
+      }
+      if (entityType === 'entity') {
+        return this.db.prepare(`
+          SELECT 'entity' AS type, en.entity_type AS subtype, en.id AS entity_id,
+                 trim(en.name || CASE WHEN en.description IS NOT NULL AND en.description != '' THEN ' — ' || en.description ELSE '' END) AS content,
+                 unixepoch(en.last_seen) AS updated_at, 0 AS retrieval_count,
+                 NULL AS source_kind, NULL AS source_backend,
+                 mv.vector_json
+          FROM entities en
+          JOIN memory_vectors mv ON mv.entity_type = 'entity' AND mv.entity_id = en.id AND mv.model = ?
+          WHERE en.id = ?
+        `).get(model, entityId)
+      }
+      if (entityType === 'relation') {
+        return this.db.prepare(`
+          SELECT 'relation' AS type, r.relation_type AS subtype, r.id AS entity_id,
+                 trim(se.name || ' -> ' || te.name || CASE WHEN r.description IS NOT NULL AND r.description != '' THEN ' — ' || r.description ELSE '' END) AS content,
+                 unixepoch(r.last_seen) AS updated_at, 0 AS retrieval_count,
+                 NULL AS source_kind, NULL AS source_backend,
+                 mv.vector_json
+          FROM relations r
+          JOIN entities se ON se.id = r.source_entity_id
+          JOIN entities te ON te.id = r.target_entity_id
+          JOIN memory_vectors mv ON mv.entity_type = 'relation' AND mv.entity_id = r.id AND mv.model = ?
+          WHERE r.id = ? AND r.status = 'active'
         `).get(model, entityId)
       }
     } catch {}

@@ -1496,7 +1496,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         }
 
         const queryLower = query.toLowerCase().trim()
-        const ftsQuery = query.replace(/['"]/g, ' ').trim()
+        const ftsQuery = query.replace(/['"*\-(){}[\]^~:]/g, ' ').replace(/\b(OR|AND|NOT|NEAR)\b/gi, '').trim()
         const filterRowsByMetadata = async (rows: Array<Record<string, unknown>>): Promise<Array<Record<string, unknown>>> => {
           return await memoryStore.applyMetadataFilters(rows, metadataFilters) as Array<Record<string, unknown>>
         }

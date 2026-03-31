@@ -49,21 +49,21 @@ export function getPendingCandidateDays(store, limit = 7, minCount = 1) {
 export function getDecayRows(store, kind = 'fact') {
   if (kind === 'fact') {
     return store.db.prepare(`
-      SELECT id, mention_count, retrieval_count, last_seen
+      SELECT id, mention_count, retrieval_count, last_seen, first_seen
       FROM facts
       WHERE status = 'active'
     `).all()
   }
   if (kind === 'task') {
     return store.db.prepare(`
-      SELECT id, retrieval_count, last_seen
+      SELECT id, retrieval_count, last_seen, first_seen
       FROM tasks
       WHERE status = 'active'
     `).all()
   }
   if (kind === 'signal') {
     return store.db.prepare(`
-      SELECT id, retrieval_count, last_seen
+      SELECT id, retrieval_count, last_seen, first_seen
       FROM signals
       WHERE status = 'active'
     `).all()
@@ -132,17 +132,35 @@ export function deleteRowsByIds(store, kind = 'fact', ids = []) {
   if (kind === 'fact') {
     for (const id of normalizedIds) store.deleteFactFtsStmt.run(id)
     store.db.prepare(`DELETE FROM memory_vectors WHERE entity_type = 'fact' AND entity_id IN (${placeholders})`).run(...normalizedIds)
+    if (store.vecEnabled) {
+      for (const id of normalizedIds) {
+        const rowid = store._vecRowId('fact', id)
+        try { store.db.exec(`DELETE FROM vec_memory WHERE rowid = ${rowid}`) } catch {}
+      }
+    }
     return Number(store.db.prepare(`DELETE FROM facts WHERE id IN (${placeholders})`).run(...normalizedIds).changes ?? 0)
   }
   if (kind === 'task') {
     for (const id of normalizedIds) store.deleteTaskFtsStmt.run(id)
     store.db.prepare(`DELETE FROM memory_vectors WHERE entity_type = 'task' AND entity_id IN (${placeholders})`).run(...normalizedIds)
+    if (store.vecEnabled) {
+      for (const id of normalizedIds) {
+        const rowid = store._vecRowId('task', id)
+        try { store.db.exec(`DELETE FROM vec_memory WHERE rowid = ${rowid}`) } catch {}
+      }
+    }
     store.db.prepare(`DELETE FROM task_events WHERE task_id IN (${placeholders})`).run(...normalizedIds)
     return Number(store.db.prepare(`DELETE FROM tasks WHERE id IN (${placeholders})`).run(...normalizedIds).changes ?? 0)
   }
   if (kind === 'signal') {
     for (const id of normalizedIds) store.deleteSignalFtsStmt.run(id)
     store.db.prepare(`DELETE FROM memory_vectors WHERE entity_type = 'signal' AND entity_id IN (${placeholders})`).run(...normalizedIds)
+    if (store.vecEnabled) {
+      for (const id of normalizedIds) {
+        const rowid = store._vecRowId('signal', id)
+        try { store.db.exec(`DELETE FROM vec_memory WHERE rowid = ${rowid}`) } catch {}
+      }
+    }
     return Number(store.db.prepare(`DELETE FROM signals WHERE id IN (${placeholders})`).run(...normalizedIds).changes ?? 0)
   }
   return 0
@@ -237,6 +255,9 @@ export function resetConsolidatedMemory(store) {
   store.clearSignalsFtsStmt.run()
   store.clearPropositionsFtsStmt.run()
   store.clearVectorsStmt.run()
+  if (store.vecEnabled) {
+    try { store.db.exec('DELETE FROM vec_memory') } catch {}
+  }
   store.db.prepare(`UPDATE memory_candidates SET status = 'pending'`).run()
 }
 
@@ -262,6 +283,12 @@ export function resetConsolidatedMemoryForDays(store, dayKeys = []) {
       for (const id of factIds) store.deleteFactFtsStmt.run(id)
       store.db.prepare(`DELETE FROM facts WHERE id IN (${factPlaceholders})`).run(...factIds)
       store.db.prepare(`DELETE FROM memory_vectors WHERE entity_type = 'fact' AND entity_id IN (${factPlaceholders})`).run(...factIds)
+      if (store.vecEnabled) {
+        for (const id of factIds) {
+          const rowid = store._vecRowId('fact', id)
+          try { store.db.exec(`DELETE FROM vec_memory WHERE rowid = ${rowid}`) } catch {}
+        }
+      }
     }
 
     const taskIds = store.db.prepare(`
@@ -272,6 +299,12 @@ export function resetConsolidatedMemoryForDays(store, dayKeys = []) {
       for (const id of taskIds) store.deleteTaskFtsStmt.run(id)
       store.db.prepare(`DELETE FROM tasks WHERE id IN (${taskPlaceholders})`).run(...taskIds)
       store.db.prepare(`DELETE FROM memory_vectors WHERE entity_type = 'task' AND entity_id IN (${taskPlaceholders})`).run(...taskIds)
+      if (store.vecEnabled) {
+        for (const id of taskIds) {
+          const rowid = store._vecRowId('task', id)
+          try { store.db.exec(`DELETE FROM vec_memory WHERE rowid = ${rowid}`) } catch {}
+        }
+      }
     }
 
     const signalIds = store.db.prepare(`
@@ -282,6 +315,12 @@ export function resetConsolidatedMemoryForDays(store, dayKeys = []) {
       for (const id of signalIds) store.deleteSignalFtsStmt.run(id)
       store.db.prepare(`DELETE FROM signals WHERE id IN (${signalPlaceholders})`).run(...signalIds)
       store.db.prepare(`DELETE FROM memory_vectors WHERE entity_type = 'signal' AND entity_id IN (${signalPlaceholders})`).run(...signalIds)
+      if (store.vecEnabled) {
+        for (const id of signalIds) {
+          const rowid = store._vecRowId('signal', id)
+          try { store.db.exec(`DELETE FROM vec_memory WHERE rowid = ${rowid}`) } catch {}
+        }
+      }
     }
 
     const propositionIds = store.db.prepare(`
@@ -292,7 +331,18 @@ export function resetConsolidatedMemoryForDays(store, dayKeys = []) {
       for (const id of propositionIds) store.deletePropositionFtsStmt.run(id)
       store.db.prepare(`DELETE FROM propositions WHERE id IN (${propositionPlaceholders})`).run(...propositionIds)
       store.db.prepare(`DELETE FROM memory_vectors WHERE entity_type = 'proposition' AND entity_id IN (${propositionPlaceholders})`).run(...propositionIds)
+      if (store.vecEnabled) {
+        for (const id of propositionIds) {
+          const rowid = store._vecRowId('proposition', id)
+          try { store.db.exec(`DELETE FROM vec_memory WHERE rowid = ${rowid}`) } catch {}
+        }
+      }
     }
+
+    // Clean up orphaned entity_links, entities, and relations
+    store.db.prepare(`DELETE FROM entity_links WHERE episode_id IN (${episodePlaceholders})`).run(...episodeIds)
+    store.db.prepare(`DELETE FROM entities WHERE id NOT IN (SELECT DISTINCT entity_id FROM entity_links)`).run()
+    store.db.prepare(`DELETE FROM relations WHERE source_entity_id NOT IN (SELECT id FROM entities) OR target_entity_id NOT IN (SELECT id FROM entities)`).run()
   }
 
   store.db.prepare(`
@@ -326,6 +376,12 @@ export function pruneConsolidatedMemoryOutsideDays(store, dayKeys = []) {
     for (const id of staleFactIds) store.deleteFactFtsStmt.run(id)
     store.db.prepare(`DELETE FROM facts WHERE id IN (${staleFactPlaceholders})`).run(...staleFactIds)
     store.db.prepare(`DELETE FROM memory_vectors WHERE entity_type = 'fact' AND entity_id IN (${staleFactPlaceholders})`).run(...staleFactIds)
+    if (store.vecEnabled) {
+      for (const id of staleFactIds) {
+        const rowid = store._vecRowId('fact', id)
+        try { store.db.exec(`DELETE FROM vec_memory WHERE rowid = ${rowid}`) } catch {}
+      }
+    }
   }
 
   const staleTaskIds = store.db.prepare(`
@@ -338,6 +394,12 @@ export function pruneConsolidatedMemoryOutsideDays(store, dayKeys = []) {
     for (const id of staleTaskIds) store.deleteTaskFtsStmt.run(id)
     store.db.prepare(`DELETE FROM tasks WHERE id IN (${staleTaskPlaceholders})`).run(...staleTaskIds)
     store.db.prepare(`DELETE FROM memory_vectors WHERE entity_type = 'task' AND entity_id IN (${staleTaskPlaceholders})`).run(...staleTaskIds)
+    if (store.vecEnabled) {
+      for (const id of staleTaskIds) {
+        const rowid = store._vecRowId('task', id)
+        try { store.db.exec(`DELETE FROM vec_memory WHERE rowid = ${rowid}`) } catch {}
+      }
+    }
   }
 
   const staleSignalIds = store.db.prepare(`
@@ -350,6 +412,12 @@ export function pruneConsolidatedMemoryOutsideDays(store, dayKeys = []) {
     for (const id of staleSignalIds) store.deleteSignalFtsStmt.run(id)
     store.db.prepare(`DELETE FROM signals WHERE id IN (${staleSignalPlaceholders})`).run(...staleSignalIds)
     store.db.prepare(`DELETE FROM memory_vectors WHERE entity_type = 'signal' AND entity_id IN (${staleSignalPlaceholders})`).run(...staleSignalIds)
+    if (store.vecEnabled) {
+      for (const id of staleSignalIds) {
+        const rowid = store._vecRowId('signal', id)
+        try { store.db.exec(`DELETE FROM vec_memory WHERE rowid = ${rowid}`) } catch {}
+      }
+    }
   }
 
   const stalePropositionIds = store.db.prepare(`
@@ -362,7 +430,22 @@ export function pruneConsolidatedMemoryOutsideDays(store, dayKeys = []) {
     for (const id of stalePropositionIds) store.deletePropositionFtsStmt.run(id)
     store.db.prepare(`DELETE FROM propositions WHERE id IN (${stalePropositionPlaceholders})`).run(...stalePropositionIds)
     store.db.prepare(`DELETE FROM memory_vectors WHERE entity_type = 'proposition' AND entity_id IN (${stalePropositionPlaceholders})`).run(...stalePropositionIds)
+    if (store.vecEnabled) {
+      for (const id of stalePropositionIds) {
+        const rowid = store._vecRowId('proposition', id)
+        try { store.db.exec(`DELETE FROM vec_memory WHERE rowid = ${rowid}`) } catch {}
+      }
+    }
   }
+
+  // Clean up orphaned entity_links, entities, and relations
+  store.db.prepare(`
+    DELETE FROM entity_links
+    WHERE episode_id IS NOT NULL
+      AND episode_id NOT IN (${keepPlaceholders})
+  `).run(...keepEpisodeIds)
+  store.db.prepare(`DELETE FROM entities WHERE id NOT IN (SELECT DISTINCT entity_id FROM entity_links)`).run()
+  store.db.prepare(`DELETE FROM relations WHERE source_entity_id NOT IN (SELECT id FROM entities) OR target_entity_id NOT IN (SELECT id FROM entities)`).run()
 
   store.db.prepare(`
     DELETE FROM profiles

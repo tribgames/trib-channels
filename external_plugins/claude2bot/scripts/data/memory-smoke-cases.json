@@ -1,252 +1,59 @@
 [
-  {
-    "id": "policy-commit",
-    "query": "커밋 먼저 하면 안 되지?",
-    "acceptableIntents": ["policy", "decision"],
-    "expectedTop1Any": [
-      { "type": "fact", "subtypeAny": ["constraint"], "contentAny": ["commit", "push", "approval", "커밋"] }
-    ],
-    "expectedAny": [
-      { "type": "fact", "subtypeAny": ["constraint"], "contentAny": ["commit", "push", "approval", "커밋", "destructive"] }
-    ]
-  },
-  {
-    "id": "policy-build",
-    "query": "빌드나 배포는 명시 요청 전엔 하면 안 되지?",
-    "acceptableIntents": ["policy", "decision"],
-    "expectedTop1Any": [
-      { "type": "fact", "subtypeAny": ["constraint"], "contentAny": ["build", "deploy", "approval", "빌드", "배포"] }
-    ],
-    "expectedAny": [
-      { "type": "fact", "subtypeAny": ["constraint"], "contentAny": ["build", "deploy", "approval", "빌드", "배포", "destructive"] }
-    ]
-  },
-  {
-    "id": "policy-code-change",
-    "query": "코드 수정하기 전에 승인 받아야 하나?",
-    "acceptableIntents": ["policy", "decision"],
-    "expectedTop1Any": [
-      { "type": "fact", "subtypeAny": ["constraint"], "contentAny": ["code change", "approval", "코드"] }
-    ],
-    "expectedAny": [
-      { "type": "fact", "subtypeAny": ["constraint"], "contentAny": ["code change", "approval", "코드", "without approval"] }
-    ]
-  },
-  {
-    "id": "policy-settings-json",
-    "query": "settings.json 수정할 때 규칙 뭐야?",
-    "acceptableIntents": ["policy", "decision"],
-    "expectedAny": [
-      { "type": "fact", "contentAny": ["settings.json", "validate", "read first", "merge", "hook"] }
-    ]
-  },
-  {
-    "id": "policy-hooks",
-    "query": "자동 동작은 어디에 구현해야 해?",
-    "acceptableIntents": ["policy", "decision"],
-    "expectedAny": [
-      { "type": "fact", "contentAny": ["hooks", "settings.json", "automatic", "event-driven"] }
-    ]
-  },
-  {
-    "id": "profile-language",
-    "query": "언어 선호 뭐야",
-    "acceptableIntents": ["profile"],
-    "expectedAny": [
-      { "contentAny": ["한국어", "Korean"] }
-    ]
-  },
-  {
-    "id": "profile-tone",
-    "query": "응답 톤은 어떻게 해야 해?",
-    "acceptableIntents": ["profile"],
-    "expectedAny": [
-      { "contentAny": ["존댓말", "간결", "직접적", "concise", "tone", "직접 수정", "빠른 실행"] }
-    ]
-  },
-  {
-    "id": "profile-address",
-    "query": "호칭은 어떻게 부르면 돼?",
-    "acceptableIntents": ["profile"],
-    "expectedAny": [
-      { "contentAny": ["재영님", "address"] }
-    ]
-  },
-  {
-    "id": "profile-response-style",
-    "query": "응답 형식 선호하는 거 있어?",
-    "acceptableIntents": ["profile"],
-    "expectedAny": [
-      { "contentAny": ["report", "formatting", "보고서", "직접 확인", "검증"] }
-    ]
-  },
-  {
-    "id": "decision-storage",
-    "query": "장기 메모리 저장 구조 결정 뭐였지?",
-    "acceptableIntents": ["decision"],
-    "expectedAny": [
-      { "contentAny": ["SQLite", "hybrid", "Markdown", "저장", "storage"] }
-    ]
-  },
-  {
-    "id": "decision-rag",
-    "query": "RAG 관련 현재 방향 뭐야",
-    "acceptableIntents": ["decision", "task"],
-    "expectedAny": [
-      { "contentAny": ["RAG", "hybrid", "SQLite", "하이브리드", "검색"] }
-    ]
-  },
-  {
-    "id": "decision-codebase-lang",
-    "query": "코드베이스 언어 규칙",
-    "acceptableIntents": ["decision", "policy"],
-    "expectedAny": [
-      { "contentAny": ["English", "영어", "code", "comments", "prompts"] }
-    ]
-  },
-  {
-    "id": "decision-roadmap",
-    "query": "claude2bot 로드맵 우선순위",
-    "acceptableIntents": ["decision", "task"],
-    "expectedAny": [
-      { "contentAny": ["STOP", "SQLite", "roadmap", "prioritize", "schedule v3", "SleepingMode"] }
-    ]
-  },
-  {
-    "id": "decision-memory-design",
-    "query": "개발 메모리 회상 구조",
-    "acceptableIntents": ["decision"],
-    "expectedAny": [
-      { "contentAny": ["worklog", "이벤트 나열", "작업 상태", "회상", "개발 메모리"] }
-    ]
-  },
-  {
-    "id": "decision-channel-backend",
-    "query": "ChannelBackend 구조 설명해줘",
-    "acceptableIntents": ["decision"],
-    "expectedAny": [
-      { "contentAny": ["ChannelBackend", "Slack", "Telegram", "교체", "인터페이스"] }
-    ]
-  },
-  {
-    "id": "task-current",
-    "query": "지금 진행 중인 주요 작업 뭐야",
-    "acceptableIntents": ["task"],
-    "expectedAny": [
-      { "type": "task" }
-    ],
-    "requireTop1": false
-  },
-  {
-    "id": "task-refactoring",
-    "query": "claude2bot 리팩토링 상태",
-    "acceptableIntents": ["task", "decision"],
-    "expectedAny": [
-      { "type": "task", "contentAny": ["리팩토링", "refactor", "launcher", "정리"] }
-    ]
-  },
-  {
-    "id": "task-migration",
-    "query": "dotfiles 이관 작업 뭐 남았어?",
-    "acceptableIntents": ["task"],
-    "expectedAny": [
-      { "type": "task", "contentAny": ["dotfiles", "이관", "migration", "hooks", "settings"] }
-    ]
-  },
-  {
-    "id": "task-discord",
-    "query": "Discord 관련 작업 뭐 있어?",
-    "acceptableIntents": ["task"],
-    "expectedAny": [
-      { "type": "task", "contentAny": ["Discord", "rendering", "formatting", "routing", "channel"] }
-    ]
-  },
-  {
-    "id": "task-stop-bug",
-    "query": "STOP 버그 수정 상태",
-    "acceptableIntents": ["task"],
-    "expectedAny": [
-      { "type": "task", "contentAny": ["STOP", "버그", "bug"] }
-    ]
-  },
-  {
-    "id": "history-duplicate",
-    "query": "중복 메시지 이슈 관련해서 뭐라고 했지?",
-    "acceptableIntents": ["history", "event"],
-    "expectedAny": [
-      { "contentAny": ["duplicate", "중복", "dedup", "message"] }
-    ]
-  },
-  {
-    "id": "history-stabilization",
-    "query": "claude2bot 안정화 작업 뭐 했었지?",
-    "acceptableIntents": ["history", "event"],
-    "expectedAny": [
-      { "contentAny": ["stabilization", "안정화", "fixed", "race condition", "output-forwarder"] }
-    ]
-  },
-  {
-    "id": "entity-discord",
-    "query": "claude2bot이 Discord랑 어떻게 연결돼?",
-    "acceptableIntents": ["decision"],
-    "expectedAny": [
-      { "contentAny": ["Discord", "claude2bot", "channel", "채널", "ChannelBackend", "integrates"] }
-    ]
-  },
-  {
-    "id": "entity-upbit",
-    "query": "Upbit API는 뭐에 쓰는 거야?",
-    "acceptableIntents": ["decision"],
-    "expectedAny": [
-      { "contentAny": ["Upbit", "STRAX", "Xertra", "시세", "알림"] }
-    ]
-  },
-  {
-    "id": "entity-codex",
-    "query": "Codex를 claude2bot에서 어떻게 쓰려고 해?",
-    "acceptableIntents": ["decision", "task"],
-    "expectedAny": [
-      { "contentAny": ["Codex", "디버거", "코드수정", "PR", "자동 호출", "sub-agent"] }
-    ]
-  },
-  {
-    "id": "search-auth",
-    "query": "claude2bot 인증 방식",
-    "acceptableIntents": ["decision"],
-    "expectedAny": [
-      { "contentAny": ["refresh token", "인증", "authentication", "JWT"] }
-    ]
-  },
-  {
-    "id": "search-memory-system",
-    "query": "메모리 시스템 구조",
-    "acceptableIntents": ["decision"],
-    "expectedAny": [
-      { "contentAny": ["Memory System", "compression", "daily", "weekly", "메모리", "SQLite"] }
-    ]
-  },
-  {
-    "id": "search-context-md",
-    "query": "context.md는 뭐야?",
-    "acceptableIntents": ["decision"],
-    "expectedAny": [
-      { "contentAny": ["context.md", "identity.md", ".md 파일", "AI 주입"] }
-    ]
-  },
-  {
-    "id": "search-memory-layer",
-    "query": "세션 메모리 주입 계층",
-    "acceptableIntents": ["decision"],
-    "expectedAny": [
-      { "contentAny": ["Always-On", "Relevant Core", "Work Overlay", "Event Overlay", "계층"] }
-    ]
-  },
-  {
-    "id": "search-preference-english",
-    "query": "메모리는 어떤 언어로 저장해?",
-    "acceptableIntents": ["decision", "policy"],
-    "expectedAny": [
-      { "contentAny": ["English", "영문", "영어", "토큰 절약", "proper nouns"] }
-    ]
-  }
+  {"id":"policy-commit","query":"커밋 먼저 하면 안 되지?","acceptableIntents":["policy","decision"],"expectedAny":[{"type":"fact","subtypeAny":["constraint"],"contentAny":["commit","push","커밋","푸시","approval"]}]},
+  {"id":"policy-build","query":"빌드나 배포는 명시 요청 전엔 하면 안 되지?","acceptableIntents":["policy","decision"],"expectedAny":[{"type":"fact","subtypeAny":["constraint"],"contentAny":["build","deploy","빌드","배포","approval"]}]},
+  {"id":"policy-code-change","query":"코드 수정하기 전에 승인 받아야 하나?","acceptableIntents":["policy","decision"],"expectedAny":[{"contentAny":["code change","approval","코드","승인","without approval"]}]},
+  {"id":"policy-settings","query":"settings.json 수정할 때 규칙 뭐야?","acceptableIntents":["policy","decision"],"expectedAny":[{"contentAny":["settings.json","validate","read first","merge","hook"]}]},
+  {"id":"policy-hooks","query":"자동 이벤트 동작은 어디에 구현해?","acceptableIntents":["policy","decision"],"expectedAny":[{"contentAny":["hooks","settings.json","automatic","event-driven"]}]},
+  {"id":"policy-pr","query":"PR 자동으로 만들면 안 되지?","acceptableIntents":["policy","decision"],"expectedAny":[{"contentAny":["commit","push","PR","explicit","approval","명시적"]}]},
+  {"id":"policy-destructive","query":"destructive action 규칙 뭐야?","acceptableIntents":["policy","decision"],"expectedAny":[{"contentAny":["destructive","commit","push","build","deploy","approval"]}]},
+
+  {"id":"profile-language","query":"언어 선호 뭐야","acceptableIntents":["profile"],"expectedAny":[{"contentAny":["한국어","Korean"]}]},
+  {"id":"profile-tone","query":"응답 톤은 어떻게 해야 해?","acceptableIntents":["profile"],"expectedAny":[{"contentAny":["존댓말","간결","직접적","tone","직접 수정","빠른 실행"]}]},
+  {"id":"profile-address","query":"호칭은 어떻게 부르면 돼?","acceptableIntents":["profile"],"expectedAny":[{"contentAny":["재영님","address"]}]},
+  {"id":"profile-style","query":"응답 형식 선호하는 거 있어?","acceptableIntents":["profile"],"expectedAny":[{"contentAny":["report","formatting","보고서","직접 확인","검증"]}]},
+  {"id":"profile-code-lang","query":"코드 주석은 어떤 언어로 써?","acceptableIntents":["profile","decision"],"expectedAny":[{"contentAny":["English","영어","code","comments","prompts"]}]},
+
+  {"id":"decision-storage","query":"장기 메모리 저장 구조 결정 뭐였지?","acceptableIntents":["decision"],"expectedAny":[{"contentAny":["SQLite","hybrid","메모리","storage","분리"]}]},
+  {"id":"decision-rag","query":"RAG 관련 현재 방향 뭐야","acceptableIntents":["decision","task"],"expectedAny":[{"contentAny":["RAG","hybrid","SQLite","하이브리드","검색"]}]},
+  {"id":"decision-roadmap","query":"claude2bot 로드맵 우선순위","acceptableIntents":["decision","task"],"expectedAny":[{"contentAny":["STOP","SQLite","roadmap","prioritize","schedule v3","SleepingMode"]}]},
+  {"id":"decision-memory-design","query":"개발 메모리 회상 구조","acceptableIntents":["decision"],"expectedAny":[{"contentAny":["worklog","이벤트 나열","작업 상태","회상","개발 메모리","분리"]}]},
+  {"id":"decision-channel-backend","query":"ChannelBackend 구조 설명해줘","acceptableIntents":["decision"],"expectedAny":[{"contentAny":["ChannelBackend","Slack","Telegram","교체","인터페이스"]}]},
+  {"id":"decision-always-on","query":"Always-On Core 메모리 뭐야?","acceptableIntents":["decision"],"expectedAny":[{"contentAny":["Always-On","Core","small","즉시","updated"]}]},
+  {"id":"decision-overlay","query":"Current Work Overlay는 언제 쓰여?","acceptableIntents":["decision"],"expectedAny":[{"contentAny":["Current Work","Overlay","task","active","in_progress","작업 관련"]}]},
+  {"id":"decision-general-memory","query":"일반 업무 질의는 어떤 메모리를 쓰지?","acceptableIntents":["decision"],"expectedAny":[{"contentAny":["general","일반","일정","업무","진행상태","선호"]}]},
+
+  {"id":"task-current","query":"지금 진행 중인 주요 작업 뭐야","acceptableIntents":["task"],"expectedAny":[{"type":"task"}],"requireTop1":false},
+  {"id":"task-refactoring","query":"claude2bot 리팩토링 상태","acceptableIntents":["task","decision"],"expectedAny":[{"type":"task","contentAny":["리팩토링","refactor","launcher","정리"]}]},
+  {"id":"task-migration","query":"dotfiles 이관 작업 뭐 남았어?","acceptableIntents":["task"],"expectedAny":[{"type":"task","contentAny":["dotfiles","이관","migration","hooks","settings"]}]},
+  {"id":"task-discord","query":"Discord 관련 작업 뭐 있어?","acceptableIntents":["task"],"expectedAny":[{"type":"task","contentAny":["Discord","rendering","formatting","routing","channel"]}]},
+  {"id":"task-stop-bug","query":"STOP 버그 수정 상태","acceptableIntents":["task"],"expectedAny":[{"type":"task","contentAny":["STOP","버그","bug"]}]},
+  {"id":"task-sqlite","query":"SQLite 통합 작업 진행 상태","acceptableIntents":["task","decision"],"expectedAny":[{"contentAny":["SQLite","통합","migration","저장소","Phase"]}]},
+  {"id":"task-config-skill","query":"Claude Code 설정 스킬 수정 상태","acceptableIntents":["task"],"expectedAny":[{"type":"task","contentAny":["Claude Code","configuration","settings.json","skill"]}]},
+
+  {"id":"history-duplicate","query":"중복 메시지 이슈 관련해서 뭐라고 했지?","acceptableIntents":["history","event"],"expectedAny":[{"contentAny":["duplicate","중복","dedup","message"]}]},
+  {"id":"history-stabilization","query":"claude2bot 안정화 작업 뭐 했었지?","acceptableIntents":["history","event","task"],"expectedAny":[{"contentAny":["stabilization","안정화","fixed","race condition","output-forwarder","리팩토링","launcher"]}]},
+
+  {"id":"entity-discord","query":"claude2bot이 Discord랑 어떻게 연결돼?","acceptableIntents":["decision"],"expectedAny":[{"contentAny":["Discord","claude2bot","channel","채널","ChannelBackend","integrates"]}]},
+  {"id":"entity-upbit","query":"Upbit API는 뭐에 쓰는 거야?","acceptableIntents":["decision"],"expectedAny":[{"contentAny":["Upbit","STRAX","Xertra","시세","알림"]}]},
+  {"id":"entity-codex","query":"Codex를 claude2bot에서 어떻게 쓰려고 해?","acceptableIntents":["decision","task"],"expectedAny":[{"contentAny":["Codex","디버거","코드수정","PR","자동 호출","sub-agent"]}]},
+  {"id":"entity-context-md","query":"context.md는 뭐야?","acceptableIntents":["decision"],"expectedAny":[{"contentAny":["context.md","identity.md",".md 파일","AI 주입"]}]},
+  {"id":"entity-memory-system","query":"Memory System 구조","acceptableIntents":["decision"],"expectedAny":[{"contentAny":["Memory System","compression","daily","weekly","메모리","SQLite"]}]},
+
+  {"id":"verify-refresh-token","query":"claude2bot은 refresh token 방식으로 인증한다","acceptableIntents":["policy","decision"],"expectedAny":[{"contentAny":["refresh token","인증","authentication"]}]},
+  {"id":"verify-build-ban","query":"빌드 자동 실행 금지","acceptableIntents":["policy","decision"],"expectedAny":[{"contentAny":["build","빌드","automatic","자동","approval","승인"]}]},
+  {"id":"verify-english-code","query":"코드베이스는 영어로 유지한다","acceptableIntents":["policy","decision"],"expectedAny":[{"contentAny":["English","영어","code","codebase","comments"]}]},
+  {"id":"verify-memory-english","query":"메모리는 영문으로 저장한다","acceptableIntents":["policy","decision"],"expectedAny":[{"contentAny":["English","영문","토큰","memory","documentation"]}]},
+  {"id":"verify-polite-korean","query":"Discord에서 존댓말 쓴다","acceptableIntents":["profile","policy"],"expectedAny":[{"contentAny":["존댓말","polite","honorific","Korean","Discord"]}]},
+
+  {"id":"search-auth","query":"claude2bot 인증 방식","acceptableIntents":["decision"],"expectedAny":[{"contentAny":["refresh token","인증","authentication","JWT"]}]},
+  {"id":"search-memory-layer","query":"세션 메모리 주입 계층","acceptableIntents":["decision"],"expectedAny":[{"contentAny":["Always-On","Relevant Core","Work Overlay","Event Overlay","계층"]}]},
+  {"id":"search-preference-english","query":"메모리는 어떤 언어로 저장해?","acceptableIntents":["decision","policy","profile"],"expectedAny":[{"contentAny":["English","영문","영어","토큰 절약","proper nouns"]}]},
+  {"id":"search-dev-split","query":"개발 메모리랑 일반 메모리 차이","acceptableIntents":["decision"],"expectedAny":[{"contentAny":["개발","일반","분리","worklog","저장 구조","검색 경로"]}]},
+  {"id":"search-recent-event","query":"Recent Event Overlay 쓰는 조건","acceptableIntents":["decision"],"expectedAny":[{"contentAny":["Recent Event","Overlay","명시적","최신","제한적"]}]},
+
+  {"id":"cross-lang-1","query":"commit 규칙 알려줘","acceptableIntents":["policy","decision"],"expectedAny":[{"contentAny":["commit","push","approval","승인","명시적"]}]},
+  {"id":"cross-lang-2","query":"ChannelBackend로 채널 교체 가능해?","acceptableIntents":["decision"],"expectedAny":[{"contentAny":["ChannelBackend","Slack","Telegram","교체"]}]},
+  {"id":"cross-lang-3","query":"development memory 설계","acceptableIntents":["decision"],"expectedAny":[{"contentAny":["개발","development","worklog","분리","task-state"]}]},
+  {"id":"cross-lang-4","query":"settings.json에 hooks로 구현해야 하는 거 맞지?","acceptableIntents":["policy","decision"],"expectedAny":[{"contentAny":["hooks","settings.json","automatic","event-driven"]}]},
+  {"id":"cross-lang-5","query":"memory document는 English로 쓰는 게 맞지?","acceptableIntents":["decision","policy","profile"],"expectedAny":[{"contentAny":["English","영문","토큰","memory","documentation"]}]}
 ]

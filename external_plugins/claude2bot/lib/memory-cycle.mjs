@@ -712,6 +712,16 @@ async function runCycle1Impl(ws, config, options = {}) {
     if (parsed.relations) store.upsertRelations(parsed.relations, ts, srcEp)
     store.rebuildEntityLinks()
 
+    // cycle1이 처리한 에피소드의 candidate를 consolidated로 마킹 (cycle2 중복 방지)
+    const processedEpisodeIds = candidates.map(c => c.id).filter(id => id != null)
+    if (processedEpisodeIds.length > 0) {
+      const placeholders = processedEpisodeIds.map(() => '?').join(',')
+      store.db.prepare(`
+        UPDATE memory_candidates SET status = 'consolidated'
+        WHERE episode_id IN (${placeholders}) AND status = 'pending'
+      `).run(...processedEpisodeIds)
+    }
+
     totalExtracted += candidates.length
     totalFacts += (parsed.facts || []).length
     totalTasks += (parsed.tasks || []).length
@@ -812,22 +822,39 @@ async function runCycle3Impl(_ws, options = {}) {
   let deprecatedFacts = 0, deprecatedTasks = 0, deprecatedSignals = 0
   let deletedFacts = 0, deletedTasks = 0, deletedSignals = 0
 
-  // Phase 1: Compute heat scores and deprecate cold items
+  // Phase 1: Compute heat scores and deprecate cold items (30일 미만 신규 항목 보호)
+  const MIN_SURVIVAL_DAYS = 30
+
   // Facts
   const coldFactIds = store.getDecayRows('fact')
-    .filter(row => computeHeatScore(row) < threshold)
+    .filter(row => {
+      const firstSeen = row.first_seen ? new Date(row.first_seen).getTime() : 0
+      const ageDays = firstSeen ? (Date.now() - firstSeen) / 86400000 : 999
+      if (ageDays < MIN_SURVIVAL_DAYS) return false // 신규 fact 보호
+      return computeHeatScore(row) < threshold
+    })
     .map(row => row.id)
   deprecatedFacts = store.markRowsDeprecated('fact', coldFactIds, nowISO)
 
   // Tasks
   const coldTaskIds = store.getDecayRows('task')
-    .filter(row => computeHeatScore(row) < threshold)
+    .filter(row => {
+      const firstSeen = row.first_seen ? new Date(row.first_seen).getTime() : 0
+      const ageDays = firstSeen ? (Date.now() - firstSeen) / 86400000 : 999
+      if (ageDays < MIN_SURVIVAL_DAYS) return false
+      return computeHeatScore(row) < threshold
+    })
     .map(row => row.id)
   deprecatedTasks = store.markRowsDeprecated('task', coldTaskIds, nowISO)
 
   // Signals
   const coldSignalIds = store.getDecayRows('signal')
-    .filter(row => computeHeatScore(row) < threshold)
+    .filter(row => {
+      const firstSeen = row.first_seen ? new Date(row.first_seen).getTime() : 0
+      const ageDays = firstSeen ? (Date.now() - firstSeen) / 86400000 : 999
+      if (ageDays < MIN_SURVIVAL_DAYS) return false
+      return computeHeatScore(row) < threshold
+    })
     .map(row => row.id)
   deprecatedSignals = store.markRowsDeprecated('signal', coldSignalIds, nowISO)
 
