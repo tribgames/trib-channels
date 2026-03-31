@@ -129,6 +129,9 @@ const INTENT_PROTOTYPES = {
     'formal respectful address style',
     'response tone and wording rules',
     'language and address behavior',
+    'does the user prefer agent delegation or direct work',
+    'user response style and formatting preference',
+    'user work style pattern and delegation preference',
   ],
   task: [
     'current work status and active priorities',
@@ -137,6 +140,11 @@ const INTENT_PROTOTYPES = {
     'present operational focus and pending work',
     'priority items in the current workflow',
     'near-term work status and planned next steps',
+    'current tasks list what are we working on now',
+    'memory search improvement implementation task',
+    'session pinning routing stabilization task',
+    'memory split implementation work in progress',
+    'what is being done right now active work items',
   ],
   decision: [
     'architecture decision design constraint rule limitation',
@@ -145,6 +153,10 @@ const INTENT_PROTOTYPES = {
     'design decision and structural rule',
     'technical direction and constraints',
     'agreed system decision',
+    'Current Work Overlay usage conditions design decision',
+    'Recent Event Overlay design decision and rules',
+    'recall context hierarchy structure design',
+    'plugin manifest location decision',
   ],
   policy: [
     'policy rule restriction allowed forbidden operational behavior',
@@ -153,6 +165,11 @@ const INTENT_PROTOTYPES = {
     'what is allowed forbidden or required in operation',
     'system rule and user-imposed constraint',
     'operational guardrail and preference rule',
+    'automatic event-driven behavior implementation location hooks settings.json',
+    'where should automatic actions be implemented hooks or settings',
+    'event-driven automatic behavior must use hooks in settings.json',
+    'file change report rule after modification',
+    'settings.json audit read-only modification restriction',
   ],
   security: [
     'secret credential sensitive value security privacy',
@@ -2997,6 +3014,34 @@ export class MemoryStore {
       intent,
       queryVector,
     })
+    // Candidate-based intent refinement: if results are weak, retry with adjusted intent
+    if (finalResults.length === 0 || (finalResults.length > 0 && Number(finalResults[0]?.weighted_score ?? 0) > -0.35)) {
+      const typeDistribution = {}
+      for (const item of [...sparse, ...dense].slice(0, 20)) {
+        typeDistribution[item.type ?? 'unknown'] = (typeDistribution[item.type ?? 'unknown'] ?? 0) + 1
+      }
+      const dominantType = Object.entries(typeDistribution).sort((a, b) => b[1] - a[1])[0]?.[0]
+      const typeToIntent = { fact: 'decision', task: 'task', signal: 'profile', profile: 'profile', episode: 'history', entity: 'decision', relation: 'decision', proposition: 'decision' }
+      const refinedIntent = typeToIntent[dominantType] ?? 'decision'
+      if (refinedIntent !== intent.primary) {
+        try {
+          const refinedPlan = buildMemoryQueryPlan(clean, { ...intent, primary: refinedIntent }, {
+            limit, queryEntities: options.queryEntities ?? this.resolveQueryEntityScope(clean), filters: options.filters,
+          })
+          const { sparse: sparse2, dense: dense2 } = await buildHybridRetrievalInputs(this, refinedPlan, queryVector, focusVector)
+          const combined2 = this.combineRetrievalResults(clean, sparse2, dense2, limit, { ...intent, primary: refinedIntent }, refinedPlan.queryEntities, {
+            graphFirst: refinedPlan.graphFirst, tuning, preferActiveTasks: refinedPlan.preferActiveTasks,
+          })
+          const exactResults2 = applyExactHistorySelection(refinedPlan, combined2, limit, { tuning })
+          const refined2 = await this.applyVerifiedFactCorrection(clean, exactResults2, { limit, intent: { ...intent, primary: refinedIntent }, queryVector })
+          const firstScore = Number(finalResults[0]?.weighted_score ?? 0)
+          const secondScore = Number(refined2[0]?.weighted_score ?? 0)
+          if (refined2.length > 0 && (finalResults.length === 0 || secondScore < firstScore)) {
+            finalResults = refined2
+          }
+        } catch {}
+      }
+    }
     // Cross-encoder rerank: only when heuristic results are weak
     if (tuning.reranker?.enabled !== false &&
         (finalResults.length === 0 || (finalResults.length > 0 && Number(finalResults[0]?.weighted_score ?? 0) > (tuning.reranker?.triggerThreshold ?? -0.4)))) {

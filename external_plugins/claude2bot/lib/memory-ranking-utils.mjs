@@ -87,7 +87,12 @@ export function getIntentSubtypeBonus(intent, item) {
       0
     )
   }
-  if (intent === 'event') return item.type === 'episode' ? -0.14 : 0
+  if (intent === 'event') return (
+    item.type === 'episode' ? -0.14 :
+    item.type === 'fact' ? -0.04 :
+    item.type === 'proposition' ? -0.04 :
+    0
+  )
   if (intent === 'history') return item.type === 'episode' ? -0.08 : 0
   return (
     item.type === 'fact' && item.subtype === 'decision' ? -0.06 :
@@ -110,7 +115,8 @@ export function shouldKeepRerankItem(intent, item, options = {}) {
   if (intent === 'task' && hasTaskCandidate) return item.type === 'task' || (item.type === 'fact' && item.subtype === 'decision')
   if (isPolicyIntent(intent)) return item.type === 'fact' || item.type === 'signal' || item.type === 'proposition'
   if (intent === 'graph') return item.type === 'relation' || item.type === 'entity' || item.type === 'fact' || item.type === 'proposition'
-  if (intent === 'event') return item.type === 'episode' || item.type === 'fact' || item.type === 'task'
+  // Relaxed: event intent also allows fact/proposition/task (not just episode)
+  if (intent === 'event') return item.type === 'episode' || item.type === 'fact' || item.type === 'task' || item.type === 'proposition'
   if (intent === 'decision') return item.type === 'fact' || item.type === 'task' || item.type === 'proposition' || item.type === 'entity' || item.type === 'relation'
   return true
 }
