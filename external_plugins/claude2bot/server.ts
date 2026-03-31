@@ -1497,8 +1497,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
 
         const queryLower = query.toLowerCase().trim()
         const ftsQuery = query.replace(/['"]/g, ' ').trim()
-        const filterRowsByMetadata = (rows: Array<Record<string, unknown>>) => {
-          return memoryStore.applyMetadataFilters(rows, metadataFilters) as Array<Record<string, unknown>>
+        const filterRowsByMetadata = async (rows: Array<Record<string, unknown>>): Promise<Array<Record<string, unknown>>> => {
+          return await memoryStore.applyMetadataFilters(rows, metadataFilters) as Array<Record<string, unknown>>
         }
         const buildSourceParts = (row: Record<string, unknown>) => {
           return [
@@ -1557,7 +1557,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           }).join('\n')
         }
 
-        const loadProfileRows = () => {
+        const loadProfileRows = async () => {
           return filterRowsByMetadata(memoryStore.getProfileRecallRows(query, limit) as Array<Record<string, unknown>>)
         }
 
@@ -1571,18 +1571,18 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           return filterRowsByMetadata(rows as Array<Record<string, unknown>>)
         }
 
-        const loadEntityRows = () => {
+        const loadEntityRows = async () => {
           return filterRowsByMetadata(memoryStore.getEntityRecallRows(query, limit) as Array<Record<string, unknown>>)
         }
 
-        const loadRelationRows = () => {
+        const loadRelationRows = async () => {
           return filterRowsByMetadata(memoryStore.getRelationRecallRows(query, limit) as Array<Record<string, unknown>>)
         }
 
         const loadDirectTypeRows = async (kind: string) => {
-          if (kind === 'profiles') return loadProfileRows()
-          if (kind === 'entities') return loadEntityRows()
-          if (kind === 'relations') return loadRelationRows()
+          if (kind === 'profiles') return await loadProfileRows()
+          if (kind === 'entities') return await loadEntityRows()
+          if (kind === 'relations') return await loadRelationRows()
           if (kind === 'facts') return await loadPolicyRows()
           return []
         }
@@ -1762,7 +1762,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
 
         if (effectiveMode === 'tasks') {
           try {
-            const tasks = filterRowsByMetadata(await memoryStore.getPriorityTasks(query, { limit }) as Array<Record<string, unknown>>)
+            const tasks = await filterRowsByMetadata(await memoryStore.getPriorityTasks(query, { limit }) as Array<Record<string, unknown>>)
             memoryStore.recordRetrieval(tasks)
             const rows = tasks.map((task: { stage?: string; title?: string; details?: string; confidence?: number; last_seen?: string }) => ({
               type: 'task',
@@ -1792,7 +1792,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
 
         if (effectiveMode === 'profile') {
           try {
-            const rows = loadProfileRows()
+            const rows = await loadProfileRows()
             memoryStore.recordRetrieval(rows)
             result = { content: [{ type: 'text', text: formatDirectRows(rows) }] }
           } catch (e: unknown) {
@@ -1805,7 +1805,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         // Special query shortcuts for direct DB access
         if (queryLower === 'all' || queryLower === 'facts' || queryLower === 'episodes' || queryLower === 'profiles' || queryLower === 'tasks' || queryLower === 'signals' || queryLower === 'entities' || queryLower === 'relations') {
           try {
-            const rows = filterRowsByMetadata(memoryStore.getRecallShortcutRows(queryLower, limit, { startDate: trStart, endDate: trEnd }) as Array<Record<string, unknown>>)
+            const rows = await filterRowsByMetadata(memoryStore.getRecallShortcutRows(queryLower, limit, { startDate: trStart, endDate: trEnd }) as Array<Record<string, unknown>>)
 
             if (rows.length === 0) {
               result = { content: [{ type: 'text', text: `(no ${queryLower} found)` }] }

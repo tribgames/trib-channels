@@ -6,30 +6,13 @@ import {
   tokenizeMemoryText,
 } from './memory-text-utils.mjs'
 import { vecToHex } from './memory-vector-utils.mjs'
+import { applyMetadataFilters } from './memory-retrievers.mjs'
+export { applyMetadataFilters }
 
 const RECALL_EPISODE_KIND_SQL = `'message', 'turn'`
 const DEBUG_RECALL_EPISODE_KIND_SQL = `'message', 'turn', 'transcript'`
 
-function logIgnoredError(scope, error) {
-  if (!error) return
-  const message = error instanceof Error ? error.message : String(error)
-  process.stderr.write(`[memory] ${scope}: ${message}\n`)
-}
 
-function getSessionId(store, sourceEpisodeId, cache) {
-  const id = Number(sourceEpisodeId ?? 0)
-  if (!id) return ''
-  if (cache.has(id)) return cache.get(id)
-  try {
-    const value = String(store.db.prepare(`SELECT session_id FROM episodes WHERE id = ?`).get(id)?.session_id ?? '')
-    cache.set(id, value)
-    return value
-  } catch (error) {
-    logIgnoredError('applyMetadataFilters session lookup', error)
-    cache.set(id, '')
-    return ''
-  }
-}
 
 export function getProfileRecallRows(store, query = '', limit = 5) {
   const clean = String(query ?? '').trim()
@@ -168,7 +151,8 @@ export async function verifyMemoryClaim(store, query, options = {}) {
     const semanticBoost = Math.min(0.55, Math.max(0, similarity) * 0.55)
     const verifyScore = Number(Math.min(1, semanticBoost + lexicalBoost + exactBoost).toFixed(3))
     const crossLingual = lexicalOverlap < 0.1 && similarity > 0
-    const accepted = literalMatch || verifyScore >= 0.55 || similarity >= 0.82 || (crossLingual && similarity >= 0.45) || (similarity >= 0.7 && lexicalOverlap >= 0.15)
+    const highConfidenceFactFound = Number(merged.confidence ?? 0) >= 0.8 && (lexicalOverlap > 0 || similarity > 0.2)
+    const accepted = literalMatch || verifyScore >= 0.55 || similarity >= 0.82 || (crossLingual && similarity >= 0.45) || (similarity >= 0.7 && lexicalOverlap >= 0.15) || highConfidenceFactFound
     matchesById.set(id, {
       ...merged,
       lexical_overlap: lexicalOverlap,
@@ -385,26 +369,3 @@ export function getRecallShortcutRows(store, kind = 'all', limit = 5, options = 
   return rows
 }
 
-export function applyMetadataFilters(store, rows = [], filters = {}) {
-  const memoryKind = String(filters.memory_kind ?? '').trim()
-  const taskStatus = String(filters.task_status ?? '').trim()
-  const sourceType = String(filters.source_type ?? '').trim().toLowerCase()
-  const sessionId = String(filters.session_id ?? '').trim()
-  if (!memoryKind && !taskStatus && !sourceType && !sessionId) return rows
-
-  const sessionCache = new Map()
-  return rows.filter(row => {
-    if (memoryKind && String(row?.type ?? '') !== memoryKind) return false
-    if (taskStatus && String(row?.type ?? '') === 'task' && String(row?.status ?? '') !== taskStatus) return false
-    if (sourceType) {
-      const sourceKind = String(row?.source_kind ?? '').toLowerCase()
-      const sourceBackend = String(row?.source_backend ?? '').toLowerCase()
-      if (sourceKind !== sourceType && sourceBackend !== sourceType) return false
-    }
-    if (sessionId) {
-      const matched = getSessionId(store, row?.source_episode_id ?? row?.entity_id, sessionCache)
-      if (matched !== sessionId) return false
-    }
-    return true
-  })
-}

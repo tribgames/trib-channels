@@ -1886,7 +1886,7 @@ export class MemoryStore {
     return getRecallShortcutRowsImpl(this, kind, limit, options)
   }
 
-  applyMetadataFilters(rows = [], filters = {}) {
+  async applyMetadataFilters(rows = [], filters = {}) {
     return applyMetadataFiltersImpl(this, rows, filters)
   }
 
