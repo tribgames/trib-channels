@@ -219,7 +219,7 @@ export const DEFAULT_MEMORY_TUNING = Object.freeze({
   },
   reranker: {
     enabled: true,
-    model: 'onnx-community/bge-reranker-v2-m3-ONNX',
+    model: 'Xenova/bge-reranker-large',
     triggerThreshold: -0.4,
     minRerankerScore: -2,
     maxCandidates: 5,

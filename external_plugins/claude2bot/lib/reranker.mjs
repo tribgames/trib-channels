@@ -4,7 +4,7 @@ let _tokenizer = null
 let _model = null
 let _loading = null
 
-const MODEL_ID = 'onnx-community/bge-reranker-v2-m3-ONNX'
+const MODEL_ID = 'Xenova/bge-reranker-large'
 
 async function ensureModel() {
   if (_model && _tokenizer) return
