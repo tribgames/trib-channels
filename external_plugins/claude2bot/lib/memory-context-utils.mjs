@@ -1,4 +1,5 @@
 import { cleanMemoryText } from './memory-extraction.mjs'
+import { DEFAULT_MEMORY_TUNING } from './memory-tuning.mjs'
 
 function clamp01(value) {
   return Math.max(0, Math.min(1, Number(value) || 0))
@@ -35,13 +36,21 @@ export function shouldInjectHint(item, overrides = {}, options = {}) {
   const confidence = clamp01(overrides.confidence ?? item?.confidence ?? item?.quality_score ?? item?.effectiveScore ?? 0)
   const relevance = clamp01(overrides.relevanceScore ?? computeHintRelevance(item, { queryTokenCount }))
   const overlap = clamp01(Number(item?.overlapCount ?? 0) / Math.min(3, queryTokenCount))
-  const composite = Number((relevance * 0.58 + confidence * 0.27 + overlap * 0.15).toFixed(3))
+  const hintConfig = options.hintConfig ?? DEFAULT_MEMORY_TUNING.hintInjection
+  const weights = hintConfig?.compositeWeights ?? DEFAULT_MEMORY_TUNING.hintInjection.compositeWeights
+  const thresholds = hintConfig?.thresholds ?? DEFAULT_MEMORY_TUNING.hintInjection.thresholds
+  const threshold = thresholds?.[type] ?? thresholds?.default ?? DEFAULT_MEMORY_TUNING.hintInjection.thresholds.default
+  const composite = Number((
+    relevance * Number(weights.relevance ?? 0.58) +
+    confidence * Number(weights.confidence ?? 0.27) +
+    overlap * Number(weights.overlap ?? 0.15)
+  ).toFixed(3))
 
-  if (type === 'profile') return relevance >= 0.58 || composite >= 0.55 || confidence >= 0.68
-  if (type === 'signal') return relevance >= 0.66 || composite >= 0.6 || (confidence >= 0.76 && overlap >= 0.2)
-  if (type === 'task') return relevance >= 0.5 || composite >= 0.56 || (confidence >= 0.72 && overlap > 0)
-  if (type === 'fact' || type === 'proposition') return relevance >= 0.62 || composite >= 0.58 || (confidence >= 0.84 && overlap > 0)
-  return relevance >= 0.68 || composite >= 0.6
+  return (
+    relevance >= Number(threshold.relevance ?? 1) ||
+    composite >= Number(threshold.composite ?? 1) ||
+    (confidence >= Number(threshold.confidence ?? 1) && overlap >= Number(threshold.overlap ?? 1))
+  )
 }
 
 export function buildHintKey(item, overrides = {}) {

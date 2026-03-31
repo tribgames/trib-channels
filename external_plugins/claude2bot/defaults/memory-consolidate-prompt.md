@@ -12,6 +12,7 @@ Rules:
 - Facts should be rare. Only keep a fact if it is likely to matter across many future conversations.
 - Do not turn implementation details, temporary debugging notes, or one-off observations into facts.
 - Do not turn temporary system-health observations, missing-data explanations, candidate-threshold commentary, schema/debug notes, or "why the pipeline currently looks empty/noisy" explanations into durable facts.
+- Do not turn provider/model selection notes, update cadence tuning, CRUD/schema field debates, or current system-health observations into durable facts.
 - Do not store memory about how the memory pipeline itself should be cleaned up, scheduled, bootstrapped, or configured unless the user explicitly approved it as a lasting external rule that materially affects future behavior.
 - Do not turn a single day's worklog, a local refactor note, or a temporary implementation choice into a durable fact.
 - If an item mainly says what was discussed or worked on that day, it belongs in the daily summary, not in durable memory.
@@ -82,6 +83,19 @@ Rules:
 - If a candidate updates or contradicts an existing memory, output the updated version as a new fact (the system will handle deprecation).
 - If two or more similar existing facts can be combined into one without losing information, output a single merged fact that covers both. The system will deprecate the originals.
 - Mark updated facts clearly when they supersede existing ones.
+- Extract development resolutions as facts with type "resolution" when:
+  - A bug was identified and solved (e.g., "race condition fixed with inbound dedup")
+  - An architectural decision was implemented (e.g., "output forwarding moved from hooks to MCP OutputForwarder")
+  - A debugging pattern proved useful (e.g., "transcript JSONL watch was the root cause trace method")
+  - A migration or refactor pattern was applied (e.g., "launcher.mjs removed in 3 phases: extract→inline→delete")
+- Resolution facts should name: the problem, the solution approach, and optionally the component.
+- Prefer forms like:
+  - "Fixed [problem] by [solution] in [component]."
+  - "[Component] was refactored from [old approach] to [new approach] because [reason]."
+  - "The [bug type] in [component] was caused by [root cause] and resolved with [fix]."
+- Resolution facts are NOT temporary debugging notes. They are reusable patterns that help understand how past problems were solved.
+- Do not extract "we debugged X" or "we investigated Y" — only extract the final resolution/approach.
+- Extract recurring development patterns as signals with kind "dev_pattern" (e.g., "prefers 3-phase migration: extract→inline→delete", "uses dedup as first approach for race conditions").
 
 Return this exact shape:
 {
@@ -89,7 +103,7 @@ Return this exact shape:
     { "key": "language|tone|address|response_style|timezone", "value": "short stable profile value", "confidence": 0.0 }
   ],
   "facts": [
-    { "type": "preference|constraint|decision|fact", "slot": "optional-stable-slot", "workstream": "optional-stable-workstream", "text": "short durable fact", "confidence": 0.0 }
+    { "type": "preference|constraint|decision|fact|resolution", "slot": "optional-stable-slot", "workstream": "optional-stable-workstream", "text": "short durable fact", "confidence": 0.0 }
   ],
   "tasks": [
     {
@@ -109,7 +123,7 @@ Return this exact shape:
     }
   ],
   "signals": [
-    { "kind": "language|tone|time_pref|interest|cadence", "value": "stable pattern", "score": 0.0 }
+    { "kind": "language|tone|time_pref|interest|cadence|dev_pattern", "value": "stable pattern", "score": 0.0 }
   ],
   "entities": [
     { "name": "entity name", "type": "project|tool|person|system|concept|service", "description": "short description" }

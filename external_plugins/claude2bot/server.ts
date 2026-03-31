@@ -30,7 +30,7 @@ import { controlClaudeSession } from './lib/session-control.js'
 import { JsonStateFile, ensureDir, removeFileIfExists, writeTextFile, type StatusState } from './lib/state-file.js'
 import { getMemoryStore } from './lib/memory.mjs'
 import { configureEmbedding } from './lib/embedding-provider.mjs'
-import { sleepCycle, memoryFlush, rebuildRecent, pruneToRecent, getCycleStatus, autoFlush, runCycle1, parseInterval, buildSemanticDayPlan, loadCycleState, runCycle3, shouldRunCycle3 } from './lib/memory-cycle.mjs'
+import { sleepCycle, memoryFlush, rebuildRecent, pruneToRecent, getCycleStatus, autoFlush, runCycle1, parseInterval, buildSemanticDayPlan, loadCycleState } from './lib/memory-cycle.mjs'
 import {
   buildModalRequestSpec,
   PendingInteractionStore,
@@ -48,6 +48,7 @@ import {
   cleanupInstanceRuntimeFiles,
   releaseOwnedChannelLocks,
   clearActiveInstance,
+  RUNTIME_ROOT,
 } from './lib/runtime-paths.js'
 import type { InboundMessage } from './backends/types.js'
 import { PLUGIN_ROOT } from './lib/config.js'
@@ -161,18 +162,6 @@ if (cycle1Config?.interval) {
     }, intervalMs)
     process.stderr.write(`[memory-cycle1] scheduler started: interval=${cycle1Config.interval} (${intervalMs}ms)\n`)
   }
-}
-
-// ── Cycle3: Weekly decay check on startup ─────────────────────────────
-if (shouldRunCycle3(config)) {
-  process.stderr.write('[cycle3] weekly decay due — triggering on startup\n')
-  void (async () => {
-    try {
-      await runCycle3(process.cwd())
-    } catch (e: unknown) {
-      process.stderr.write(`[cycle3] startup trigger failed: ${e instanceof Error ? e.message : String(e)}\n`)
-    }
-  })()
 }
 
 // ── Instructions ───────────────────────────────────────────────────────
@@ -491,36 +480,42 @@ function claimBridgeOwnership(reason: string): void {
   logOwnership(`claimed owner (${reason})`)
 }
 
-async function terminatePreviousOwner(previous: ReturnType<typeof readActiveInstance>): Promise<void> {
+function noteStartupHandoff(previous: ReturnType<typeof readActiveInstance>): void {
   if (!previous) return
   if (previous.instanceId === INSTANCE_ID) return
   if (previous.pid === process.pid) return
-
-  try {
-    process.kill(previous.pid, 'SIGTERM')
-  } catch {
-    return
-  }
-
-  const deadline = Date.now() + 2000
-  while (Date.now() < deadline) {
-    try {
-      process.kill(previous.pid, 0)
-      await new Promise(resolve => setTimeout(resolve, 100))
-    } catch {
-      return
-    }
-  }
-
-  try { process.kill(previous.pid, 'SIGKILL') } catch { /* ignore */ }
+  logOwnership(`startup handoff from ${previous.instanceId}`)
 }
 
 function bindPersistedTranscriptIfAny(): void {
   const initBound = discoverSessionBoundTranscript()
   if (!initBound?.exists) return
-  const initChannel = statusState.read().channelId
-  if (!initChannel) return
-  applyTranscriptBinding(initChannel, initBound.transcriptPath)
+  let currentStatus = statusState.read()
+  // Initialize status from the most recent valid status file if current is empty
+  if (!currentStatus.channelId) {
+    try {
+      const files = fs.readdirSync(RUNTIME_ROOT)
+        .filter((f: string) => f.startsWith('status-') && f.endsWith('.json'))
+        .map((f: string) => {
+          const full = path.join(RUNTIME_ROOT, f)
+          return { path: full, mtime: fs.statSync(full).mtimeMs }
+        })
+        .sort((a: { mtime: number }, b: { mtime: number }) => b.mtime - a.mtime)
+      for (const { path: fp } of files) {
+        try {
+          const data = JSON.parse(fs.readFileSync(fp, 'utf8'))
+          if (data.channelId) {
+            statusState.update((state: Record<string, unknown>) => { Object.assign(state, data) })
+            currentStatus = statusState.read()
+            process.stderr.write(`claude2bot: restored status from ${fp}\n`)
+            break
+          }
+        } catch { /* skip unreadable files */ }
+      }
+    } catch { /* RUNTIME_ROOT not readable */ }
+  }
+  if (!currentStatus.channelId) return
+  applyTranscriptBinding(currentStatus.channelId, initBound.transcriptPath)
   process.stderr.write(`claude2bot: initial transcript bind: ${initBound.transcriptPath}\n`)
 }
 
@@ -1200,11 +1195,11 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: 'memory_cycle',
       annotations: { title: 'Memory Cycle' },
-      description: 'Run memory management operations: sleep (consolidate + refresh context), flush (consolidate pending), rebuild (recent), prune (cleanup), cycle1 (lightweight extraction), cycle3 (weekly decay), status.',
+      description: 'Run memory management operations: sleep (merged update), flush (consolidate pending), rebuild (recent), prune (cleanup), cycle1 (fast update), status.',
       inputSchema: {
         type: 'object' as const,
         properties: {
-          action: { type: 'string', enum: ['sleep', 'flush', 'rebuild', 'prune', 'cycle1', 'cycle3', 'status'], description: 'Memory operation to run' },
+          action: { type: 'string', enum: ['sleep', 'flush', 'rebuild', 'prune', 'cycle1', 'status'], description: 'Memory operation to run' },
           maxDays: { type: 'number', description: 'Max days to process (default varies by action)' },
         },
         required: ['action'],
@@ -1225,6 +1220,12 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           source: { type: 'boolean', default: false, description: 'Episodes-only: include source trace.' },
           context: { type: ['number', 'string'], description: 'Episodes-only: surrounding turns count or "semantic".' },
           compact: { type: 'boolean', default: true, description: 'Use u/a shorthand for episodes' },
+          memory_kind: { type: 'string', enum: ['fact', 'task', 'signal', 'profile', 'entity', 'relation', 'episode', 'proposition'], description: 'Optional metadata filter for a specific memory kind.' },
+          task_status: { type: 'string', enum: ['active', 'in_progress', 'paused', 'done'], description: 'Optional metadata filter for task status.' },
+          source_type: { type: 'string', description: 'Optional metadata filter for source kind/backend, e.g. message, transcript, discord, claude-session.' },
+          session_id: { type: 'string', description: 'Optional metadata filter for a specific source session id.' },
+          trace: { type: 'boolean', default: false, description: 'Persist a retrieval trace JSONL record under history for later inspection.' },
+          debug: { type: 'boolean', default: false, description: 'Include query plan / candidate / rerank debug summary for inspection.' },
           hints: { type: 'array', items: { type: 'string' }, description: 'Bulk-only: hint list to verify.' },
         },
         required: [],
@@ -1242,6 +1243,22 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
   const toolName = req.params.name
   const args = (req.params.arguments ?? {}) as Record<string, unknown>
   let result: { content: Array<{ type: string; text: string }>; isError?: boolean }
+
+  // Auto-connect: backend-dependent tools trigger ownership + connect
+  const BACKEND_TOOLS = new Set(['reply', 'fetch_messages', 'react', 'edit_message', 'download_attachment'])
+  if (BACKEND_TOOLS.has(toolName) && !bridgeRuntimeConnected) {
+    if (!currentOwnerState().owned) claimBridgeOwnership('tool call')
+    for (let i = 0; i < 3 && !bridgeRuntimeConnected; i++) {
+      try { await refreshBridgeOwnership() } catch { /* logged internally */ }
+      if (!bridgeRuntimeConnected) await new Promise(r => setTimeout(r, 1000))
+    }
+    if (!bridgeRuntimeConnected) {
+      return {
+        content: [{ type: 'text', text: `Discord auto-connect failed after retries. Check token and network.` }],
+        isError: true,
+      }
+    }
+  }
 
   try {
     switch (toolName) {
@@ -1379,9 +1396,6 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           } else if (mcAction === 'cycle1') {
             const c1result = await runCycle1(ws, config)
             result = { content: [{ type: 'text', text: `Cycle1 completed: ${JSON.stringify(c1result)}` }] }
-          } else if (mcAction === 'cycle3') {
-            const c3result = await runCycle3(ws)
-            result = { content: [{ type: 'text', text: `Cycle3 completed: ${JSON.stringify(c3result)}` }] }
           } else {
             result = { content: [{ type: 'text', text: `unknown memory action: ${mcAction}` }], isError: true }
           }
@@ -1397,6 +1411,14 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         const limit = Number(args.limit ?? 5)
         const includeSource = Boolean(args.source ?? false)
         const contextArg = args.context as string | number | undefined
+        const debug = Boolean(args.debug)
+        const trace = Boolean(args.trace)
+        const metadataFilters = {
+          memory_kind: args.memory_kind as string | undefined,
+          task_status: args.task_status as string | undefined,
+          source_type: args.source_type as string | undefined,
+          session_id: args.session_id as string | undefined,
+        }
         const useCompact = args.compact !== false // default true
 
         const addUtcDays = (value: Date, days: number) => {
@@ -1474,26 +1496,9 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         }
 
         const queryLower = query.toLowerCase().trim()
-        const queryLike = `%${query.trim()}%`
         const ftsQuery = query.replace(/['"]/g, ' ').trim()
-        const trWhere = trStart && trEnd ? ` AND last_seen >= '${trStart}' AND last_seen <= '${trEnd}T23:59:59'` : ''
-        const normalizeRecallText = (value: unknown) => String(value ?? '').trim().toLowerCase()
-        const tokenizeRecallText = (value: unknown) => {
-          return Array.from(new Set(
-            normalizeRecallText(value)
-              .split(/[^0-9a-zA-Z\u3131-\u318E\uAC00-\uD7A3\u3040-\u30FF\u3400-\u9FFF_-]+/)
-              .filter(token => token.length >= 2),
-          ))
-        }
-        const computeLexicalOverlap = (needle: unknown, haystack: unknown) => {
-          const tokens = tokenizeRecallText(needle)
-          if (tokens.length === 0) return 0
-          const normalizedHaystack = normalizeRecallText(haystack)
-          let hits = 0
-          for (const token of tokens) {
-            if (normalizedHaystack.includes(token)) hits += 1
-          }
-          return Number((hits / tokens.length).toFixed(3))
+        const filterRowsByMetadata = (rows: Array<Record<string, unknown>>) => {
+          return memoryStore.applyMetadataFilters(rows, metadataFilters) as Array<Record<string, unknown>>
         }
         const buildSourceParts = (row: Record<string, unknown>) => {
           return [
@@ -1510,17 +1515,6 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           const sourceSuffix = sourceParts.length > 0 ? ` [source ${sourceParts.join(' | ')}]` : ''
           const markerPrefix = marker && marker !== ' ' ? `${marker}` : ''
           return `${markerPrefix}[${ts}] ${role}: ${String(ep.content ?? '')}${sourceSuffix}`
-        }
-        const dedupeEpisodeRows = (rows: Array<Record<string, unknown>>) => {
-          const seen = new Set<number>()
-          const deduped: Array<Record<string, unknown>> = []
-          for (const row of rows) {
-            const id = Number(row.id ?? row.entity_id ?? 0)
-            if (!id || seen.has(id)) continue
-            seen.add(id)
-            deduped.push(row)
-          }
-          return deduped
         }
         const inferredIntent = query
           ? await memoryStore.classifyQueryIntent(query)
@@ -1564,26 +1558,32 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         }
 
         const loadProfileRows = () => {
-          return memoryStore.getProfileRecallRows(query, limit) as Array<Record<string, unknown>>
+          return filterRowsByMetadata(memoryStore.getProfileRecallRows(query, limit) as Array<Record<string, unknown>>)
         }
 
-        const loadPolicyRows = () => {
-          return memoryStore.getPolicyRecallRows(query, limit, { startDate: trStart, endDate: trEnd }) as Array<Record<string, unknown>>
+        const loadPolicyRows = async () => {
+          const hybrid = await memoryStore.searchRelevantHybrid(query || '', limit, {
+            intent: { primary: 'policy', scores: {} },
+            filters: metadataFilters,
+            recordRetrieval: false,
+          })
+          const rows = Array.isArray(hybrid) ? hybrid : ((hybrid as { results?: Array<Record<string, unknown>> })?.results ?? [])
+          return filterRowsByMetadata(rows as Array<Record<string, unknown>>)
         }
 
         const loadEntityRows = () => {
-          return memoryStore.getEntityRecallRows(query, limit) as Array<Record<string, unknown>>
+          return filterRowsByMetadata(memoryStore.getEntityRecallRows(query, limit) as Array<Record<string, unknown>>)
         }
 
         const loadRelationRows = () => {
-          return memoryStore.getRelationRecallRows(query, limit) as Array<Record<string, unknown>>
+          return filterRowsByMetadata(memoryStore.getRelationRecallRows(query, limit) as Array<Record<string, unknown>>)
         }
 
-        const loadDirectTypeRows = (kind: string) => {
+        const loadDirectTypeRows = async (kind: string) => {
           if (kind === 'profiles') return loadProfileRows()
           if (kind === 'entities') return loadEntityRows()
           if (kind === 'relations') return loadRelationRows()
-          if (kind === 'facts') return loadPolicyRows()
+          if (kind === 'facts') return await loadPolicyRows()
           return []
         }
 
@@ -1681,6 +1681,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
               limit,
               queryVector: vector,
               ftsQuery,
+              includeTranscripts: debug || metadataFilters.source_type === 'transcript',
             }) as Array<Record<string, unknown>>
 
             if (episodes.length === 0) {
@@ -1693,7 +1694,9 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
                 for (const matched of episodes) {
                   const matchedId = Number(matched.id ?? matched.entity_id ?? 0)
                   if (!matchedId || !matched.day_key) continue
-                  const dayEpisodes = memoryStore.getEpisodesForDate(String(matched.day_key))
+                  const dayEpisodes = memoryStore.getEpisodesForDate(String(matched.day_key), {
+                    includeTranscripts: debug || metadataFilters.source_type === 'transcript',
+                  })
                     .map((ep: Record<string, unknown>) => ({
                       ...ep,
                       day_key: matched.day_key,
@@ -1759,10 +1762,12 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
 
         if (effectiveMode === 'tasks') {
           try {
-            const tasks = await memoryStore.getPriorityTasks(query, { limit })
+            const tasks = filterRowsByMetadata(await memoryStore.getPriorityTasks(query, { limit }) as Array<Record<string, unknown>>)
+            memoryStore.recordRetrieval(tasks)
             const rows = tasks.map((task: { stage?: string; title?: string; details?: string; confidence?: number; last_seen?: string }) => ({
               type: 'task',
               subtype: task.stage,
+              status: (task as { status?: string }).status,
               content: `${task.title}${task.details ? ` — ${task.details}` : ''}`,
               confidence: task.confidence,
               last_seen: task.last_seen,
@@ -1776,7 +1781,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
 
         if (effectiveMode === 'policy') {
           try {
-            const rows = loadPolicyRows()
+            const rows = await loadPolicyRows()
+            memoryStore.recordRetrieval(rows)
             result = { content: [{ type: 'text', text: formatDirectRows(rows) }] }
           } catch (e: unknown) {
             result = { content: [{ type: 'text', text: `policy error: ${e instanceof Error ? e.message : String(e)}` }], isError: true }
@@ -1787,6 +1793,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         if (effectiveMode === 'profile') {
           try {
             const rows = loadProfileRows()
+            memoryStore.recordRetrieval(rows)
             result = { content: [{ type: 'text', text: formatDirectRows(rows) }] }
           } catch (e: unknown) {
             result = { content: [{ type: 'text', text: `profile error: ${e instanceof Error ? e.message : String(e)}` }], isError: true }
@@ -1798,7 +1805,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         // Special query shortcuts for direct DB access
         if (queryLower === 'all' || queryLower === 'facts' || queryLower === 'episodes' || queryLower === 'profiles' || queryLower === 'tasks' || queryLower === 'signals' || queryLower === 'entities' || queryLower === 'relations') {
           try {
-            const rows = memoryStore.getRecallShortcutRows(queryLower, limit, { startDate: trStart, endDate: trEnd }) as Array<Record<string, unknown>>
+            const rows = filterRowsByMetadata(memoryStore.getRecallShortcutRows(queryLower, limit, { startDate: trStart, endDate: trEnd }) as Array<Record<string, unknown>>)
 
             if (rows.length === 0) {
               result = { content: [{ type: 'text', text: `(no ${queryLower} found)` }] }
@@ -1859,7 +1866,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
 
         if (effectiveType === 'profiles' || effectiveType === 'entities' || effectiveType === 'relations') {
           try {
-            const directRows = loadDirectTypeRows(effectiveType)
+            const directRows = await loadDirectTypeRows(effectiveType)
+            memoryStore.recordRetrieval(directRows)
             result = { content: [{ type: 'text', text: formatDirectRows(directRows) }] }
           } catch (e: unknown) {
             result = { content: [{ type: 'text', text: `search error: ${e instanceof Error ? e.message : String(e)}` }], isError: true }
@@ -1867,7 +1875,9 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           break
         }
 
-        const results = await memoryStore.searchRelevantHybrid(query, limit * 2)
+        const hybrid = await memoryStore.searchRelevantHybrid(query, limit * 2, { debug, trace, filters: metadataFilters })
+        const results = Array.isArray(hybrid) ? hybrid : ((hybrid as { results?: Array<Record<string, unknown>> })?.results ?? [])
+        const debugPayload = !Array.isArray(hybrid) ? (hybrid as { debug?: Record<string, unknown> })?.debug : null
 
         if (!results || results.length === 0) {
           result = { content: [{ type: 'text', text: '(no matching memories found)' }] }
@@ -1889,7 +1899,9 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
             if (!matchedId) continue
             const dayKey = memoryStore.getEpisodeDayKey(matchedId)
             if (!dayKey) continue
-            const dayEpisodes = memoryStore.getEpisodesForDate(dayKey)
+            const dayEpisodes = memoryStore.getEpisodesForDate(dayKey, {
+              includeTranscripts: debug || metadataFilters.source_type === 'transcript',
+            })
             if (contextArg === 'semantic') {
               const plan = await buildSemanticDayPlan(dayEpisodes)
               const idx = plan.rows.findIndex((row: Record<string, unknown>) => Number(row.id) === matchedId)
@@ -1957,7 +1969,11 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           ? `${formatted}\n\n${contextEpisodes.join('\n')}`
           : formatted
 
-        result = { content: [{ type: 'text', text: output || '(no matching memories found)' }] }
+        const finalText = debug && debugPayload
+          ? `${output || '(no matching memories found)'}\n\n--- debug ---\n${JSON.stringify(debugPayload, null, useCompact ? 0 : 2)}`
+          : (output || '(no matching memories found)')
+
+        result = { content: [{ type: 'text', text: finalText }] }
         break
       }
       default:
@@ -2202,7 +2218,7 @@ async function handleInbound(
       userId: msg.userId,
     })
     if (memoryContext) {
-      memoryContextBlock = `<memory-context>\n${memoryContext}\n</memory-context>`
+      memoryContextBlock = memoryContext
     }
   } catch (e) {
     process.stderr.write(`claude2bot: buildInboundMemoryContext failed: ${e}\n`)
@@ -2246,8 +2262,11 @@ await mcp.connect(new StdioServerTransport())
 // their own explicit targets.
 
 const previousOwner = readActiveInstance()
+// Keep concurrent Claude sessions alive on startup. The newest interactive
+// session claims bridge ownership here, and older servers will observe the
+// ownership change on their next refresh tick and fall back to standby.
+noteStartupHandoff(previousOwner)
 claimBridgeOwnership('server start')
-await terminatePreviousOwner(previousOwner)
 await refreshBridgeOwnership({ restoreBinding: true })
 bridgeOwnershipTimer = setInterval(() => {
   void refreshBridgeOwnership()

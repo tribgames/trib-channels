@@ -3,13 +3,15 @@
  * Standalone memory consolidation module.
  */
 
-import { execFileSync, spawnSync } from 'child_process'
+import { execFileSync } from 'child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { homedir, tmpdir } from 'os'
 import { join } from 'path'
 import { cleanMemoryText, getMemoryStore } from './memory.mjs'
+import { classifyCandidateConcept } from './memory-extraction.mjs'
 import { embedText, configureEmbedding } from './embedding-provider.mjs'
 import { callLLM } from './llm-provider.mjs'
+import { cosineSimilarity as cosineSimilarityShared } from './memory-vector-utils.mjs'
 
 const PLUGIN_DATA_DIR = process.env.CLAUDE_PLUGIN_DATA || join(homedir(), '.claude', 'plugins', 'data', 'claude2bot-claude2bot')
 const HISTORY_DIR = join(PLUGIN_DATA_DIR, 'history')
@@ -19,9 +21,50 @@ const CONFIG_PATH = join(PLUGIN_DATA_DIR, 'memory-cycle.json')
 const CYCLE_STATE_PATH = join(tmpdir(), 'claude2bot', 'cycle-state.json')
 
 const DEFAULT_CYCLE_STATE = {
-  cycle1: { lastRunAt: null, interval: '10m' },
+  cycle1: { lastRunAt: null, interval: '5m' },
   cycle2: { lastRunAt: null, schedule: '03:00' },
   cycle3: { lastRunAt: null, schedule: 'sunday 03:00' },
+}
+
+const CYCLE_WRITE_PRIORITY = {
+  cycle1: 1,
+  cycle2: 1,
+  cycle3: 2,
+}
+
+let _cycleWriteActive = false
+let _cycleWriteSeq = 0
+const _cycleWriteQueue = []
+
+function enqueueCycleWrite(kind, work) {
+  return new Promise((resolve, reject) => {
+    _cycleWriteQueue.push({
+      kind,
+      priority: CYCLE_WRITE_PRIORITY[kind] ?? 1,
+      seq: _cycleWriteSeq++,
+      work,
+      resolve,
+      reject,
+    })
+    _cycleWriteQueue.sort((left, right) => right.priority - left.priority || left.seq - right.seq)
+    void pumpCycleWriteQueue()
+  })
+}
+
+async function pumpCycleWriteQueue() {
+  if (_cycleWriteActive) return
+  const next = _cycleWriteQueue.shift()
+  if (!next) return
+  _cycleWriteActive = true
+  try {
+    const result = await next.work()
+    next.resolve(result)
+  } catch (error) {
+    next.reject(error)
+  } finally {
+    _cycleWriteActive = false
+    if (_cycleWriteQueue.length > 0) void pumpCycleWriteQueue()
+  }
 }
 
 export function loadCycleState() {
@@ -75,17 +118,24 @@ function writeCycleConfig(config) {
 }
 
 function resourceDir() {
-  return process.env.CLAUDE_PLUGIN_ROOT || join(PLUGIN_DATA_DIR, '..', '..', 'cache', 'claude2bot', 'claude2bot', '0.0.1')
+  if (process.env.CLAUDE_PLUGIN_ROOT) return process.env.CLAUDE_PLUGIN_ROOT
+  try {
+    const pluginJson = JSON.parse(readFileSync(join(PLUGIN_DATA_DIR, '..', '..', 'cache', 'claude2bot', 'claude2bot', 'plugin.json'), 'utf8'))
+    if (pluginJson?.version) return join(PLUGIN_DATA_DIR, '..', '..', 'cache', 'claude2bot', 'claude2bot', pluginJson.version)
+  } catch {}
+  return join(PLUGIN_DATA_DIR, '..', '..', 'cache', 'claude2bot', 'claude2bot', '0.0.1')
 }
 
 function claudeMemoryPromptArgs() {
+  const config = readMainConfig()
+  const cliConfig = config?.memory?.cliFallback ?? {}
   return [
     '-p',
     '--dangerously-skip-permissions',
     '--no-session-persistence',
     '--plugin-dir', join(tmpdir(), 'claude2bot-noplugin'),
-    '--model', 'sonnet',
-    '--effort', 'medium',
+    '--model', cliConfig.model || 'sonnet',
+    '--effort', cliConfig.effort || 'medium',
   ]
 }
 
@@ -102,18 +152,6 @@ function execClaudePrompt(prompt, options = {}) {
   }).trim()
 }
 
-function spawnClaudePrompt(input, options = {}) {
-  mkdirSync(join(tmpdir(), 'claude2bot-noplugin'), { recursive: true })
-  return spawnSync(claudeCmd, [
-    ...claudeMemoryPromptArgs(),
-  ], {
-    cwd: options.cwd,
-    input,
-    encoding: 'utf8',
-    timeout: Number(options.timeout ?? 600000) + 2000,
-    env: { ...process.env, CLAUDE2BOT_NO_CONNECT: '1', TRIB_SEARCH_SPAWNED: '1' },
-  })
-}
 
 function extractJsonObject(text) {
   const trimmed = String(text ?? '').trim()
@@ -126,12 +164,9 @@ function extractJsonObject(text) {
   try { return JSON.parse(candidate.slice(start, end + 1)) } catch { return null }
 }
 
+// Delegate to shared implementation
 function cosineSimilarity(a, b) {
-  if (!Array.isArray(a) || !Array.isArray(b) || a.length === 0 || a.length !== b.length) return 0
-  let dot = 0, na = 0, nb = 0
-  for (let i = 0; i < a.length; i++) { dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i] }
-  if (!na || !nb) return 0
-  return dot / (Math.sqrt(na) * Math.sqrt(nb))
+  return cosineSimilarityShared(a, b)
 }
 
 function detectSlotConflict(existingMem, candidateTexts) {
@@ -227,6 +262,8 @@ async function prepareConsolidationCandidates(candidates, maxPerBatch, dayEpisod
   for (const item of candidates) {
     const cleaned = cleanMemoryText(item?.content ?? '')
     if (!cleaned) continue
+    const concept = classifyCandidateConcept(cleaned, item?.role ?? 'user')
+    if (!concept.admit) continue
     const fp = cleaned.toLowerCase().replace(/\s+/g, ' ').trim()
     if (!fp || seen.has(fp)) continue
     seen.add(fp)
@@ -261,6 +298,7 @@ export async function consolidateCandidateDay(dayKey, ws, options = {}) {
   const store = options.store ?? getStore()
   const maxPerBatch = Math.max(1, Number(options.maxCandidatesPerBatch ?? MAX_MEMORY_CANDIDATES_PER_DAY))
   const maxBatches = Math.max(1, Number(options.maxBatches ?? MAX_MEMORY_CONSOLIDATE_BATCHES_PER_DAY))
+  const provider = options.provider ?? readMainConfig()?.memory?.cycle2?.provider ?? null
   let processed = 0, mergedFacts = 0, mergedTasks = 0, mergedSignals = 0
 
   const promptPath = join(resourceDir(), 'defaults', 'memory-consolidate-prompt.md')
@@ -290,6 +328,7 @@ export async function consolidateCandidateDay(dayKey, ws, options = {}) {
       const raw = await resolveCycleLlmOutput(prompt, ws, {
         ...options,
         mode: 'cycle2',
+        provider,
         dayKey,
         batchIndex: batch,
         candidates,
@@ -321,25 +360,39 @@ export async function consolidateRecent(dayKeys, ws, options = {}) {
   for (const dayKey of targets) await consolidateCandidateDay(dayKey, ws, options)
 }
 
-async function refreshEmbeddings(ws) {
-  const store = getStore()
-  // Contextualize items for better embeddings
-  const promptPath = join(resourceDir(), 'defaults', 'memory-contextualize-prompt.md')
+async function refreshEmbeddings(ws, options = {}) {
+  const store = options.store ?? getStore()
+  const mainConfig = readMainConfig()
+  const contextualizeEnabled = mainConfig?.embedding?.contextualize !== false
+  const contextualizeProvider = mainConfig?.memory?.cycle2?.provider ?? DEFAULT_CYCLE_PROVIDER
   let contextMap = new Map()
-  if (existsSync(promptPath)) {
-    const items = store.getEmbeddableItems({ perTypeLimit: Math.floor(MAX_MEMORY_CONTEXTUALIZE_ITEMS / 2) }).slice(0, MAX_MEMORY_CONTEXTUALIZE_ITEMS)
-    if (items.length > 0) {
-      const template = readFileSync(promptPath, 'utf8')
-      const itemsText = items.map((item, i) => [`#${i + 1}`, `key=${item.key}`, `type=${item.entityType}`, item.subtype ? `subtype=${item.subtype}` : '', `content=${item.content}`].filter(Boolean).join('\n')).join('\n\n')
-      try {
-        const raw = execClaudePrompt(template.replace('{{ITEMS}}', itemsText), { cwd: ws, timeout: 180000 })
-        const parsed = extractJsonObject(raw)
-        for (const row of parsed?.items ?? []) {
-          if (row?.key && row?.context) contextMap.set(row.key, row.context)
-        }
-      } catch (e) { process.stderr.write(`[memory-cycle] contextualize failed: ${e.message}\n`) }
+
+  // Contextualize items for better embeddings (skipped when embedding.contextualize === false)
+  if (contextualizeEnabled) {
+    const promptPath = join(resourceDir(), 'defaults', 'memory-contextualize-prompt.md')
+    if (existsSync(promptPath)) {
+      const items = store.getEmbeddableItems({ perTypeLimit: Math.floor(MAX_MEMORY_CONTEXTUALIZE_ITEMS / 2) }).slice(0, MAX_MEMORY_CONTEXTUALIZE_ITEMS)
+      if (items.length > 0) {
+        const template = readFileSync(promptPath, 'utf8')
+        const itemsText = items.map((item, i) => [`#${i + 1}`, `key=${item.key}`, `type=${item.entityType}`, item.subtype ? `subtype=${item.subtype}` : '', `content=${item.content}`].filter(Boolean).join('\n')).join('\n\n')
+        try {
+          const raw = await resolveCycleLlmOutput(template.replace('{{ITEMS}}', itemsText), ws, {
+            mode: 'contextualize',
+            provider: contextualizeProvider,
+            timeout: 180000,
+            candidates: items,
+          })
+          const parsed = extractJsonObject(raw)
+          for (const row of parsed?.items ?? []) {
+            if (row?.key && row?.context) contextMap.set(row.key, row.context)
+          }
+        } catch (e) { process.stderr.write(`[memory-cycle] contextualize failed: ${e.message}\n`) }
+      }
     }
+  } else {
+    process.stderr.write('[memory-cycle] contextualize disabled by config (embedding.contextualize=false), embedding raw content\n')
   }
+
   const updated = await store.ensureEmbeddings({ perTypeLimit: Math.max(16, Math.floor(MAX_MEMORY_CONTEXTUALIZE_ITEMS / 2)), contextMap })
   process.stderr.write(`[memory-cycle] embeddings refreshed: ${updated}\n`)
 }
@@ -349,7 +402,7 @@ export function readMainConfig() {
   try { return JSON.parse(readFileSync(mainConfigPath, 'utf8')) } catch { return {} }
 }
 
-export async function sleepCycle(ws) {
+async function sleepCycleImpl(ws) {
   const store = getStore()
   const now = Date.now()
 
@@ -364,7 +417,7 @@ export async function sleepCycle(ws) {
   // 1. Consolidation (pass cycle2 provider if configured)
   const MAX_DAYS = 7
   const pendingDays = store.getPendingCandidateDays(MAX_DAYS, 1).map(d => d.day_key).sort()
-  const consolidateOpts = cycle2Config.provider ? { provider: cycle2Config.provider } : {}
+  const consolidateOpts = { provider: cycle2Config.provider ?? DEFAULT_CYCLE_PROVIDER }
   await consolidateRecent(pendingDays, ws, consolidateOpts)
 
   // 2. Sync + embeddings + context
@@ -375,36 +428,32 @@ export async function sleepCycle(ws) {
   // 3. Save timestamp
   writeCycleConfig({ ...config, lastSleepAt: now })
 
-  // Update cycle state + waterfall chain to cycle3
+  // Update cycle state
   const cycleState = loadCycleState()
   cycleState.cycle2.lastRunAt = new Date().toISOString()
   saveCycleState(cycleState)
 
-  // Waterfall: trigger cycle3 if never ran or if it's the right day
-  const mainConfigForCycle3 = readMainConfig()
-  if (!cycleState.cycle3.lastRunAt || shouldRunCycle3(mainConfigForCycle3)) {
-    process.stderr.write('[memory-cycle] triggering cycle3 from cycle2 waterfall\n')
-    try {
-      await runCycle3(ws)
-    } catch (e) {
-      process.stderr.write(`[memory-cycle] waterfall cycle3 failed: ${e instanceof Error ? e.message : String(e)}\n`)
-    }
-  }
-
   process.stderr.write('[memory-cycle] Cycle complete.\n')
+}
+
+export async function sleepCycle(ws) {
+  return enqueueCycleWrite('cycle2', () => sleepCycleImpl(ws))
 }
 
 export async function summarizeOnly(ws) {
   const store = getStore()
   store.backfillProject(ws, { limit: 120 })
   const pendingDays = store.getPendingCandidateDays(3, 1).map(d => d.day_key).sort()
-  if (pendingDays.length > 0) await consolidateRecent(pendingDays, ws)
+  if (pendingDays.length > 0) {
+    const provider = readMainConfig()?.memory?.cycle2?.provider ?? DEFAULT_CYCLE_PROVIDER
+    await consolidateRecent(pendingDays, ws, { provider })
+  }
   await refreshEmbeddings(ws)
   store.syncHistoryFromFiles()
   store.writeContextFile()
 }
 
-export async function memoryFlush(ws, options = {}) {
+async function memoryFlushImpl(ws, options = {}) {
   const store = getStore()
   const maxDays = Math.max(1, Number(options.maxDays ?? MEMORY_FLUSH_DEFAULT_MAX_DAYS))
   const maxPerBatch = Math.max(1, Number(options.maxCandidatesPerBatch ?? MEMORY_FLUSH_DEFAULT_MAX_CANDIDATES))
@@ -414,27 +463,36 @@ export async function memoryFlush(ws, options = {}) {
   if (!pendingDays.length) { process.stderr.write('[memory-cycle] no flushable batches.\n'); return }
   const targets = pendingDays.map(d => d.day_key).sort().slice(0, maxDays)
   const consolidateOpts = { maxCandidatesPerBatch: maxPerBatch, maxBatches }
-  if (options.provider) consolidateOpts.provider = options.provider
+  consolidateOpts.provider = options.provider ?? readMainConfig()?.memory?.cycle2?.provider ?? DEFAULT_CYCLE_PROVIDER
   for (const dayKey of targets) await consolidateCandidateDay(dayKey, ws, consolidateOpts)
   await refreshEmbeddings(ws)
   store.writeContextFile()
 }
 
-export async function rebuildAll(ws) {
+export async function memoryFlush(ws, options = {}) {
+  return enqueueCycleWrite('cycle2', () => memoryFlushImpl(ws, options))
+}
+
+async function rebuildAllImpl(ws) {
   const store = getStore()
   store.backfillProject(ws, { limit: 400 })
   store.syncHistoryFromFiles()
   store.resetConsolidatedMemory()
   const dayKeys = store.getPendingCandidateDays(10000, 1).map(d => d.day_key).sort()
   if (!dayKeys.length) { process.stderr.write('[memory-cycle] no candidate days.\n'); return }
-  for (const dayKey of dayKeys) await consolidateCandidateDay(dayKey, ws, { maxCandidatesPerBatch: MAX_MEMORY_CANDIDATES_PER_DAY, maxBatches: 999 })
+  const provider = readMainConfig()?.memory?.cycle2?.provider ?? DEFAULT_CYCLE_PROVIDER
+  for (const dayKey of dayKeys) await consolidateCandidateDay(dayKey, ws, { maxCandidatesPerBatch: MAX_MEMORY_CANDIDATES_PER_DAY, maxBatches: 999, provider })
   store.syncHistoryFromFiles()
   await refreshEmbeddings(ws)
   store.writeContextFile()
   process.stderr.write(`[memory-cycle] rebuilt ${dayKeys.length} day(s).\n`)
 }
 
-export async function rebuildRecent(ws, options = {}) {
+export async function rebuildAll(ws) {
+  return enqueueCycleWrite('cycle2', () => rebuildAllImpl(ws))
+}
+
+async function rebuildRecentImpl(ws, options = {}) {
   const store = getStore()
   store.backfillProject(ws, { limit: 240 })
   store.syncHistoryFromFiles()
@@ -442,14 +500,19 @@ export async function rebuildRecent(ws, options = {}) {
   const dayKeys = store.getRecentCandidateDays(maxDays).map(d => d.day_key).sort()
   if (!dayKeys.length) { process.stderr.write('[memory-cycle] no recent days.\n'); return }
   store.resetConsolidatedMemoryForDays(dayKeys)
-  for (const dayKey of dayKeys) await consolidateCandidateDay(dayKey, ws, options)
+  const mergedOptions = options.provider ? options : { ...options, provider: readMainConfig()?.memory?.cycle2?.provider ?? DEFAULT_CYCLE_PROVIDER }
+  for (const dayKey of dayKeys) await consolidateCandidateDay(dayKey, ws, mergedOptions)
   store.syncHistoryFromFiles()
   await refreshEmbeddings(ws)
   store.writeContextFile()
   process.stderr.write(`[memory-cycle] rebuilt recent ${dayKeys.length} day(s).\n`)
 }
 
-export async function pruneToRecent(ws, options = {}) {
+export async function rebuildRecent(ws, options = {}) {
+  return enqueueCycleWrite('cycle2', () => rebuildRecentImpl(ws, options))
+}
+
+async function pruneToRecentImpl(ws, options = {}) {
   const store = getStore()
   store.backfillProject(ws, { limit: 240 })
   store.syncHistoryFromFiles()
@@ -462,6 +525,10 @@ export async function pruneToRecent(ws, options = {}) {
   process.stderr.write(`[memory-cycle] pruned to ${dayKeys.join(', ')}.\n`)
 }
 
+export async function pruneToRecent(ws, options = {}) {
+  return enqueueCycleWrite('cycle2', () => pruneToRecentImpl(ws, options))
+}
+
 let _flushLock = false
 
 export async function autoFlush(ws) {
@@ -469,7 +536,7 @@ export async function autoFlush(ws) {
   const store = getStore()
   const config = readCycleConfig()
   const mainConfig = readMainConfig()
-  const cycle2MaxCandidates = Number(mainConfig?.memory?.cycle2?.maxCandidates ?? 0)
+  const cycle1MaxPending = Number(mainConfig?.memory?.cycle1?.maxPending ?? mainConfig?.memory?.cycle2?.maxCandidates ?? 0)
   const now = Date.now()
   const lastFlushAt = config.lastFlushAt ?? 0
   const pending = store.getPendingCandidateDays(100, 1)
@@ -477,20 +544,17 @@ export async function autoFlush(ws) {
   if (totalPending === 0) return { flushed: false, candidates: 0 }
 
   const elapsed = now - lastFlushAt
-  // Check cycle2 maxCandidates threshold (auto-trigger regardless of interval)
-  const exceedsMaxCandidates = cycle2MaxCandidates > 0 && totalPending >= cycle2MaxCandidates
+  // Check worker1 maxPending threshold (auto-trigger regardless of interval)
+  const exceedsMaxCandidates = cycle1MaxPending > 0 && totalPending >= cycle1MaxPending
   if (!exceedsMaxCandidates && totalPending < AUTO_FLUSH_THRESHOLD && elapsed < AUTO_FLUSH_INTERVAL_MS) {
     return { flushed: false, candidates: totalPending }
   }
 
   _flushLock = true
   try {
-    const reason = exceedsMaxCandidates ? `maxCandidates(${cycle2MaxCandidates})` : 'threshold'
+    const reason = exceedsMaxCandidates ? `maxPending(${cycle1MaxPending})` : 'threshold'
     process.stderr.write(`[auto-flush] triggered: ${totalPending} pending, ${Math.round(elapsed / 60000)}min elapsed, reason=${reason}\n`)
-    const cycle2Provider = mainConfig?.memory?.cycle2?.provider ?? null
-    const flushOpts = { maxDays: 1, maxCandidatesPerBatch: 20, maxBatches: 2 }
-    if (cycle2Provider) flushOpts.provider = cycle2Provider
-    await memoryFlush(ws, flushOpts)
+    await runCycle1(ws, mainConfig, { skipWaterfall: true, trigger: reason })
     writeCycleConfig({ ...readCycleConfig(), lastFlushAt: now })
     return { flushed: true, candidates: totalPending }
   } finally {
@@ -512,9 +576,12 @@ export function getCycleStatus() {
     pendingCandidates: pending.reduce((sum, d) => sum + d.n, 0),
     cycleState,
     memoryConfig: {
-      cycle1: { interval: memoryConfig.cycle1?.interval ?? '10m', provider: memoryConfig.cycle1?.provider?.connection ?? 'codex' },
+      cycle1: {
+        interval: memoryConfig.cycle1?.interval ?? '5m',
+        maxPending: memoryConfig.cycle1?.maxPending ?? null,
+        provider: memoryConfig.cycle1?.provider?.connection ?? 'codex',
+      },
       cycle2: { schedule: memoryConfig.cycle2?.schedule ?? '03:00', maxCandidates: memoryConfig.cycle2?.maxCandidates ?? null, provider: memoryConfig.cycle2?.provider?.connection ?? 'cli' },
-      cycle3: { schedule: memoryConfig.cycle3?.schedule ?? '03:00', day: memoryConfig.cycle3?.day ?? 'sunday', threshold: memoryConfig.cycle3?.threshold ?? CYCLE3_HEAT_THRESHOLD, graceDays: memoryConfig.cycle3?.graceDays ?? CYCLE3_DEPRECATED_GRACE_DAYS },
     },
   }
 }
@@ -532,7 +599,15 @@ function looksLowSignalCycle1(text) {
   if (/return this exact shape:/i.test(clean)) return true
   const compact = clean.replace(/\s+/g, '')
   const hasKorean = /[\uAC00-\uD7AF]/.test(compact)
-  if (compact.length < (hasKorean ? 4 : 8)) return true
+  const shortKoreanMeaningful =
+    hasKorean &&
+    compact.length >= 2 &&
+    (
+      /[?？]$/.test(clean) ||
+      /일정|상태|시간|규칙|정책|언어|말투|호칭|기억|검색|중복|설정|오류|버그|왜|뭐|언제|어디|누구|무엇/.test(clean) ||
+      classifyCandidateConcept(clean, 'user')?.admit
+    )
+  if (compact.length < (hasKorean ? 4 : 8) && !shortKoreanMeaningful) return true
   return false
 }
 
@@ -542,38 +617,34 @@ function loadCycle1Prompt() {
   return 'Extract durable memory from candidates. Output JSON only with profiles/facts/tasks/signals/entities/relations.\n\n{{CANDIDATES}}'
 }
 
-const DEFAULT_CYCLE1_PROVIDER = { connection: 'codex', model: 'gpt-5.3-codex-spark', effort: 'medium' }
+const DEFAULT_CYCLE_PROVIDER = { connection: 'codex', model: 'gpt-5.4', effort: 'medium', fast: true }
 const MAX_CYCLE1_CANDIDATES_PER_BATCH = 50
 const MAX_CYCLE1_BATCHES = 5
 
-export async function runCycle1(ws, config, options = {}) {
+async function runCycle1Impl(ws, config, options = {}) {
   const store = options.store ?? getStore()
   const cycleConfig = readCycleConfig()
   const lastRun = cycleConfig.lastCycle1At || 0
 
   // Get new episodes since last run
   const newEpisodes = store.getEpisodesSince(lastRun)
-  if (!newEpisodes || newEpisodes.length === 0) return { extracted: 0 }
+  const hasNewEpisodes = Array.isArray(newEpisodes) && newEpisodes.length > 0
 
   // Filter: user messages only, clean + low-signal filter
-  const allCandidates = newEpisodes
+  const allCandidates = (hasNewEpisodes ? newEpisodes : [])
     .filter(e => e.role === 'user' && e.kind === 'message')
     .map(e => ({ ...e, content: cleanMemoryText(e.content) }))
     .filter(e => e.content && !looksLowSignalCycle1(e.content))
 
-  if (allCandidates.length === 0) {
-    writeCycleConfig({ ...cycleConfig, lastCycle1At: Date.now() })
-    return { extracted: 0 }
-  }
-
   const maxPerBatch = Math.max(1, Number(config?.memory?.cycle1?.maxCandidatesPerBatch ?? MAX_CYCLE1_CANDIDATES_PER_BATCH))
   const maxBatches = Math.max(1, Number(config?.memory?.cycle1?.maxBatches ?? MAX_CYCLE1_BATCHES))
-  const provider = config?.memory?.cycle1?.provider || DEFAULT_CYCLE1_PROVIDER
+  const provider = config?.memory?.cycle1?.provider || DEFAULT_CYCLE_PROVIDER
   const timeout = config?.memory?.cycle1?.timeout || 60000
 
   let totalExtracted = 0, totalFacts = 0, totalTasks = 0, totalSignals = 0
+  const cycle2Provider = config?.memory?.cycle2?.provider ?? DEFAULT_CYCLE_PROVIDER
 
-  for (let batch = 0; batch < maxBatches; batch++) {
+  for (let batch = 0; batch < maxBatches && allCandidates.length > 0; batch++) {
     const start = batch * maxPerBatch
     if (start >= allCandidates.length) break
     const candidates = allCandidates.slice(start, start + maxPerBatch)
@@ -599,6 +670,14 @@ export async function runCycle1(ws, config, options = {}) {
     const extractionPrompt = loadCycle1Prompt()
       .replace('{{TODAY}}', new Date().toISOString().slice(0, 10))
       .replace('{{CANDIDATES}}', candidateText + existingMemorySection)
+      + `\n\nAdditional extraction rules:\n`
+      + `- For development/code tasks, set workstream as dev/{project}/{area} when possible.\n`
+      + `- For non-development tasks, use general/{category}.\n`
+      + `- For task objects, include scope as work or personal.\n`
+      + `- For task objects, include activity as one of coding, research, planning, communication, ops when possible.\n`
+      + `- For task objects, include current_state as a single-line summary when the current state is clear.\n`
+      + `- For task objects, include next_step when the next action is mentioned or implied.\n`
+      + `- Keep current_state and next_step concise.\n`
 
     // Call LLM via provider abstraction
     let raw
@@ -639,23 +718,36 @@ export async function runCycle1(ws, config, options = {}) {
     totalSignals += (parsed.signals || []).length
   }
 
-  // Update context file + timestamp
-  store.writeContextFile()
+  const pendingDays = store.getPendingCandidateDays(2, 1).map(d => d.day_key).sort()
+  if (allCandidates.length === 0 && pendingDays.length === 0) {
+    writeCycleConfig({ ...cycleConfig, lastCycle1At: Date.now() })
+    const cycleState = loadCycleState()
+    cycleState.cycle1.lastRunAt = new Date().toISOString()
+    saveCycleState(cycleState)
+    return { extracted: 0, facts: 0, tasks: 0, signals: 0 }
+  }
+  if (pendingDays.length > 0) {
+    await consolidateRecent(pendingDays, ws, {
+      store,
+      provider: cycle2Provider,
+      maxDays: 1,
+      maxCandidatesPerBatch: 20,
+      maxBatches: 2,
+    })
+  }
+
+  if (totalExtracted > 0 || pendingDays.length > 0) {
+    store.syncHistoryFromFiles()
+    await refreshEmbeddings(ws, { store })
+    store.writeContextFile()
+  }
+
   writeCycleConfig({ ...cycleConfig, lastCycle1At: Date.now() })
 
-  // Update cycle state + waterfall chain to cycle2
+  // Update cycle state
   const cycleState = loadCycleState()
   cycleState.cycle1.lastRunAt = new Date().toISOString()
   saveCycleState(cycleState)
-
-  if (!options.skipWaterfall && !cycleState.cycle2.lastRunAt) {
-    process.stderr.write('[memory-cycle1] cycle2 never ran — triggering waterfall chain\n')
-    try {
-      await sleepCycle(ws)
-    } catch (e) {
-      process.stderr.write(`[memory-cycle1] waterfall cycle2 failed: ${e instanceof Error ? e.message : String(e)}\n`)
-    }
-  }
 
   const result = {
     extracted: totalExtracted,
@@ -667,6 +759,10 @@ export async function runCycle1(ws, config, options = {}) {
     process.stderr.write(`[memory-cycle1] extracted=${result.extracted} facts=${result.facts} tasks=${result.tasks} signals=${result.signals}\n`)
   }
   return result
+}
+
+export async function runCycle1(ws, config, options = {}) {
+  return enqueueCycleWrite('cycle1', () => runCycle1Impl(ws, config, options))
 }
 
 export function parseInterval(s) {
@@ -701,12 +797,13 @@ function computeHeatScore(row) {
   return Number((mentionTerm + retrievalTerm + recencyTerm).toFixed(3))
 }
 
-export async function runCycle3(ws, options = {}) {
+async function runCycle3Impl(_ws, options = {}) {
   const store = getStore()
   const mainConfig = readMainConfig()
   const cycle3Config = mainConfig?.memory?.cycle3 ?? {}
   const threshold = Number(cycle3Config.threshold ?? options.threshold ?? CYCLE3_HEAT_THRESHOLD)
   const graceDays = Number(cycle3Config.graceDays ?? options.graceDays ?? CYCLE3_DEPRECATED_GRACE_DAYS)
+  const hardDelete = Boolean(cycle3Config.hardDelete ?? options.hardDelete ?? false)
   const now = new Date()
   const nowISO = now.toISOString()
 
@@ -734,22 +831,21 @@ export async function runCycle3(ws, options = {}) {
     .map(row => row.id)
   deprecatedSignals = store.markRowsDeprecated('signal', coldSignalIds, nowISO)
 
-  // Phase 2: Hard delete deprecated items past grace period
-  const graceThreshold = new Date(Date.now() - graceDays * 86400000).toISOString()
-
-  deletedFacts = store.deleteRowsByIds('fact', store.listDeprecatedIds('fact', graceThreshold))
-  deletedTasks = store.deleteRowsByIds('task', store.listDeprecatedIds('task', graceThreshold))
-  deletedSignals = store.deleteRowsByIds('signal', store.listDeprecatedIds('signal', graceThreshold))
-
-  // Phase 3: Optional vacuum
-  if (deletedFacts + deletedTasks + deletedSignals > 0) {
-    store.vacuumDatabase()
+  // Phase 2: Optional hard delete past grace period
+  if (hardDelete) {
+    const graceThreshold = new Date(Date.now() - graceDays * 86400000).toISOString()
+    deletedFacts = store.deleteRowsByIds('fact', store.listDeprecatedIds('fact', graceThreshold))
+    deletedTasks = store.deleteRowsByIds('task', store.listDeprecatedIds('task', graceThreshold))
+    deletedSignals = store.deleteRowsByIds('signal', store.listDeprecatedIds('signal', graceThreshold))
+    if (deletedFacts + deletedTasks + deletedSignals > 0) {
+      store.vacuumDatabase()
+    }
   }
 
-  // Phase 4: Refresh context
+  // Phase 3: Refresh context
   store.writeContextFile()
 
-  // Phase 5: Update cycle state
+  // Phase 4: Update cycle state
   const cycleState = loadCycleState()
   cycleState.cycle3.lastRunAt = nowISO
   saveCycleState(cycleState)
@@ -767,18 +863,37 @@ export async function runCycle3(ws, options = {}) {
   return result
 }
 
+export async function runCycle3(ws, options = {}) {
+  return enqueueCycleWrite('cycle3', () => runCycle3Impl(ws, options))
+}
+
 export function shouldRunCycle3(config) {
   const cycle3Config = config?.memory?.cycle3 ?? {}
-  const targetDay = parseCycle3Day(cycle3Config.day)
   const today = new Date()
-  const todayDay = today.getDay()
-  if (todayDay !== targetDay) return false
-
   const cycleState = loadCycleState()
-  if (!cycleState.cycle3.lastRunAt) return true
+  const targetDayRaw = String(cycle3Config.day ?? 'sunday').toLowerCase()
+  const schedule = String(cycle3Config.schedule ?? '03:00')
+  const [targetHour, targetMinute] = schedule.split(':').map(value => Number(value) || 0)
+  const schedulePassed =
+    today.getHours() > targetHour ||
+    (today.getHours() === targetHour && today.getMinutes() >= targetMinute)
 
-  // Check if lastRunAt is before this week's target day
+  if (targetDayRaw === 'daily' || targetDayRaw === 'everyday') {
+    if (!schedulePassed) return false
+    if (!cycleState.cycle3.lastRunAt) return true
+    const lastRun = new Date(cycleState.cycle3.lastRunAt)
+    const sameDay =
+      lastRun.getFullYear() === today.getFullYear() &&
+      lastRun.getMonth() === today.getMonth() &&
+      lastRun.getDate() === today.getDate()
+    return !sameDay
+  }
+
+  const targetDay = parseCycle3Day(cycle3Config.day)
+  const todayDay = today.getDay()
+  if (todayDay !== targetDay || !schedulePassed) return false
+  if (!cycleState.cycle3.lastRunAt) return true
   const lastRun = new Date(cycleState.cycle3.lastRunAt)
   const daysSinceLastRun = (today.getTime() - lastRun.getTime()) / 86400000
-  return daysSinceLastRun >= 6 // at least ~6 days since last run
+  return daysSinceLastRun >= 6
 }

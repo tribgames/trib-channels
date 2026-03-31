@@ -1,5 +1,5 @@
 import { createHash } from 'crypto'
-import { cleanMemoryText } from './memory-extraction.mjs'
+import { cleanMemoryText, isProfileRelatedText } from './memory-extraction.mjs'
 
 export function isProfileIntent(intent) {
   return intent === 'profile'
@@ -9,6 +9,33 @@ export function isPolicyIntent(intent) {
   return intent === 'policy' || intent === 'security'
 }
 
+export const SEED_LANE_PRIOR = Object.freeze({
+  profile: -0.28,
+  task: -0.24,
+  decision: -0.22,
+  policy: -0.26,
+  graph: -0.30,
+  history: -0.20,
+})
+
+export const SCOPED_LANE_PRIOR = Object.freeze({
+  graph_multi_relation: -0.34,
+  graph_single_relation: -0.30,
+  graph_entity_link: -0.24,
+  rule: -0.26,
+  exact_history_episode: -0.38,
+})
+
+export const SECOND_STAGE_THRESHOLD = Object.freeze({
+  default: -0.50,
+  profile: -0.42,
+  task: -0.42,
+  policy: -0.44,
+  history: -0.40,
+  event: -0.40,
+  graph: -0.46,
+})
+
 export function getIntentTypeCaps(intent, options = {}) {
   const hasTaskCandidate = Boolean(options.hasTaskCandidate)
   const hasCoreResult = Boolean(options.hasCoreResult)
@@ -16,6 +43,7 @@ export function getIntentTypeCaps(intent, options = {}) {
   if (isProfileIntent(intent)) return new Map([['fact', 3], ['proposition', 2], ['task', 0], ['signal', 2], ['profile', 3], ['episode', 0]])
   if (intent === 'task') return new Map([['fact', 1], ['proposition', 1], ['task', hasTaskCandidate ? 4 : 2], ['signal', 0], ['episode', 1]])
   if (isPolicyIntent(intent)) return new Map([['fact', 4], ['proposition', 3], ['task', 1], ['signal', 1], ['episode', 0]])
+  if (intent === 'graph') return new Map([['relation', 4], ['entity', 3], ['fact', 2], ['proposition', 1], ['task', 1], ['episode', 0]])
   if (intent === 'event') return new Map([['fact', 1], ['proposition', 2], ['task', 1], ['signal', 0], ['episode', 4], ['entity', 1], ['relation', 1]])
   if (intent === 'history') return new Map([['fact', 1], ['proposition', 2], ['task', 1], ['signal', 0], ['episode', 3], ['entity', 1], ['relation', 1]])
   return new Map([
@@ -34,9 +62,9 @@ export function getIntentSubtypeBonus(intent, item) {
     return (
       item.type === 'fact' && item.subtype === 'preference' ? -0.10 :
       item.type === 'fact' && item.subtype === 'constraint' ? -0.08 :
-      item.type === 'profile' ? -0.14 :
+      item.type === 'profile' ? -0.18 :
       item.type === 'proposition' ? -0.06 :
-      item.type === 'signal' && (item.subtype === 'tone' || item.subtype === 'language') ? -0.08 :
+      item.type === 'signal' && (item.subtype === 'tone' || item.subtype === 'language') ? -0.05 :
       0
     )
   }
@@ -51,16 +79,35 @@ export function getIntentSubtypeBonus(intent, item) {
       0
     )
   }
+  if (intent === 'graph') {
+    return (
+      item.type === 'relation' ? -0.18 :
+      item.type === 'entity' ? -0.10 :
+      item.type === 'fact' && item.subtype === 'decision' ? -0.04 :
+      0
+    )
+  }
   if (intent === 'event') return item.type === 'episode' ? -0.14 : 0
   if (intent === 'history') return item.type === 'episode' ? -0.08 : 0
-  return item.type === 'fact' && item.subtype === 'decision' ? -0.06 : 0
+  return (
+    item.type === 'fact' && item.subtype === 'decision' ? -0.06 :
+    item.type === 'relation' ? -0.06 :
+    item.type === 'entity' ? -0.04 :
+    0
+  )
 }
 
 export function shouldKeepRerankItem(intent, item, options = {}) {
   const hasTaskCandidate = Boolean(options.hasTaskCandidate)
-  if (isProfileIntent(intent)) return item.type === 'fact' || item.type === 'signal' || item.type === 'profile' || item.type === 'proposition'
+  if (isProfileIntent(intent)) {
+    if (item.type === 'profile') return true
+    if (item.type === 'signal') return item.subtype === 'tone' || item.subtype === 'language'
+    if (item.type === 'fact' || item.type === 'proposition') return isProfileRelatedText(item.content)
+    return false
+  }
   if (intent === 'task' && hasTaskCandidate) return item.type === 'task' || (item.type === 'fact' && item.subtype === 'decision')
   if (isPolicyIntent(intent)) return item.type === 'fact' || item.type === 'signal' || item.type === 'proposition'
+  if (intent === 'graph') return item.type === 'relation' || item.type === 'entity' || item.type === 'fact' || item.type === 'proposition'
   if (intent === 'event') return item.type === 'episode' || item.type === 'fact' || item.type === 'task'
   if (intent === 'decision') return item.type === 'fact' || item.type === 'task' || item.type === 'proposition' || item.type === 'entity' || item.type === 'relation'
   return true
@@ -137,4 +184,54 @@ export function collapseClaimSurfaceDuplicates(items, scoreField = 'weighted_sco
     }
   }
   return [...passthrough, ...selected.values()]
+}
+
+export function computeSecondStageRerankScore(intent, item, options = {}) {
+  const includeDoneTasks = Boolean(options.includeDoneTasks)
+  const graphFirst = Boolean(options.graphFirst)
+  const exactHistory = Boolean(options.isHistoryExact)
+  const exactDate = String(options.exactDate ?? '')
+  const sourceTs = String(item?.source_ts ?? item?.updated_at ?? '')
+  const sameDay = exactDate && sourceTs.startsWith(exactDate)
+  const stage = String(item?.stage ?? item?.subtype ?? '').toLowerCase()
+
+  let bonus = 0
+  if (graphFirst) {
+    if (item?.type === 'relation') bonus -= 0.12
+    else if (item?.type === 'entity') bonus -= 0.06
+  }
+  if (includeDoneTasks && item?.type === 'task') {
+    if (item?.status === 'done') bonus -= 0.12
+    else if (item?.status === 'active' || item?.status === 'in_progress') bonus += 0.08
+  }
+  if (exactHistory) {
+    if (item?.type === 'episode' && sameDay) bonus -= 0.10
+    else if (!sameDay) bonus += 0.10
+  }
+  if (intent === 'policy') {
+    if (item?.type === 'fact' && item?.subtype === 'constraint') bonus -= 0.08
+  }
+  if (intent === 'profile') {
+    if (item?.type === 'profile') bonus -= 0.12
+    if (item?.type === 'signal') bonus += 0.04
+  }
+  if ((intent === 'decision' || intent === 'task') && item?.type === 'task') {
+    if (stage === 'planned') bonus += 0.10
+    else if (stage === 'investigating') bonus += 0.04
+    else if (stage === 'implementing') bonus -= 0.04
+    else if (stage === 'wired') bonus -= 0.03
+    else if (stage === 'verified') bonus -= 0.02
+  }
+  if (intent === 'decision') {
+    if (item?.type === 'task' && Number(item?.overlapCount ?? 0) > 0) bonus += 0.26
+    if (item?.type === 'fact' && item?.subtype === 'decision' && Number(item?.overlapCount ?? 0) > 0) bonus -= 0.14
+  }
+  return Number(item?.rerank_score ?? item?.weighted_score ?? 0) + bonus
+}
+
+export function getSecondStageThreshold(intent, overrides = null) {
+  const thresholds = overrides && typeof overrides === 'object'
+    ? { ...SECOND_STAGE_THRESHOLD, ...overrides }
+    : SECOND_STAGE_THRESHOLD
+  return thresholds[intent] ?? thresholds.default
 }
