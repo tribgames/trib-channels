@@ -2068,18 +2068,18 @@ export class MemoryStore {
       if (!existingExact) {
         const newVector = await embedText(text)
         if (Array.isArray(newVector) && newVector.length > 0) {
-          const activeModel = getEmbeddingModelId()
           const samTypeFacts = this.db.prepare(`
             SELECT f.id, f.text, f.confidence, mv.vector_json
             FROM facts f
-            JOIN memory_vectors mv ON mv.entity_type = 'fact' AND mv.entity_id = f.id AND mv.model = ?
+            JOIN memory_vectors mv ON mv.entity_type = 'fact' AND mv.entity_id = f.id
             WHERE f.fact_type = ? AND f.status = 'active'
-          `).all(activeModel, factType)
+          `).all(factType)
 
           let merged = false
           for (const existing of samTypeFacts) {
             try {
               const existingVector = JSON.parse(existing.vector_json)
+              if (!Array.isArray(existingVector) || existingVector.length !== newVector.length) continue
               const similarity = cosineSimilarity(newVector, existingVector)
               if (similarity >= 0.85) {
                 if (deprecateOnHighSimilarity) {
@@ -2731,15 +2731,15 @@ export class MemoryStore {
   }
 
   _vecRowId(entityType, entityId) {
-    // Pack entity type + id into a single integer rowid
+    // Pack entity type + id into a single integer rowid (100M ceiling per type)
     const typePrefix = { fact: 1, task: 2, signal: 3, episode: 4, proposition: 5, entity: 6, relation: 7 }
-    return (typePrefix[entityType] ?? 9) * 10000000 + Number(entityId)
+    return (typePrefix[entityType] ?? 9) * 100000000 + Number(entityId)
   }
 
   _vecRowToEntity(rowid) {
     const typeMap = { 1: 'fact', 2: 'task', 3: 'signal', 4: 'episode', 5: 'proposition', 6: 'entity', 7: 'relation' }
-    const typeNum = Math.floor(rowid / 10000000)
-    return { entityType: typeMap[typeNum] ?? 'unknown', entityId: rowid % 10000000 }
+    const typeNum = Math.floor(rowid / 100000000)
+    return { entityType: typeMap[typeNum] ?? 'unknown', entityId: rowid % 100000000 }
   }
 
   _pruneOldEpisodeVectors() {
