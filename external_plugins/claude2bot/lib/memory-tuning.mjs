@@ -29,13 +29,13 @@ export const DEFAULT_MEMORY_TUNING = Object.freeze({
     gapMin: 0.05,
   },
   secondStageThreshold: {
-    default: -0.50,
-    profile: -0.42,
-    task: -0.42,
-    policy: -0.44,
-    history: -0.40,
-    event: -0.40,
-    graph: -0.46,
+    default: -0.30,
+    profile: -0.28,
+    task: -0.28,
+    policy: -0.30,
+    history: -0.26,
+    event: -0.26,
+    graph: -0.32,
   },
   hintInjection: {
     compositeWeights: {
@@ -216,6 +216,13 @@ export const DEFAULT_MEMORY_TUNING = Object.freeze({
         task: -0.03,
       },
     },
+  },
+  reranker: {
+    enabled: true,
+    model: 'onnx-community/bge-reranker-v2-m3-ONNX',
+    triggerThreshold: -0.4,
+    minRerankerScore: -2,
+    maxCandidates: 5,
   },
 })
 

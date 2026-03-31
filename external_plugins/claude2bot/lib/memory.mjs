@@ -2992,11 +2992,31 @@ export class MemoryStore {
       preferActiveTasks: plan.preferActiveTasks,
     })
     const exactResults = applyExactHistorySelection(plan, combined, limit, { tuning })
-    const finalResults = await this.applyVerifiedFactCorrection(clean, exactResults, {
+    let finalResults = await this.applyVerifiedFactCorrection(clean, exactResults, {
       limit,
       intent,
       queryVector,
     })
+    // Cross-encoder rerank: only when heuristic results are weak
+    if (tuning.reranker?.enabled !== false &&
+        (finalResults.length === 0 || (finalResults.length > 0 && Number(finalResults[0]?.weighted_score ?? 0) > (tuning.reranker?.triggerThreshold ?? -0.4)))) {
+      try {
+        const { crossEncoderRerank, isRerankerAvailable } = await import('./reranker.mjs')
+        if (isRerankerAvailable()) {
+          const pool = [...new Map([...sparse, ...dense].map(item => [
+            `${item.type}:${item.entity_id}`, item
+          ])).values()].slice(0, 8)
+          if (pool.length > 0) {
+            const maxCandidates = tuning.reranker?.maxCandidates ?? 5
+            const minScore = tuning.reranker?.minRerankerScore ?? -2
+            const reranked = await crossEncoderRerank(clean, pool, { limit: maxCandidates })
+            if (reranked.length > 0 && reranked[0].reranker_score > minScore) {
+              finalResults = reranked.slice(0, limit)
+            }
+          }
+        }
+      } catch {} // reranker not loaded yet — use heuristic results
+    }
     if (shouldRecordRetrieval) this.recordRetrieval(finalResults)
     const debugSummary = summarizeRetrieverDebug(plan, sparse, dense, finalResults)
     const traceId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
@@ -3618,11 +3638,16 @@ export class MemoryStore {
                       : 0)
               )
             : 0
+        // Cross-lingual dense boost: strong vector similarity gets extra weight
+        // dense_score sign: more negative = more similar (KNN distance)
+        const denseBoost = (item.dense_score != null && Number(item.dense_score) < -0.25)
+          ? -Math.min(0.35, Math.abs(Number(item.dense_score)) * 0.5)
+          : 0
         return {
           ...item,
           content: compactRetrievalContent(item),
           overlapCount,
-          weighted_score: sparse + dense + recencyPenalty + typeBoost + intentBoost + profileSlotBoost + overlapBoost + retrievalBoost + focusBoost + qualityBoost + densityPenalty + entityBoost + sourceTrustBoost + doneTaskBoost + taskStagePenalty + relationPenalty + devWorkstreamPenalty,
+          weighted_score: sparse + dense + recencyPenalty + typeBoost + intentBoost + profileSlotBoost + overlapBoost + retrievalBoost + focusBoost + qualityBoost + densityPenalty + entityBoost + sourceTrustBoost + doneTaskBoost + taskStagePenalty + relationPenalty + devWorkstreamPenalty + denseBoost,
         }
       })
     const positiveCoreMatches = scored.filter(item =>
@@ -3632,10 +3657,11 @@ export class MemoryStore {
     const hasPositiveOverlap = scored.some(item => Number(item.overlapCount) > 0)
     const ranked = collapseClaimSurfaceDuplicates(scored, 'weighted_score')
       .map(item => {
+        const hasDenseSignal = item.dense_score != null && Number(item.dense_score) < -0.25
         const overlapAdjustment =
           Number(item.overlapCount) > 0
             ? -Math.min(0.2, Number(item.overlapCount) * 0.06)
-            : hasPositiveOverlap ? 0.28 : 0.08
+            : hasDenseSignal ? 0.06 : (hasPositiveOverlap ? 0.28 : 0.08)
         return {
           ...item,
           weighted_score: Number(item.weighted_score) + overlapAdjustment,
@@ -3644,6 +3670,7 @@ export class MemoryStore {
       .filter(item => {
         if (positiveCoreMatches < 2) return true
         if (Number(item.overlapCount) > 0) return true
+        if (item.dense_score != null && Number(item.dense_score) < -0.15) return true
         return item.type === 'signal'
       })
       .sort((a, b) => Number(a.weighted_score) - Number(b.weighted_score))
@@ -3659,7 +3686,14 @@ export class MemoryStore {
     const typeCounts = new Map()
     const selected = []
     const rerankThreshold = getSecondStageThreshold(effectiveIntent, tuning?.secondStageThreshold)
-    const rerankPool = collapseClaimSurfaceDuplicates(ranked.slice(0, Math.max(limit * 2, 10)), 'rerank_score')
+    // Ensure core types (fact/task/proposition) are represented in rerank pool
+    const sliceSize = Math.max(limit * 4, 20)
+    const sliced = ranked.slice(0, sliceSize)
+    const slicedIds = new Set(sliced.map(item => `${item.type}:${item.entity_id ?? item.ref}`))
+    const coreTypes = new Set(['fact', 'task', 'proposition'])
+    const missingCore = ranked.filter(item => coreTypes.has(item.type) && !slicedIds.has(`${item.type}:${item.entity_id ?? item.ref}`)).slice(0, limit)
+    const rerankInput = [...sliced, ...missingCore]
+    const rerankPool = collapseClaimSurfaceDuplicates(rerankInput, 'rerank_score')
       .map(item => {
         return {
           ...item,
@@ -3691,7 +3725,8 @@ export class MemoryStore {
         item.sparse_score != null &&
         Number(item.sparse_score) <= 0 &&
         (effectiveIntent === 'decision' || effectiveIntent === 'graph' || isPolicyIntent(effectiveIntent) || effectiveIntent === 'event' || effectiveIntent === 'history')
-      if (Number(item.second_stage_score) > rerankThreshold && !allowByOverlap && !allowBySparse) continue
+      const allowByDense = item.dense_score != null && Number(item.dense_score) < -0.25
+      if (Number(item.second_stage_score) > rerankThreshold && !allowByOverlap && !allowBySparse && !allowByDense) continue
       const type = String(item.type)
       const cap = typeCaps.get(type) ?? 2
       const count = typeCounts.get(type) ?? 0

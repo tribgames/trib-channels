@@ -27,13 +27,13 @@ export const SCOPED_LANE_PRIOR = Object.freeze({
 })
 
 export const SECOND_STAGE_THRESHOLD = Object.freeze({
-  default: -0.50,
-  profile: -0.42,
-  task: -0.42,
-  policy: -0.44,
-  history: -0.40,
-  event: -0.40,
-  graph: -0.46,
+  default: -0.30,
+  profile: -0.28,
+  task: -0.28,
+  policy: -0.30,
+  history: -0.26,
+  event: -0.26,
+  graph: -0.32,
 })
 
 export function getIntentTypeCaps(intent, options = {}) {
@@ -99,6 +99,8 @@ export function getIntentSubtypeBonus(intent, item) {
 
 export function shouldKeepRerankItem(intent, item, options = {}) {
   const hasTaskCandidate = Boolean(options.hasTaskCandidate)
+  // Strong dense (vector) signal bypasses type restrictions for cross-lingual retrieval
+  if (item.dense_score != null && Number(item.dense_score) < -0.3) return true
   if (isProfileIntent(intent)) {
     if (item.type === 'profile') return true
     if (item.type === 'signal') return item.subtype === 'tone' || item.subtype === 'language'
