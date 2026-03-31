@@ -25,7 +25,7 @@ export function getCandidatesForDate(store, dayKey) {
     JOIN episodes e ON e.id = mc.episode_id
     WHERE mc.day_key = ?
       AND mc.status = 'pending'
-      AND e.role = 'user'
+      AND e.role IN ('user', 'assistant')
       AND e.kind = 'message'
     ORDER BY mc.score DESC, mc.ts ASC
   `).all(dayKey)
@@ -37,7 +37,7 @@ export function getPendingCandidateDays(store, limit = 7, minCount = 1) {
     FROM memory_candidates mc
     JOIN episodes e ON e.id = mc.episode_id
     WHERE mc.status = 'pending'
-      AND e.role = 'user'
+      AND e.role IN ('user', 'assistant')
       AND e.kind = 'message'
     GROUP BY mc.day_key
     HAVING count(*) >= ?

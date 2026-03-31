@@ -630,9 +630,9 @@ async function runCycle1Impl(ws, config, options = {}) {
   const newEpisodes = store.getEpisodesSince(lastRun)
   const hasNewEpisodes = Array.isArray(newEpisodes) && newEpisodes.length > 0
 
-  // Filter: user messages only, clean + low-signal filter
+  // Filter: user + assistant messages, clean + low-signal filter
   const allCandidates = (hasNewEpisodes ? newEpisodes : [])
-    .filter(e => e.role === 'user' && e.kind === 'message')
+    .filter(e => e.kind === 'message' && (e.role === 'user' || e.role === 'assistant'))
     .map(e => ({ ...e, content: cleanMemoryText(e.content) }))
     .filter(e => e.content && !looksLowSignalCycle1(e.content))
 

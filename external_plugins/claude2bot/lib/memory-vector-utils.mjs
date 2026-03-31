@@ -66,5 +66,15 @@ export function contextualizeEmbeddingInput(item) {
     return cleanMemoryText(`memory signal${kind}\n${content}`)
   }
 
+  if (entityType === 'entity') {
+    const etype = item.subtype ? ` type=${item.subtype}` : ''
+    return cleanMemoryText(`knowledge entity${etype}\n${content}`)
+  }
+
+  if (entityType === 'relation') {
+    const rtype = item.subtype ? ` type=${item.subtype}` : ''
+    return cleanMemoryText(`knowledge relation${rtype}\n${content}`)
+  }
+
   return content
 }

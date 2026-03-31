@@ -16,7 +16,6 @@ import { embedText, getEmbeddingModelId, getEmbeddingDims, warmupEmbeddingProvid
 import {
   cleanMemoryText,
   composeTaskDetails,
-  parseTaskDetails,
   isProfileRelatedText,
   shouldKeepFact,
   shouldKeepSignal,
@@ -26,6 +25,7 @@ import {
   extractExplicitDate,
   firstTextContent,
   getShortTokensForLike,
+  candidateScore,
   insertCandidateUnits,
   looksLowSignal,
   propositionSubjectTokens,
@@ -92,7 +92,7 @@ import {
 } from './memory-maintenance-store.mjs'
 import { buildInboundMemoryContext as buildInboundMemoryContextImpl } from './memory-context-builder.mjs'
 import { DEFAULT_MEMORY_TUNING, mergeMemoryTuning } from './memory-tuning.mjs'
-import { detectDevQueryBias, inferTaskActivity, inferTaskScope, isDevWorkstream, isDevelopmentFacet } from './memory-dev-utils.mjs'
+import { detectDevQueryBias, inferTaskActivity, inferTaskScope, isDevWorkstream } from './memory-dev-utils.mjs'
 import {
   applyLexicalIntentHints,
   detectProfileQuerySlot,
@@ -1671,8 +1671,8 @@ export class MemoryStore {
         } catch { /* duplicate rowid import */ }
       }
       const shouldCandidate =
-        entry.role === 'user' &&
-        episodeKind === 'message'
+        (entry.role === 'user' && episodeKind === 'message') ||
+        (entry.role === 'assistant' && episodeKind === 'message' && candidateScore(clean, 'assistant') > 0)
       if (shouldCandidate) {
         insertCandidateUnits(this.insertCandidateStmt, finalEpisodeId, ts, dayKey, entry.role, clean)
       }
@@ -2483,165 +2483,7 @@ export class MemoryStore {
       parts.push(`## Decisions\n${lines.join('\n\n')}`)
     }
 
-    // ## Ongoing — active tasks
-    const tasks = this.db.prepare(`
-      SELECT title, details, status, priority, confidence, last_seen, retrieval_count, stage, evidence_level
-      FROM tasks
-      WHERE status IN ('active', 'in_progress', 'paused')
-      ORDER BY
-        CASE priority WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END,
-        retrieval_count DESC,
-        last_seen DESC
-      LIMIT 8
-    `).all()
-    if (tasks.length > 0) {
-      const lines = tasks.map(task => {
-        const detail = task.details ? ` — ${task.details}` : ''
-        return `- [${task.status}/${task.stage}/${task.evidence_level}] ${task.title}${detail}`
-      })
-      parts.push(`## Ongoing\n${lines.join('\n')}`)
-    } else {
-      const ongoing = this.db.prepare(`
-        SELECT content FROM documents WHERE kind = 'ongoing' AND doc_key = 'ongoing'
-      `).get()
-      if (ongoing?.content) parts.push(`## Ongoing\n${ongoing.content}`)
-    }
-
-    // ## Dev Worklog — active dev tasks with entity context
-    const devTasks = this.db.prepare(`
-      SELECT t.id, t.title, t.details, t.workstream, t.stage, t.status, t.last_seen
-      FROM tasks t
-      WHERE t.status IN ('active', 'in_progress', 'paused')
-      ORDER BY
-        CASE t.status WHEN 'in_progress' THEN 1 WHEN 'active' THEN 2 ELSE 3 END,
-        t.last_seen DESC
-      LIMIT 8
-    `).all().filter(task => {
-      const parsed = parseTaskDetails(task.details)
-      return isDevelopmentFacet({
-        ...task,
-        scope: parsed.scope,
-        activity: parsed.activity,
-      })
-    })
-    if (devTasks.length > 0) {
-      const lines = devTasks.map(task => {
-        const { currentState, nextStep, description, scope, activity } = parseTaskDetails(task.details)
-        const entities = this.db.prepare(`
-          SELECT e.name, e.entity_type
-          FROM entities e
-          JOIN entity_links el ON el.entity_id = e.id
-          WHERE el.linked_type = 'task' AND el.linked_id = ?
-          ORDER BY e.entity_type, e.last_seen DESC
-        `).all(task.id)
-        const files = entities.filter(e => e.entity_type === 'file').map(e => e.name)
-        const bugs = entities.filter(e => e.entity_type === 'bug').map(e => e.name)
-        const workstream = String(task.workstream ?? '').trim() || 'dev/unknown'
-        const label = workstream.startsWith('dev-') ? workstream.replace(/-/g, '/') : workstream
-        const facet = [scope, activity].filter(Boolean).join('/')
-        const partsForTask = [`- ${task.title} [${facet ? `${facet} | ` : ''}${label}]`]
-        if (files.length > 0) partsForTask.push(`  - touched: ${files.join(', ')}`)
-        if (bugs.length > 0) partsForTask.push(`  - bugs: ${bugs.join(', ')}`)
-        if (currentState) partsForTask.push(`  - state: ${currentState}`)
-        if (nextStep) partsForTask.push(`  - next: ${nextStep}`)
-        if (!currentState && description) partsForTask.push(`  - note: ${description}`)
-        return partsForTask.join('\n')
-      })
-      parts.push(`## Dev Worklog\n${lines.join('\n\n')}`)
-    }
-
-    // ## Signals — top signals with decay
-    const signals = this.db.prepare(`
-      SELECT kind, value, score, last_seen, retrieval_count
-      FROM signals
-      WHERE status = 'active'
-      ORDER BY score DESC, retrieval_count DESC, last_seen DESC
-      LIMIT 8
-    `).all()
-    const activeSignals = signals
-      .filter(s => !['tone', 'response_style', 'personality'].includes(s.kind))
-      .map(item => ({
-        ...item,
-        effectiveScore: decaySignalScore(item.score, item.last_seen, item.kind),
-      }))
-      .filter(item => item.effectiveScore >= 0.35)
-      .filter((item, index, arr) => arr.findIndex(candidate => candidate.kind === item.kind) === index)
-      .slice(0, 5)
-    if (activeSignals.length > 0) {
-      parts.push(`## Signals\n${activeSignals.map(item => `- [${item.kind}] ${item.value}`).join('\n')}`)
-    }
-
-    // ## Recent — direct recent episode slices first, stored summaries only as fallback/supplement
-    const recentSections = []
-    const recentSectionKeys = new Set()
-    const recentRows = this.db.prepare(`
-      SELECT day_key, ts, role, content
-      FROM episodes
-      WHERE kind = 'message'
-        AND content NOT LIKE 'You are consolidating%'
-        AND content NOT LIKE 'You are improving%'
-        AND content NOT LIKE 'You are analyzing%'
-      ORDER BY day_key DESC, ts ASC, id ASC
-      LIMIT 40
-    `).all()
-    const grouped = new Map()
-    for (const row of recentRows) {
-      const dayKey = String(row.day_key ?? '').trim()
-      if (!dayKey) continue
-      if (!grouped.has(dayKey) && grouped.size >= 2) continue
-      const bucket = grouped.get(dayKey) ?? []
-      bucket.push(row)
-      grouped.set(dayKey, bucket)
-    }
-    for (const [dayKey, rows] of Array.from(grouped.entries())) {
-      const lines = rows
-        .slice(-4)
-        .map(row => `- ${row.role === 'user' ? 'u' : 'a'}: ${cleanMemoryText(row.content).slice(0, 180)}`)
-      if (lines.length === 0) continue
-      recentSections.push(`### ${dayKey}\n${lines.join('\n')}`)
-      recentSectionKeys.add(dayKey)
-    }
-    if (recentSections.length < 2) {
-      const dailyDocs = this.db.prepare(`
-        SELECT doc_key, content
-        FROM documents
-        WHERE kind = 'daily'
-        ORDER BY doc_key DESC
-        LIMIT 2
-      `).all()
-      for (const row of dailyDocs) {
-        const docKey = String(row.doc_key ?? '').trim()
-        const content = String(row.content ?? '').trim()
-        if (!docKey || !content || recentSectionKeys.has(docKey)) continue
-        recentSections.push(`### ${docKey}\n${content}`)
-        recentSectionKeys.add(docKey)
-        if (recentSections.length >= 2) break
-      }
-    }
-    if (recentSections.length < 2) {
-      const dailyDir = join(this.historyDir, 'daily')
-      if (existsSync(dailyDir)) {
-        const files = readdirSync(dailyDir)
-          .filter(name => name.endsWith('.md'))
-          .sort()
-          .slice(-2)
-          .reverse()
-        for (const name of files) {
-          const docKey = name.replace(/\.md$/, '')
-          if (recentSectionKeys.has(docKey)) continue
-          try {
-            const content = readFileSync(join(dailyDir, name), 'utf8').trim()
-            if (!content) continue
-            recentSections.push(`### ${docKey}\n${content}`)
-            recentSectionKeys.add(docKey)
-            if (recentSections.length >= 2) break
-          } catch { /* ignore unreadable summary */ }
-        }
-      }
-    }
-    if (recentSections.length > 0) {
-      parts.push(`## Recent\n${recentSections.join('\n\n')}`)
-    }
+    // Ongoing/Dev Worklog/Signals/Recent removed — real-time buildInboundMemoryContext handles these per-turn
 
     // Fallback — all sections empty → recent dialogues
     if (parts.length === 0) {
