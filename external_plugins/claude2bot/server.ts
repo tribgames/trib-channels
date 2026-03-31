@@ -2056,6 +2056,15 @@ function resolveInboundRoute(chatId: string): {
   }
 }
 
+// FIFO serial queue for handleInbound — prevents message reordering
+// when async RAG lookups inside handleInbound take varying time.
+const inboundQueue = (() => {
+  let tail = Promise.resolve()
+  return (fn: () => Promise<void>) => {
+    tail = tail.then(fn, fn)
+  }
+})()
+
 backend.onMessage = (msg) => {
   if (!bridgeRuntimeConnected || !getBridgeOwnershipSnapshot().owned) {
     void refreshBridgeOwnership()
@@ -2070,6 +2079,9 @@ backend.onMessage = (msg) => {
   eventPipeline.handleMessage(msg.text, msg.user, msg.chatId, false)
   startServerTyping(route.targetChatId)
   backend.resetSendCount()
+  // Flush unsent assistant text before resetting — prevents skipping text
+  // when reset() + applyTranscriptBinding() jumps lastFileSize forward.
+  void forwarder.forwardFinalText()
   forwarder.reset()
 
   // Prefer the current parent Claude session. If the exact transcript is not
@@ -2105,9 +2117,9 @@ backend.onMessage = (msg) => {
       })
     }
   })()
-  void handleInbound(msg, route, {
+  inboundQueue(() => handleInbound(msg, route, {
     sessionId: boundTranscript?.sessionId ?? sessionIdFromTranscriptPath(transcriptPath),
-  })
+  }))
 }
 
 async function handleInbound(
