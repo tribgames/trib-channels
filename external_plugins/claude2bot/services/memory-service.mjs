@@ -87,7 +87,8 @@ void store.warmupEmbeddings()
 
 // ── Cycle schedulers ─────────────────────────────────────────────────
 
-// cycle1: fast extraction at configured interval (default 5m)
+// ── Cycle schedulers (last-run based, not wall-clock) ────────────────
+
 const cycle1Config = mainConfig?.memory?.cycle1 ?? {}
 const cycle1IntervalStr = cycle1Config.interval || '5m'
 const cycle1Ms = (() => {
@@ -96,46 +97,59 @@ const cycle1Ms = (() => {
   const n = Number(m[1])
   return m[2] === 's' ? n * 1000 : m[2] === 'm' ? n * 60_000 : n * 3600_000
 })()
+const cycle2Ms = 24 * 60 * 60 * 1000 // 24 hours
 
-let cycle1Timer = null
-function startCycle1Scheduler() {
-  if (cycle1Timer) return
-  cycle1Timer = setInterval(async () => {
+function getCycleLastRun() {
+  try {
+    const state = JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'memory-cycle.json'), 'utf8'))
+    return {
+      cycle1: state?.cycle1?.lastRunAt ? new Date(state.cycle1.lastRunAt).getTime() : 0,
+      cycle2: state?.lastSleepAt ? new Date(state.lastSleepAt).getTime() : 0,
+    }
+  } catch { return { cycle1: 0, cycle2: 0 } }
+}
+
+async function checkCycles() {
+  const now = Date.now()
+  const last = getCycleLastRun()
+
+  // cycle1: lastRunAt + interval elapsed
+  if (now - last.cycle1 >= cycle1Ms) {
     try {
       await runCycle1(store, mainConfig)
       process.stderr.write(`[cycle1] completed at ${new Date().toISOString()}\n`)
     } catch (e) {
       process.stderr.write(`[cycle1] error: ${e.message}\n`)
     }
-  }, cycle1Ms)
-  process.stderr.write(`[cycle1] scheduler started: interval=${cycle1IntervalStr} (${cycle1Ms}ms)\n`)
-}
+  }
 
-// cycle2: daily consolidation at configured time (default 03:00)
-const cycle2Config = mainConfig?.memory?.cycle2 ?? {}
-const cycle2Schedule = cycle2Config.schedule || '03:00'
-const [cycle2Hour, cycle2Min] = cycle2Schedule.split(':').map(Number)
-let lastCycle2Date = ''
-
-function checkCycle2() {
-  const now = new Date()
-  const today = now.toISOString().slice(0, 10)
-  if (today === lastCycle2Date) return
-  if (now.getHours() === cycle2Hour && now.getMinutes() >= cycle2Min) {
-    lastCycle2Date = today
-    sleepCycle(store, mainConfig).then(() => {
-      process.stderr.write(`[cycle2] completed at ${now.toISOString()}\n`)
-    }).catch(e => {
+  // cycle2: lastSleepAt + 24h elapsed
+  if (now - last.cycle2 >= cycle2Ms) {
+    try {
+      await sleepCycle(store, mainConfig)
+      process.stderr.write(`[cycle2] completed at ${new Date().toISOString()}\n`)
+    } catch (e) {
       process.stderr.write(`[cycle2] error: ${e.message}\n`)
-    })
+    }
   }
 }
 
-// Check cycle2 every minute
-setInterval(checkCycle2, 60_000)
+// Check every minute, run if due
+setInterval(checkCycles, 60_000)
+// Initial check after warmup (catches overdue cycles immediately)
+setTimeout(checkCycles, 5000)
 
-// Start cycle1 after brief delay (let store warm up)
-setTimeout(startCycle1Scheduler, 5000)
+// Ensure context.md exists (empty template if first run)
+const contextPath = path.join(DATA_DIR, 'history', 'context.md')
+if (!fs.existsSync(contextPath)) {
+  try {
+    fs.mkdirSync(path.join(DATA_DIR, 'history'), { recursive: true })
+    store.writeContextFile()
+    process.stderr.write(`[memory-service] initial context.md created\n`)
+  } catch (e) {
+    process.stderr.write(`[memory-service] context.md init failed: ${e.message}\n`)
+  }
+}
 
 // ══════════════════════════════════════════════════════════════════════
 //  SHARED HELPERS (used by both MCP and HTTP)
