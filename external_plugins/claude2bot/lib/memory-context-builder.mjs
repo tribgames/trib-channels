@@ -269,10 +269,11 @@ export async function buildInboundMemoryContext(store, query, options = {}) {
         }
       } catch {}
 
-      // Fallback: recent 2 days if no temporal parse
+      // Fallback: history=3 days, event=7 days
+      const fallbackDays = intent.primary === 'event' ? '-7 days' : '-3 days'
       const dateFilter = startDate
         ? `AND ts >= '${startDate}' AND ts < '${endDate}'`
-        : `AND ts >= datetime('now', '-2 days')`
+        : `AND ts >= datetime('now', '${fallbackDays}')`
 
       const recentEpisodes = store.db.prepare(`
         SELECT ts, role, content FROM episodes
