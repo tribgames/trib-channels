@@ -10,7 +10,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-const PORT_FILE = path.join(os.tmpdir(), 'trib-channels', 'memory-port')
+const PORT_FILE = path.join(os.tmpdir(), 'trib-memory', 'memory-port')
 
 function getMemoryPort() {
   try {
