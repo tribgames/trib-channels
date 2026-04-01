@@ -56,6 +56,10 @@ import { PLUGIN_ROOT } from './lib/config.js'
 
 const DEFAULT_PLUGIN_VERSION = '0.0.1'
 
+function localTimestamp(): string {
+  return new Date().toLocaleString('sv-SE', { hour12: false })
+}
+
 function readPluginVersion(): string {
   try {
     const manifestPath = path.join(PLUGIN_ROOT, '.claude-plugin', 'plugin.json')
@@ -78,12 +82,12 @@ function logCrash(label: string, err: unknown): void {
   if (err instanceof Error && err.message.includes('EPIPE')) {
     try {
       const crashLog = path.join(DATA_DIR, 'crash.log')
-      fs.appendFileSync(crashLog, `[${new Date().toISOString()}] trib-channels: EPIPE detected, disconnecting + exiting\n`)
+      fs.appendFileSync(crashLog, `[${localTimestamp()}] trib-channels: EPIPE detected, disconnecting + exiting\n`)
     } catch { /* best effort */ }
     process.exit(1)
   }
 
-  const msg = `[${new Date().toISOString()}] trib-channels: ${label}: ${err}\n${err instanceof Error ? err.stack : ''}\n`
+  const msg = `[${localTimestamp()}] trib-channels: ${label}: ${err}\n${err instanceof Error ? err.stack : ''}\n`
   try { process.stderr.write(msg) } catch { /* EPIPE */ }
   try {
     const crashLog = path.join(DATA_DIR, 'crash.log')
@@ -107,7 +111,7 @@ const _bootLogEarly = path.join(
   process.env.CLAUDE_PLUGIN_DATA || path.join(os.tmpdir(), 'trib-channels'),
   'boot.log',
 )
-fs.appendFileSync(_bootLogEarly, `[${new Date().toISOString()}] bootstrap start pid=${process.pid}\n`)
+fs.appendFileSync(_bootLogEarly, `[${localTimestamp()}] bootstrap start pid=${process.pid}\n`)
 
 let config = loadConfig()
 let botConfig = loadBotConfig()
@@ -1579,9 +1583,9 @@ async function handleInbound(
 // ── Start ──────────────────────────────────────────────────────────────
 
 const _bootLog = path.join(DATA_DIR, 'boot.log')
-fs.appendFileSync(_bootLog, `[${new Date().toISOString()}] mcp.connect starting\n`)
+fs.appendFileSync(_bootLog, `[${localTimestamp()}] mcp.connect starting\n`)
 await mcp.connect(new StdioServerTransport())
-fs.appendFileSync(_bootLog, `[${new Date().toISOString()}] mcp.connect done\n`)
+fs.appendFileSync(_bootLog, `[${localTimestamp()}] mcp.connect done\n`)
 
 // Do not bind transcript output to a default channel on startup.
 // Interactive routing should be decided by the first allowed inbound message.
