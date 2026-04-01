@@ -1,0 +1,28 @@
+{
+  "description": "trib-channels hooks — channel: session-start, permission / memory: hints, auto-memory block",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/session-start.cjs"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/permission-request.cjs",
+            "timeout": 900000
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": []
+  }
+}

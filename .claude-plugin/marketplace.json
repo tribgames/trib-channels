@@ -1,16 +1,16 @@
 {
-  "name": "claude2bot",
-  "description": "Channel mode plugin for Claude Code \u2014 autonomous AI agent for Discord",
+  "name": "trib-channels",
+  "description": "Channel mode plugin for Claude Code — autonomous AI agent for Discord",
   "owner": {
-    "name": "claude2bot",
+    "name": "TRIBGAMES",
     "email": "dev@tribgames.com"
   },
   "plugins": [
     {
-      "name": "claude2bot",
+      "name": "trib-channels",
       "description": "Discord channel plugin with scheduler, voice transcription, and proactive chat",
       "category": "productivity",
-      "source": "./external_plugins/claude2bot"
+      "source": "./external_plugins/trib-channels"
     }
   ]
 }

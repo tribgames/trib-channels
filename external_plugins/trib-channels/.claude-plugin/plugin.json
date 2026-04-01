@@ -1,0 +1,19 @@
+{
+  "name": "trib-channels",
+  "description": "Discord channel plugin for Claude Code with scheduler, voice transcription, and access control.",
+  "version": "0.0.1",
+  "author": {
+    "name": "TRIBGAMES",
+    "email": "dev@tribgames.com"
+  },
+  "homepage": "https://github.com/tribgames/trib-channels",
+  "repository": "https://github.com/tribgames/trib-channels",
+  "license": "Apache-2.0",
+  "keywords": [
+    "channel",
+    "discord",
+    "messaging",
+    "mcp",
+    "discord-bot"
+  ]
+}

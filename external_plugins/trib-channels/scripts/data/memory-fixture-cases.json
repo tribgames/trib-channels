@@ -1,0 +1,379 @@
+[
+  {
+    "id": "ko-task-current",
+    "query": "지금 진행 중인 작업 뭐야",
+    "variants": [
+      "현재 진행 중인 핵심 작업 알려줘",
+      "지금 active task 뭐야",
+      "요즘 계속 하고 있는 작업이 뭐야",
+      "현재 손대고 있는 작업 목록 보여줘"
+    ],
+    "expectedIntent": "task",
+    "expectedAny": [
+      "Control MCP message visibility and channel routing",
+      "Fix MCP singleton shutdown to clear stale servers",
+      "Refactor recall_memory interface to use shared timerange query parameter",
+      "핵심 작업은 MCP 메시지 가시성 제어와 채널 라우팅 안정화"
+    ]
+  },
+  {
+    "id": "en-task-current",
+    "query": "What are the current active tasks?",
+    "variants": [
+      "What is currently in progress?",
+      "List the active work items right now.",
+      "What tasks are still ongoing?",
+      "Show the tasks that are being worked on."
+    ],
+    "expectedIntent": "task",
+    "expectedAny": [
+      "Control MCP message visibility and channel routing",
+      "Fix MCP singleton shutdown to clear stale servers",
+      "Finalize cycle2 correction-mode consolidation"
+    ]
+  },
+  {
+    "id": "ko-policy-commit",
+    "query": "커밋 먼저 하면 안 되지?",
+    "variants": [
+      "커밋이나 푸시는 요청 전에는 금지지?",
+      "지금 커밋하면 안 되는 거 맞지?",
+      "명시적 요청 전 commit/push 금지 맞아?",
+      "요청 없으면 커밋/푸시 보류가 맞지?"
+    ],
+    "expectedIntent": "policy",
+    "expectedAny": [
+      "커밋이나 푸시는 사용자가 명시적으로 요청하기 전에는 실행하지 않는다",
+      "구현을 먼저 계속 진행하고 커밋은 마지막에 처리하는 방식을 선호한다"
+    ]
+  },
+  {
+    "id": "en-policy-commit",
+    "query": "Is commit/push forbidden unless explicitly requested?",
+    "variants": [
+      "Should commit and push wait for explicit user approval?",
+      "Are commits blocked unless the user asks for them?",
+      "Is push opt-in only?",
+      "Do commit and push require an explicit request?"
+    ],
+    "expectedIntent": "policy",
+    "expectedAny": [
+      "커밋이나 푸시는 사용자가 명시적으로 요청하기 전에는 실행하지 않는다",
+      "구현을 먼저 계속 진행하고 커밋은 마지막에 처리하는 방식을 선호한다"
+    ]
+  },
+  {
+    "id": "ko-policy-build",
+    "query": "빌드나 배포도 승인 전엔 하면 안 되지?",
+    "variants": [
+      "build/deploy도 요청 없으면 금지지?",
+      "배포는 내가 말하기 전엔 안 하는 거지?",
+      "빌드는 명시 승인 필요하지?",
+      "승인 전 build/deploy 금지 맞지?"
+    ],
+    "expectedIntent": "policy",
+    "expectedAny": [
+      "빌드나 배포도 사용자가 명시적으로 요청하기 전에는 실행하지 않는다"
+    ]
+  },
+  {
+    "id": "ko-history-day",
+    "query": "{BASE_DATE}에 무슨 얘기 했지",
+    "acceptableIntents": ["event"],
+    "variants": [
+      "{BASE_DATE} 대화 내용 요약해줘",
+      "{BASE_DATE}에 논의한 내용 뭐였지?",
+      "{BASE_DATE} 당일에 했던 얘기 보여줘",
+      "{BASE_DATE} conversation summary 알려줘"
+    ],
+    "expectedIntent": "history",
+    "expectedAny": [
+      "매 메시지 인바운드 기준으로 임베딩 생성은 약 5ms 정도야",
+      "rag 진행에서 llm 들어가는게 얼마나되니",
+      "지금 로직의 부하는어느정도야",
+      "recall_memory 인터페이스를 timerange 중심으로 정리하는 작업도 아직 active 상태야",
+      "stale MCP 서버 정리와 singleton shutdown 수정도 계속 진행 중이야"
+    ]
+  },
+  {
+    "id": "ko-history-yesterday",
+    "query": "어제 duplicate message 관련해서 뭐라고 했지?",
+    "acceptableIntents": ["event"],
+    "variants": [
+      "어제 중복 메시지 이슈 얘기 뭐였어?",
+      "duplicate message 관련 어제 대화 기억나?",
+      "어제 중복 전송 원인 뭐라고 했지?",
+      "어제 duplicate issue trace 내용 다시 보여줘"
+    ],
+    "expectedIntent": "history",
+    "expectedAny": [
+      "duplicate message 이슈를 추적했다",
+      "duplicate message 문제의 유력 원인은 MCP stale process였다"
+    ]
+  },
+  {
+    "id": "ko-history-three-days",
+    "query": "3일 전에 recall_memory 관련해서 무슨 얘기 했지?",
+    "acceptableIntents": ["event"],
+    "variants": [
+      "3일 전 recall_memory 논의 내용 알려줘",
+      "recall_memory 관련해서 3일 전에 뭘 정했지?",
+      "3일 전 리콜 인터페이스 얘기 뭐였어?",
+      "3일 전 recall workflow discussion 뭐였지?"
+    ],
+    "expectedIntent": "history",
+    "expectedAny": [
+      "recall_memory mode를 verify, episodes, bulk로 나누는 얘기를 했어",
+      "hints output 형식도 같이 정리했지"
+    ]
+  },
+  {
+    "id": "ko-decision-rag",
+    "query": "RAG 구조 약점 뭐였지",
+    "variants": [
+      "현재 RAG 약점 다시 말해줘",
+      "RAG 구조에서 문제였던 점 뭐야",
+      "리트리벌 구조 약점 정리해줘",
+      "memory retrieval 쪽 약점까지 같이 말해줘"
+    ],
+    "expectedIntent": "decision",
+    "expectedAny": [
+      "현재 RAG 구조의 약점은 transcript 오염이다",
+      "현재 RAG 구조의 약점은 임베딩 차원 불일치 fallback이다",
+      "현재 RAG 구조의 약점은 policy/history 리랭크가 약한 점이다",
+      "memory retrieval 쪽 약점은 policy/history 리랭크가 약한 점이다"
+    ]
+  },
+  {
+    "id": "ko-decision-storage",
+    "query": "장기 메모리 저장 구조 결정 뭐였지?",
+    "variants": [
+      "장기 메모리 저장 방향 결정이 뭐였어?",
+      "long-term memory storage architecture 결정 알려줘",
+      "SQLite랑 context.md 관계 결정 다시 말해줘",
+      "persistent memory storage decision 뭐였지?"
+    ],
+    "expectedIntent": "decision",
+    "expectedAny": [
+      "장기 메모리는 SQLite를 중심으로 두고 session-start용 context.md도 유지한다",
+      "long-term memory storage architecture keeps SQLite as the primary store while preserving context.md for session start"
+    ]
+  },
+  {
+    "id": "ko-profile-language",
+    "query": "언어랑 말투 선호 뭐야",
+    "variants": [
+      "대답 언어랑 tone preference 뭐야",
+      "언어/어투 설정 어떻게 잡혀 있어?",
+      "말투랑 언어 선호 다시 알려줘",
+      "response language and tone preference 뭐야"
+    ],
+    "expectedIntent": "profile",
+    "expectedAny": [
+      "한국어 우선, 영어 기술 용어 혼용 가능",
+      "존댓말, 직접적이고 검증 중심"
+    ]
+  },
+  {
+    "id": "ko-profile-address",
+    "query": "호칭은 어떻게 해야 해?",
+    "variants": [
+      "나한테 어떤 톤으로 말해야 해?",
+      "응답 스타일은 어떻게 잡혀 있어?",
+      "말 걸 때 어떤 방식이 좋아?",
+      "address/tone expectation 다시 알려줘"
+    ],
+    "expectedIntent": "profile",
+    "expectedAny": [
+      "짧고 실무적인 답변 선호",
+      "존댓말, 직접적이고 검증 중심"
+    ]
+  },
+  {
+    "id": "ko-entity-projectaa",
+    "query": "ProjectAA랑 ProjectAA_Server 관계 뭐야",
+    "variants": [
+      "ProjectAA와 ProjectAA_Server가 어떻게 연결돼?",
+      "ProjectAA client/server 관계 설명해줘",
+      "ProjectAA 서버랑 클라 관계가 뭐야?",
+      "ProjectAA pair 구조 설명해줘"
+    ],
+    "expectedIntent": "decision",
+    "expectedAny": [
+      "ProjectAA -> ProjectAA_Server",
+      "Client and backend pair"
+    ]
+  },
+  {
+    "id": "ko-entity-search-split",
+    "query": "trib-search랑 trib-channels 역할 분리 뭐였지",
+    "variants": [
+      "trib-search와 trib-channels 책임 분리 설명해줘",
+      "외부 검색은 누가 하고 내부 리콜은 누가 해?",
+      "trib-search / trib-channels 경계가 뭐야?",
+      "search plugin과 memory plugin 역할 분리 뭐야"
+    ],
+    "expectedIntent": "decision",
+    "expectedAny": [
+      "trib-search는 외부 웹 검색과 AI search를 담당한다",
+      "trib-channels은 내부 memory recall을 담당한다"
+    ]
+  },
+  {
+    "id": "ko-task-memory-cycle",
+    "query": "memory cycle 쪽 남은 작업 뭐야",
+    "variants": [
+      "cycle2/cycle3 쪽 할 일 남은 거 뭐야",
+      "memory cycle backlog 뭐 남았어?",
+      "cycle 관련 active task 알려줘",
+      "memory cycle 남은 todo 보여줘"
+    ],
+    "expectedIntent": "task",
+    "expectedAny": [
+      "Finalize cycle2 correction-mode consolidation",
+      "Finalize cycle3 stale cleanup"
+    ]
+  },
+  {
+    "id": "ko-task-windows",
+    "query": "Windows 호환성 작업 상태 뭐야",
+    "variants": [
+      "Windows compatibility 작업 끝났어?",
+      "윈도우 대응 작업 상태 알려줘",
+      "Windows 관련 task가 done이야?",
+      "윈도우 호환성 작업 완료됐는지 확인해줘"
+    ],
+    "expectedIntent": "task",
+    "expectedAny": [
+      "Improve Windows compatibility"
+    ]
+  },
+  {
+    "id": "en-history-date",
+    "query": "What did we discuss on {BASE_DATE}?",
+    "acceptableIntents": ["event"],
+    "variants": [
+      "Summarize the discussion on {BASE_DATE}.",
+      "What happened on {BASE_DATE} in the conversation?",
+      "Show the main topics from {BASE_DATE}.",
+      "Give me the conversation highlights for {BASE_DATE}."
+    ],
+    "expectedIntent": "history",
+    "expectedAny": [
+      "매 메시지 인바운드 기준으로 임베딩 생성은 약 5ms 정도야",
+      "rag 진행에서 llm 들어가는게 얼마나되니",
+      "recall_memory 인터페이스를 timerange 중심으로 정리하는 작업도 아직 active 상태야"
+    ]
+  },
+  {
+    "id": "en-decision-source-truth",
+    "query": "What is the source of truth for profile and identity?",
+    "variants": [
+      "Which store is the source of truth for profile data?",
+      "Did we decide to remove separate identity storage?",
+      "What was the decision on profile vs identity persistence?",
+      "Which persistence path won for profile and identity?"
+    ],
+    "expectedIntent": "decision",
+    "expectedAny": [
+      "프로필의 단일 source of truth는 profiles DB이고 identity 전용 저장은 제거한다"
+    ]
+  },
+  {
+    "id": "ko-noise-transcript",
+    "query": "session transcript prompt는 durable memory로 보면 안 되지?",
+    "variants": [
+      "transcript prompt를 장기기억으로 넣으면 안 되는 거지?",
+      "session transcript는 durable memory 대상 아니지?",
+      "프롬프트 transcript를 기억으로 저장하면 안 되지?",
+      "transcript prompt는 장기기억 제외 대상 맞지?"
+    ],
+    "expectedIntent": "policy",
+    "expectedAny": [
+      "Session transcript prompts should not be treated as durable user memory",
+      "session transcript prompt는 durable memory로 취급하지 않는다"
+    ]
+  },
+  {
+    "id": "ko-entity-sqlite-vec",
+    "query": "sqlite-vec는 어디에 쓰여?",
+    "variants": [
+      "sqlite-vec 용도 뭐야?",
+      "trib-channels에서 sqlite-vec 역할이 뭐지?",
+      "sqlite-vec가 메모리에서 어디에 연결돼?",
+      "sqlite-vec integration point 알려줘"
+    ],
+    "expectedIntent": "decision",
+    "expectedAny": [
+      "trib-channels -> sqlite-vec",
+      "Memory retrieval depends on sqlite-vec"
+    ]
+  },
+  {
+    "id": "en-policy-build",
+    "query": "Is build or deploy also blocked until explicit approval?",
+    "variants": [
+      "Do build and deploy require explicit approval too?",
+      "Are build and deploy forbidden unless the user asks?",
+      "Is deployment opt-in only as well?"
+    ],
+    "expectedIntent": "policy",
+    "expectedAny": [
+      "빌드나 배포도 사용자가 명시적으로 요청하기 전에는 실행하지 않는다"
+    ]
+  },
+  {
+    "id": "ko-profile-timezone",
+    "query": "시간대는 뭐로 알고 있어?",
+    "variants": [
+      "현재 timezone 뭐야?",
+      "내 시간대 설정은 어떻게 돼?",
+      "기준 시간대가 Asia/Seoul 맞지?"
+    ],
+    "expectedIntent": "profile",
+    "expectedAny": [
+      "Asia/Seoul"
+    ]
+  },
+  {
+    "id": "en-entity-projectaa",
+    "query": "How are ProjectAA and ProjectAA_Server related?",
+    "variants": [
+      "Explain the relation between ProjectAA and ProjectAA_Server.",
+      "What is the ProjectAA client/server pairing?",
+      "How do ProjectAA and ProjectAA_Server connect?"
+    ],
+    "expectedIntent": "decision",
+    "expectedAny": [
+      "ProjectAA -> ProjectAA_Server",
+      "Client and backend pair"
+    ]
+  },
+  {
+    "id": "ko-rule-build-commit",
+    "query": "커밋이랑 빌드 둘 다 승인 전엔 하면 안 되는 거지?",
+    "variants": [
+      "commit/build 모두 explicit approval 필요하지?",
+      "커밋과 빌드 둘 다 요청 전 금지 맞지?",
+      "push랑 deploy도 포함해서 승인 필요하지?"
+    ],
+    "expectedIntent": "policy",
+    "expectedAny": [
+      "커밋이나 푸시는 사용자가 명시적으로 요청하기 전에는 실행하지 않는다",
+      "빌드나 배포도 사용자가 명시적으로 요청하기 전에는 실행하지 않는다"
+    ]
+  },
+  {
+    "id": "ko-done-task-check",
+    "query": "완료된 작업 중 대표적인 거 뭐 있어?",
+    "variants": [
+      "done 상태 task 하나만 말해줘",
+      "이미 끝난 작업 예시 뭐야?",
+      "completed task 알려줘"
+    ],
+    "expectedIntent": "task",
+    "expectedAny": [
+      "Improve Windows compatibility"
+    ]
+  }
+]
