@@ -7,10 +7,7 @@
     },
     "trib-memory": {
       "command": "node",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/services/memory-service.mjs"],
-      "env": {
-        "CLAUDE_PLUGIN_DATA": "${CLAUDE_PLUGIN_DATA}"
-      }
+      "args": ["${CLAUDE_PLUGIN_ROOT}/services/memory-service.mjs"]
     }
   }
 }
