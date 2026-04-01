@@ -120,7 +120,10 @@ memServiceProcess.on('exit', (code) => {
   process.stderr.write(`[memory-service] exited with code ${code}\n`)
 })
 
-const mlServiceProcess = spawn('python3', [path.join(PLUGIN_ROOT, 'services', 'ml-service.py')], {
+// Try venv python first, fallback to system python3
+const venvPython = path.join(PLUGIN_ROOT, 'services', '.venv', 'bin', 'python3')
+const mlPython = fs.existsSync(venvPython) ? venvPython : 'python3'
+const mlServiceProcess = spawn(mlPython, [path.join(PLUGIN_ROOT, 'services', 'ml-service.py')], {
   stdio: 'ignore',
   env: { ...process.env },
 })
