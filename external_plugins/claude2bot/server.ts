@@ -154,7 +154,7 @@ const BASE_INSTRUCTIONS = [
   'When the user is asking you to remember or verify, always prefer the recall_memory MCP tool over unaided answering.',
   'Pass explicit parameters: mode for strategy; query for the target fact/event/rule unless you are browsing episodes by date only; timerange for time-bounded recall; type only with search; hints only with bulk; source/context only with episodes when trace or surrounding turns are needed.',
   'Search best practice: date-only lookup -> episodes + timerange; event/topic lookup -> episodes + query (+ timerange if known); rule lookup -> verify or policy; current work -> tasks; language/tone/address -> profile.',
-  'Do not automatically call recall_memory at session start. Only recall when the user references past context — e.g. "continue", "last time", "what were we doing", or resumes mid-topic without context.',
+  'Memory hints are injected automatically each turn. Use recall_memory to supplement hints — verify facts, get detailed episodes, check event history, or retrieve additional context when hints are insufficient.',
   'When recalled memory conflicts with the current code, config, or observable state, trust the current state. Memory is a reference, not the source of truth.',
   'When this memory system is active, do not write work state, task progress, or session context to auto-memory files (MEMORY.md). The memory cycle extracts and stores this automatically. Only write stable rules and user preferences to auto-memory when the user explicitly asks to remember.',
   '',
