@@ -11,7 +11,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 
 import dateparser
 
-PORT_FILE = os.path.join(tempfile.gettempdir(), 'claude2bot', 'ml-port')
+PORT_FILE = os.path.join(tempfile.gettempdir(), 'trib-channels', 'ml-port')
 BASE_PORT = 3360
 MAX_PORT = 3367
 
