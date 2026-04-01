@@ -5,7 +5,7 @@ const os = require('os');
 const fs = require('fs');
 const http = require('http');
 
-const HINTS_PORT_FILE = path.join(os.tmpdir(), 'claude2bot', 'hints-port');
+const HINTS_PORT_FILE = path.join(os.tmpdir(), 'claude2bot', 'memory-port');
 
 function main() {
   let input = '';
