@@ -103,7 +103,7 @@ process.on('uncaughtException', err => logCrash('uncaught exception', err))
 // When spawned as child of claude -p (non-interactive schedule/webhook),
 // this plugin is loaded but not needed. Exit immediately to avoid
 // channel bridge conflicts and EPIPE issues.
-if (process.env.CLAUDE2BOT_NO_CONNECT) {
+if (process.env.TRIB_CHANNELS_NO_CONNECT) {
   process.exit(0)
 }
 
@@ -869,7 +869,7 @@ function detectDeviceLanguage(): string {
   if (resolvedWhisperLanguage) return resolvedWhisperLanguage
 
   const candidates = [
-    process.env.CLAUDE2BOT_WHISPER_LANGUAGE,
+    process.env.TRIB_CHANNELS_WHISPER_LANGUAGE,
     process.env.LC_ALL,
     process.env.LC_MESSAGES,
     process.env.LANG,
@@ -923,7 +923,7 @@ function candidateModelDirs(whisperCmd: string): string[] {
   const home = os.homedir()
   const whisperDir = path.dirname(whisperCmd)
   const dirs = [
-    process.env.CLAUDE2BOT_WHISPER_MODEL_DIR,
+    process.env.TRIB_CHANNELS_WHISPER_MODEL_DIR,
     process.env.WHISPER_MODEL_DIR,
     process.env.WHISPER_CPP_MODEL_DIR,
     config.voice?.model && !config.voice.model.endsWith('.bin') ? config.voice.model : '',
@@ -969,7 +969,7 @@ async function findWhisperModel(override: string | undefined, whisperCmd: string
   }
 
   const directEnv = [
-    process.env.CLAUDE2BOT_WHISPER_MODEL,
+    process.env.TRIB_CHANNELS_WHISPER_MODEL,
     process.env.WHISPER_MODEL,
   ].filter((value): value is string => Boolean(value))
 

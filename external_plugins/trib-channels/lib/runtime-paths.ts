@@ -114,7 +114,7 @@ const SERVER_PID_FILE = join(
   `server-${sanitize(process.env.CLAUDE_PLUGIN_DATA ?? 'default')}.pid`,
 )
 
-function looksLikeClaude2BotServer(pid: number): boolean {
+function looksLikeTribChannelsServer(pid: number): boolean {
   const pidStr = String(pid)
   if (process.platform === 'win32') {
     try {
@@ -184,7 +184,7 @@ export function killAllPreviousServers(): void {
     const oldPid = parseInt(readFileSync(SERVER_PID_FILE, 'utf8').trim(), 10)
     if (oldPid && oldPid !== process.pid && oldPid !== process.ppid) {
       try { process.kill(oldPid, 0) } catch { return }
-      if (looksLikeClaude2BotServer(oldPid)) {
+      if (looksLikeTribChannelsServer(oldPid)) {
         killSinglePid(oldPid)
       }
     }

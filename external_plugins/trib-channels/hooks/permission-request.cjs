@@ -1,4 +1,4 @@
-if (process.env.CLAUDE2BOT_NO_CONNECT) process.exit(0);
+if (process.env.TRIB_CHANNELS_NO_CONNECT) process.exit(0);
 /**
  * trib-channels PermissionRequest hook
  * 1. Send Discord message with approve/deny buttons
@@ -11,7 +11,7 @@ const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 
-const DEBUG = process.env.CLAUDE2BOT_DEBUG === '1';
+const DEBUG = process.env.TRIB_CHANNELS_DEBUG === '1';
 
 const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA;
 if (!DATA_DIR) process.exit(0);

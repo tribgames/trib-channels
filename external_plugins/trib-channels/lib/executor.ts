@@ -133,7 +133,7 @@ export function spawnClaudeP(
     '-p', '--dangerously-skip-permissions', '--no-session-persistence',
     '--plugin-dir', NOPLUGIN_DIR,
   ], {
-    env: { ...process.env, CLAUDE2BOT_NO_CONNECT: '1' },
+    env: { ...process.env, TRIB_CHANNELS_NO_CONNECT: '1' },
   })
 
   const wrappedPrompt = prompt + '\n\nIMPORTANT: Output your final result as plain text to stdout. Do NOT use any reply, messaging, or channel tools. Just print the result.'

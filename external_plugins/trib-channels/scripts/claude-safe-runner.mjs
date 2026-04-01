@@ -86,7 +86,7 @@ async function main() {
   const args = ['-p', '--model', options.model, '--effort', options.effort]
   const env = {
     ...process.env,
-    ...(options.noConnect ? { CLAUDE2BOT_NO_CONNECT: '1' } : {}),
+    ...(options.noConnect ? { TRIB_CHANNELS_NO_CONNECT: '1' } : {}),
   }
 
   const child = spawn('claude', args, {
