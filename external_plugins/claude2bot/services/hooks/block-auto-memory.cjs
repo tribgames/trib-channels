@@ -30,8 +30,21 @@ function main() {
 
       // Check if path is under ~/.claude/projects/*/memory/
       if (normalized.startsWith(memoryBase) && /\/memory\//.test(normalized)) {
-        // Allow MEMORY.md index reads (it's loaded by Claude Code automatically anyway)
-        // Block everything else
+        // Only block if MCP memory service is actually running
+        const portFile = path.join(os.tmpdir(), 'claude2bot', 'memory-port');
+        let mcpActive = false;
+        try {
+          const port = fs.readFileSync(portFile, 'utf8').trim();
+          if (port) mcpActive = true;
+        } catch {}
+
+        if (!mcpActive) {
+          // MCP not running — allow auto-memory as fallback
+          process.stdout.write('{}');
+          return;
+        }
+
+        // MCP active — allow MEMORY.md reads, block rest
         const basename = path.basename(normalized);
         if (basename === 'MEMORY.md' && event.tool_name === 'Read') {
           process.stdout.write('{}');
