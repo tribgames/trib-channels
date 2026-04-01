@@ -1,5 +1,5 @@
 {
-  "description": "claude2bot plugin hooks — session-start + permission only",
+  "description": "claude2bot hooks — channel: session-start, permission / memory: hints, auto-memory block",
   "hooks": {
     "SessionStart": [
       {
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/block-auto-memory.cjs"
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/services/hooks/block-auto-memory.cjs"
           }
         ]
       }
@@ -38,7 +38,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/memory-hint.cjs"
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/services/hooks/memory-hint.cjs"
           }
         ]
       }
