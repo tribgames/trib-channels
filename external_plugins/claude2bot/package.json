@@ -13,7 +13,8 @@
     "test:memory:gate": "node scripts/run-memory-quality-gate.mjs",
     "test:memory:live-subset": "node scripts/run-memory-live-subset-regression.mjs",
     "test:memory:snapshots": "node scripts/run-memory-fixture-snapshots.mjs",
-    "test:memory:smoke": "node scripts/run-memory-smoke-regression.mjs"
+    "test:memory:smoke": "node scripts/run-memory-smoke-regression.mjs",
+    "postinstall": "node -e \"const{execSync:e}=require('child_process'),p=require('path'),f=require('fs');const d=p.join(__dirname,'services');const v=p.join(d,'.venv');const py=process.platform==='win32'?p.join(v,'Scripts','python.exe'):p.join(v,'bin','python3');if(!f.existsSync(py)){try{e('python3 -m venv '+v,{stdio:'ignore'});e(py+' -m pip install -r '+p.join(d,'requirements.txt'),{stdio:'ignore'})}catch{}}\""
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",

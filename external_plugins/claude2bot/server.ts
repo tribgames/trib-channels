@@ -120,17 +120,7 @@ memServiceProcess.on('exit', (code) => {
   process.stderr.write(`[memory-service] exited with code ${code}\n`)
 })
 
-// Try venv python first (cross-platform), fallback to system python3
-const venvPythonUnix = path.join(PLUGIN_ROOT, 'services', '.venv', 'bin', 'python3')
-const venvPythonWin = path.join(PLUGIN_ROOT, 'services', '.venv', 'Scripts', 'python.exe')
-const mlPython = fs.existsSync(venvPythonUnix) ? venvPythonUnix : fs.existsSync(venvPythonWin) ? venvPythonWin : 'python3'
-const mlServiceProcess = spawn(mlPython, [path.join(PLUGIN_ROOT, 'services', 'ml-service.py')], {
-  stdio: 'ignore',
-  env: { ...process.env },
-})
-mlServiceProcess.on('exit', (code) => {
-  process.stderr.write(`[ml-service] exited with code ${code}\n`)
-})
+// ML service removed — ONNX embedding stays in Node.js, intent classifier handles temporal detection
 
 // ── Instructions ───────────────────────────────────────────────────────
 // Based on the official Claude Code Discord plugin instructions.
@@ -1674,7 +1664,7 @@ function shutdown(): void {
   try { turnEndWatcher.close() } catch {}
   try { controlWorker?.kill() } catch {}
   try { memServiceProcess.kill() } catch {}
-  try { mlServiceProcess.kill() } catch {}
+  // ML service removed — temporal parser is spawned by memory-service
   void stopOwnedRuntime('process shutdown')
     .catch(() => {})
     .finally(() => {
