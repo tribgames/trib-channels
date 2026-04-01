@@ -476,7 +476,12 @@ function bindPersistedTranscriptIfAny(): void {
 
 async function startOwnedRuntime(options: { restoreBinding?: boolean } = {}): Promise<void> {
   if (bridgeRuntimeConnected) return
-  await backend.connect()
+  try {
+    await backend.connect()
+  } catch (e) {
+    process.stderr.write(`claude2bot: backend connect failed (non-fatal): ${e instanceof Error ? e.message : String(e)}\n`)
+    return // MCP server continues without Discord — memory tools still work
+  }
   bridgeRuntimeConnected = true
   scheduler.start()
   if (webhookServer) webhookServer.start()
