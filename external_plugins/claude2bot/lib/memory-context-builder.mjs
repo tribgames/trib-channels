@@ -245,6 +245,30 @@ export async function buildInboundMemoryContext(store, query, options = {}) {
     } catch {}
   }
 
+  // Temporal fallback: detect time-related queries and inject recent episodes
+  if (lines.length === 0) {
+    const temporalPatterns = /어제|아까|지난번|저번|이전에|그때|지난주|이어서|오늘|방금|뭐했|뭐함|last\s*time|yesterday|earlier|continue/i
+    if (temporalPatterns.test(clean)) {
+      try {
+        const recentEpisodes = store.db.prepare(`
+          SELECT ts, role, content FROM episodes
+          WHERE kind IN ('message', 'turn')
+            AND content NOT LIKE 'You are consolidating%'
+            AND content NOT LIKE 'You are improving%'
+            AND LENGTH(content) BETWEEN 10 AND 500
+            AND ts >= datetime('now', '-2 days')
+          ORDER BY ts DESC
+          LIMIT 5
+        `).all()
+        for (const ep of recentEpisodes) {
+          const prefix = ep.role === 'user' ? 'u' : 'a'
+          const text = cleanMemoryText(ep.content).slice(0, 150)
+          lines.push(`<hint type="episode" age="${ep.ts}">[${prefix}] ${text}</hint>`)
+        }
+      } catch {}
+    }
+  }
+
   if (lines.length === 0) return ''
   const ctx = `<memory-context>\n${lines.join('\n')}\n</memory-context>`
   const totalMs = Date.now() - totalStartedAt
