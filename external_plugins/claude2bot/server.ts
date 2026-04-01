@@ -455,7 +455,7 @@ const hintsServer = http.createServer(async (req, res) => {
       return
     }
     try {
-      const ctx = await memoryStore.buildInboundMemoryContext(q, {})
+      const ctx = await memoryStore.buildInboundMemoryContext(q, { skipLowSignal: true })
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ hints: ctx || '' }))
     } catch (e) {

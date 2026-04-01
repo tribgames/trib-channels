@@ -7,7 +7,8 @@ import { looksLowSignalQuery, tokenizeMemoryText } from './memory-text-utils.mjs
 
 export async function buildInboundMemoryContext(store, query, options = {}) {
   const clean = cleanMemoryText(query)
-  if (!clean || looksLowSignalQuery(clean)) return ''
+  if (!clean) return ''
+  if (!options.skipLowSignal && looksLowSignalQuery(clean)) return ''
 
   const totalStartedAt = Date.now()
   const stageTimings = []
