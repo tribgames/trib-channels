@@ -1,4 +1,4 @@
-You are analyzing a day's conversation to generate daily records for the c2b Memory System.
+You are analyzing a day's conversation to generate daily records for the trib-channels Memory System.
 
 Date: {{DATE}}
 History directory: {{HISTORY_DIR}}

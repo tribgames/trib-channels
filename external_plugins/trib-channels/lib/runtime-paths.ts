@@ -176,14 +176,14 @@ function killSinglePid(pid: number): void {
     try {
       execFileSync('taskkill', ['/F', '/T', '/PID', String(pid)], { encoding: 'utf8', timeout: 5000 })
     } catch (err) {
-      console.warn(`[singleton] taskkill failed for PID ${pid}:`, (err as Error).message)
+      process.stderr.write(`[singleton] taskkill failed for PID ${pid}: ${(err as Error).message}\n`)
     }
   } else {
     try { process.kill(pid, 'SIGTERM') } catch { /* ignore */ }
     if (!waitForExit(pid, 2000)) {
       try { process.kill(pid, 'SIGKILL') } catch { /* ignore */ }
       if (!waitForExit(pid, 1000)) {
-        console.warn(`[singleton] failed to kill previous server PID ${pid}`)
+        process.stderr.write(`[singleton] failed to kill previous server PID ${pid}\n`)
       }
     }
   }

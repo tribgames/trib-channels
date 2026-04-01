@@ -3,7 +3,7 @@
  * MCP server-centric output architecture. No hooks for text forwarding.
  */
 
-import { readFileSync, readdirSync, existsSync, statSync, watch, openSync, readSync, closeSync, type FSWatcher } from 'fs'
+import { readFileSync, existsSync, statSync, watch, openSync, readSync, closeSync, type FSWatcher } from 'fs'
 import { execFileSync } from 'child_process'
 import { basename, join, resolve } from 'path'
 import { homedir } from 'os'
@@ -87,11 +87,6 @@ function readSessionRecord(pid: number): ClaudeSessionRecord | null {
   }
 }
 
-function isInteractiveSession(session: ClaudeSessionRecord | null): session is ClaudeSessionRecord {
-  if (!session) return false
-  return session.kind === 'interactive' || (!session.kind && session.entrypoint === 'cli')
-}
-
 export function discoverCurrentClaudeSession(): ClaudeSessionRecord | null {
   let pid: number | null = process.ppid
 
@@ -102,28 +97,6 @@ export function discoverCurrentClaudeSession(): ClaudeSessionRecord | null {
   }
 
   return null
-}
-
-export function listInteractiveClaudeSessions(): ClaudeSessionRecord[] {
-  const sessionsDir = join(homedir(), '.claude', 'sessions')
-  try {
-    return readdirSync(sessionsDir)
-      .filter(file => file.endsWith('.json'))
-      .map(file => parseInt(basename(file, '.json'), 10))
-      .filter(pid => Number.isFinite(pid))
-      .map(pid => readSessionRecord(pid))
-      .filter(isInteractiveSession)
-      .sort((a, b) => {
-        if (b.startedAt !== a.startedAt) return b.startedAt - a.startedAt
-        return b.pid - a.pid
-      })
-  } catch {
-    return []
-  }
-}
-
-export function getLatestInteractiveClaudeSession(): ClaudeSessionRecord | null {
-  return listInteractiveClaudeSessions()[0] ?? null
 }
 
 function resolveTranscriptForSession(session: ClaudeSessionRecord): SessionBoundTranscript {

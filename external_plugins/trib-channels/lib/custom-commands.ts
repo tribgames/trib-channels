@@ -7,7 +7,7 @@
  * - Quoted strings preserve spaces
  */
 
-import { readFileSync, writeFileSync, mkdirSync } from 'fs'
+import { writeFileSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { DATA_DIR, loadConfig, loadBotConfig, saveBotConfig, loadProfileConfig, saveProfileConfig } from './config.js'
 import type { PluginConfig, TimedSchedule } from '../backends/types.js'
@@ -242,12 +242,6 @@ function activityList(ctx: CommandContext): CommandResult {
     return `**${name}${star}** — ${entry.mode} (\`${entry.id}\`)`
   })
 
-// [components removed]
-
-  // Remove buttons (max 5 per row)
-// [components removed]
-
-
   return {
     embeds: [{ title: '\uD83D\uDCE1 Activity Channels', description: chLines.join('\n'), color: 0x5865F2 }],
   }
@@ -322,8 +316,6 @@ function handleBotProfile(parsed: ParsedCommand, ctx: CommandContext): CommandRe
   // Default view: show the profile with edit and navigation buttons.
   const profile = loadProfileConfig()
   const entries = Object.entries(profile).filter(([_, v]) => v !== undefined)
-
-// [components removed]
 
   if (entries.length === 0) {
     return {
@@ -580,8 +572,6 @@ function scheduleList(ctx: CommandContext): CommandResult {
     value: s.name,
     description: `${s.time} (${s.type})`.substring(0, 100),
   }))
-
-// [components removed]
 
   if (options.length > 0) {
   }

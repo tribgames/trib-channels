@@ -102,15 +102,3 @@ export async function ingestTranscript(filePath) {
   }
 }
 
-/**
- * Check if the memory service is healthy.
- * @returns {Promise<boolean>}
- */
-export async function isHealthy() {
-  try {
-    const result = await memoryFetch('GET', '/health')
-    return result.status === 'ok'
-  } catch {
-    return false
-  }
-}
