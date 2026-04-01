@@ -15,7 +15,6 @@ import {
 import { spawn } from 'child_process'
 import * as fs from 'fs'
 import * as https from 'https'
-import * as http from 'http'
 import * as os from 'os'
 import * as path from 'path'
 import { loadConfig, createBackend, loadBotConfig, loadProfileConfig, DATA_DIR } from './lib/config.js'
@@ -29,9 +28,7 @@ import {
 } from './lib/output-forwarder.js'
 import { controlClaudeSession } from './lib/session-control.js'
 import { JsonStateFile, ensureDir, removeFileIfExists, writeTextFile, type StatusState } from './lib/state-file.js'
-import { getMemoryStore } from './lib/memory.mjs'
-import { configureEmbedding } from './lib/embedding-provider.mjs'
-import { sleepCycle, memoryFlush, rebuildRecent, pruneToRecent, getCycleStatus, autoFlush, runCycle1, parseInterval, buildSemanticDayPlan, loadCycleState } from './lib/memory-cycle.mjs'
+import { appendEpisode as memoryAppendEpisode, getHints as memoryGetHints, ingestTranscript as memoryIngestTranscript } from './lib/memory-client.mjs'
 import {
   buildModalRequestSpec,
   PendingInteractionStore,
@@ -106,64 +103,30 @@ if (process.env.CLAUDE2BOT_NO_CONNECT) {
 let config = loadConfig()
 let botConfig = loadBotConfig()
 
-// Apply embedding config from config.json (overrides env vars)
-const embeddingConfig = config?.embedding
-if (embeddingConfig?.provider || embeddingConfig?.ollamaModel) {
-  configureEmbedding({
-    provider: embeddingConfig.provider,
-    ollamaModel: embeddingConfig.ollamaModel,
-  })
-  process.stderr.write(`[embed] configured: provider=${embeddingConfig.provider ?? 'default'}, model=${embeddingConfig.ollamaModel ?? 'default'}\n`)
-}
-
 const backend = createBackend(config)
 const settings = loadSettings(config.contextFiles)
 const INSTANCE_ID = makeInstanceId()
 ensureRuntimeDirs()
 cleanupStaleRuntimeFiles()
-const memoryStore = getMemoryStore(DATA_DIR)
-memoryStore.syncHistoryFromFiles()
-if (memoryStore.countEpisodes() === 0) {
-  try { memoryStore.backfillProject(process.cwd(), { limit: 80 }) } catch { /* best effort */ }
-}
-void memoryStore.warmupEmbeddings().then(() => memoryStore.ensureEmbeddings({ perTypeLimit: 12 })).catch(err => {
-  process.stderr.write(`claude2bot: embedding warmup failed: ${err}\n`)
+
+// ── Memory + ML service processes ────────────────────────────────────
+// Memory store initialization, cycle1 scheduler, and embedding config
+// are now handled by memory-service.mjs (spawned as a child process).
+const memServiceProcess = spawn(process.execPath, [path.join(PLUGIN_ROOT, 'services', 'memory-service.mjs')], {
+  stdio: 'ignore',
+  env: { ...process.env, CLAUDE_PLUGIN_DATA: DATA_DIR },
+})
+memServiceProcess.on('exit', (code) => {
+  process.stderr.write(`[memory-service] exited with code ${code}\n`)
 })
 
-// ── Cycle1 interval scheduler ─────────────────────────────────────────
-const cycle1Config = (config as any)?.memory?.cycle1
-
-// ── Cycle State: waterfall on first install ───────────────────────────
-const initialCycleState = loadCycleState()
-if (!initialCycleState.cycle1.lastRunAt && cycle1Config?.interval) {
-  process.stderr.write('[cycle-state] first install detected — triggering cycle1 waterfall\n')
-  void (async () => {
-    try {
-      await runCycle1(process.cwd(), config)
-    } catch (e: unknown) {
-      process.stderr.write(`[cycle-state] initial cycle1 failed: ${e instanceof Error ? e.message : String(e)}\n`)
-    }
-  })()
-}
-if (cycle1Config?.interval) {
-  const intervalMs = parseInterval(cycle1Config.interval)
-  if (intervalMs === 0) {
-    // "immediate" mode: cycle1 runs on every transcript ingest (see applyTranscriptBinding)
-    process.stderr.write(`[memory-cycle1] scheduler started: mode=immediate (event-triggered)\n`)
-  } else {
-    setInterval(async () => {
-      try {
-        const result = await runCycle1(process.cwd(), config)
-        if (result.extracted > 0) {
-          process.stderr.write(`[memory-cycle1] extracted=${result.extracted} facts=${result.facts} tasks=${result.tasks}\n`)
-        }
-      } catch (e: unknown) {
-        process.stderr.write(`[memory-cycle1] error: ${e instanceof Error ? e.message : String(e)}\n`)
-      }
-    }, intervalMs)
-    process.stderr.write(`[memory-cycle1] scheduler started: interval=${cycle1Config.interval} (${intervalMs}ms)\n`)
-  }
-}
+const mlServiceProcess = spawn('python3', [path.join(PLUGIN_ROOT, 'services', 'ml-service.py')], {
+  stdio: 'ignore',
+  env: { ...process.env },
+})
+mlServiceProcess.on('exit', (code) => {
+  process.stderr.write(`[ml-service] exited with code ${code}\n`)
+})
 
 // ── Instructions ───────────────────────────────────────────────────────
 // Based on the official Claude Code Discord plugin instructions.
@@ -320,7 +283,7 @@ const forwarder = new OutputForwarder({
 
   },
   recordAssistantTurn: async ({ channelId, text, sessionId }) => {
-    memoryStore.appendEpisode({
+    void memoryAppendEpisode({
       ts: new Date().toISOString(),
       backend: backend.name,
       channelId,
@@ -364,12 +327,7 @@ function applyTranscriptBinding(
   if (!transcriptPath) return
   forwarder.setContext(channelId, transcriptPath, { replayFromStart: options.replayFromStart })
   forwarder.startWatch()
-  memoryStore.ingestTranscriptFile(transcriptPath)
-  autoFlush(process.cwd()).catch(e => process.stderr.write(`[auto-flush] ${e.message}\n`))
-  // Immediate mode: trigger cycle1 on every transcript ingest
-  if (cycle1Config?.interval && parseInterval(cycle1Config.interval) === 0) {
-    void runCycle1(process.cwd(), config).catch((e: unknown) => process.stderr.write(`[memory-cycle1] immediate error: ${e instanceof Error ? e.message : String(e)}\n`))
-  }
+  void memoryIngestTranscript(transcriptPath)
   refreshActiveInstance(INSTANCE_ID, { channelId, transcriptPath })
   if (options.persistStatus !== false) {
     statusState.update(state => {
@@ -440,52 +398,6 @@ const scheduler = new Scheduler(
 let webhookServer: WebhookServer | null = null
 if (config.webhook?.enabled) {
   webhookServer = new WebhookServer(config.webhook, config.channelsConfig ?? null)
-}
-
-// ── Hints HTTP endpoint (for UserPromptSubmit hook) ─────────────────
-
-const HINTS_PORT_FILE = path.join(os.tmpdir(), 'claude2bot', 'hints-port')
-const hintsServer = http.createServer(async (req, res) => {
-  if (req.method === 'GET' && req.url?.startsWith('/hints')) {
-    const url = new URL(req.url, `http://localhost`)
-    const q = url.searchParams.get('q') || ''
-    if (!q || q.length < 3) {
-      res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end('{}')
-      return
-    }
-    try {
-      const ctx = await memoryStore.buildInboundMemoryContext(q, { skipLowSignal: true })
-      res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ hints: ctx || '' }))
-    } catch (e) {
-      res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end('{}')
-    }
-    return
-  }
-  res.writeHead(404)
-  res.end()
-})
-
-{
-  const basePort = 3350
-  const maxPort = basePort + 7
-  let port = basePort
-  const tryListen = () => {
-    hintsServer.listen(port, () => {
-      try { fs.mkdirSync(path.dirname(HINTS_PORT_FILE), { recursive: true }) } catch {}
-      fs.writeFileSync(HINTS_PORT_FILE, String(port))
-      process.stderr.write(`[hints] listening on port ${port}\n`)
-    })
-  }
-  hintsServer.on('error', (err: NodeJS.ErrnoException) => {
-    if (err.code === 'EADDRINUSE' && port < maxPort) {
-      port++
-      tryListen()
-    }
-  })
-  tryListen()
 }
 
 // ── Event pipeline ───────────────────────────────────────────────────
@@ -681,7 +593,7 @@ scheduler.setInjectHandler((channelId: string, name: string, prompt: string) => 
   }).catch(e => {
     process.stderr.write(`claude2bot: notification failed: ${e}\n`)
   })
-  memoryStore.appendEpisode({
+  void memoryAppendEpisode({
     ts,
     backend: backend.name,
     channelId,
@@ -697,7 +609,7 @@ scheduler.setInjectHandler((channelId: string, name: string, prompt: string) => 
 
 scheduler.setSendHandler(async (channelId: string, text: string) => {
   await backend.sendMessage(channelId, text)
-  memoryStore.appendEpisode({
+  void memoryAppendEpisode({
     ts: new Date().toISOString(),
     backend: backend.name,
     channelId,
@@ -738,7 +650,7 @@ eventQueue.setInjectHandler((channelId: string, name: string, prompt: string) =>
   }).catch(e => {
     try { process.stderr.write(`claude2bot event: notification failed: ${e}\n`) } catch { /* EPIPE */ }
   })
-  memoryStore.appendEpisode({
+  void memoryAppendEpisode({
     ts,
     backend: backend.name,
     channelId,
@@ -753,7 +665,7 @@ eventQueue.setInjectHandler((channelId: string, name: string, prompt: string) =>
 })
 eventQueue.setSendHandler(async (channelId: string, text: string) => {
   await backend.sendMessage(channelId, text)
-  memoryStore.appendEpisode({
+  void memoryAppendEpisode({
     ts: new Date().toISOString(),
     backend: backend.name,
     channelId,
@@ -1250,45 +1162,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['name', 'action'],
       },
     },
-    {
-      name: 'memory_cycle',
-      annotations: { title: 'Memory Cycle' },
-      description: 'Run memory management operations: sleep (merged update), flush (consolidate pending), rebuild (recent), prune (cleanup), cycle1 (fast update), status.',
-      inputSchema: {
-        type: 'object' as const,
-        properties: {
-          action: { type: 'string', enum: ['sleep', 'flush', 'rebuild', 'prune', 'cycle1', 'status'], description: 'Memory operation to run' },
-          maxDays: { type: 'number', description: 'Max days to process (default varies by action)' },
-        },
-        required: ['action'],
-      },
-    },
-    {
-      name: 'recall_memory',
-      annotations: { title: 'Memory Recall' },
-      description: 'Search memory DB for relevant facts, tasks, signals, profiles, entities, relations, and episodes. Use silently.\n\nParameters:\n- mode: search | verify | episodes | bulk | tasks | policy | profile\n- query: target fact/event/rule/profile/work description; optional for episodes when timerange-only browsing is intended\n- timerange: optional date filter for all modes, formats: "today", "this-week", "3d", "1w", "2026-03", "2026-03-28", "2026-03-25~2026-03-28"\n- type: optional search-only filter\n- hints: bulk-only\n- source/context: episodes-only when trace or nearby turns are needed\n\nSearch guide:\n- date-only recall -> episodes + timerange\n- event/topic recall -> episodes + query (+ timerange if known)\n- rule/restriction recall -> verify or policy\n- current work recall -> tasks\n- language/tone/address recall -> profile\n\nCanonical calls:\n- recall_memory(mode="episodes", timerange="2026-03-28")\n- recall_memory(mode="episodes", query="event", timerange="2026-03-28", context=2, source=true)\n- recall_memory(mode="policy", query="rule or restriction")\n- recall_memory(mode="tasks", query="current work")\n- recall_memory(mode="profile", query="language or tone")\n- recall_memory(mode="verify", query="claim")',
-      inputSchema: {
-        type: 'object' as const,
-        properties: {
-          query: { type: 'string', description: 'Search text or shortcut. Shortcuts: "all", "hints", "hint:0,2", "facts", "episodes", "profiles", "tasks", "signals", "entities", "relations". Free text for normal recall. Optional in episodes mode if timerange-only browsing is intended.' },
-          mode: { type: 'string', enum: ['search', 'verify', 'episodes', 'bulk', 'tasks', 'policy', 'profile'], default: 'search', description: 'Recall strategy.' },
-          type: { type: 'string', enum: ['all', 'facts', 'tasks', 'signals', 'episodes', 'profiles', 'entities', 'relations'], default: 'all', description: 'Search-only memory type filter.' },
-          timerange: { type: 'string', description: 'Time filter for all modes. Formats: "today", "this-week", "3d"(days), "1w"(weeks), "2026-03"(month), "2026-03-28"(date), "2026-03-25~2026-03-28"(range)' },
-          limit: { type: 'number', default: 5, description: 'Max results' },
-          source: { type: 'boolean', default: false, description: 'Episodes-only: include source trace.' },
-          context: { type: ['number', 'string'], description: 'Episodes-only: surrounding turns count or "semantic".' },
-          compact: { type: 'boolean', default: true, description: 'Use u/a shorthand for episodes' },
-          memory_kind: { type: 'string', enum: ['fact', 'task', 'signal', 'profile', 'entity', 'relation', 'episode', 'proposition'], description: 'Optional metadata filter for a specific memory kind.' },
-          task_status: { type: 'string', enum: ['active', 'in_progress', 'paused', 'done'], description: 'Optional metadata filter for task status.' },
-          source_type: { type: 'string', description: 'Optional metadata filter for source kind/backend, e.g. message, transcript, discord, claude-session.' },
-          session_id: { type: 'string', description: 'Optional metadata filter for a specific source session id.' },
-          trace: { type: 'boolean', default: false, description: 'Persist a retrieval trace JSONL record under history for later inspection.' },
-          debug: { type: 'boolean', default: false, description: 'Include query plan / candidate / rerank debug summary for inspection.' },
-          hints: { type: 'array', items: { type: 'string' }, description: 'Bulk-only: hint list to verify.' },
-        },
-        required: [],
-      },
-    },
+    // memory_cycle and recall_memory tools are now provided by memory-service.mjs via MCP
   ],
 }))
 
@@ -1432,622 +1306,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         }
         break
       }
-      case 'memory_cycle': {
-        const mcAction = args.action as string
-        const ws = process.cwd()
-        try {
-          if (mcAction === 'status') {
-            const status = getCycleStatus()
-            result = { content: [{ type: 'text', text: JSON.stringify(status, null, 2) }] }
-          } else if (mcAction === 'sleep') {
-            await sleepCycle(ws)
-            result = { content: [{ type: 'text', text: 'Memory cycle completed.' }] }
-          } else if (mcAction === 'flush') {
-            await memoryFlush(ws, { maxDays: (args.maxDays as number) ?? 1 })
-            result = { content: [{ type: 'text', text: 'Memory flush completed.' }] }
-          } else if (mcAction === 'rebuild') {
-            await rebuildRecent(ws, { maxDays: (args.maxDays as number) ?? 2 })
-            result = { content: [{ type: 'text', text: 'Memory rebuild completed.' }] }
-          } else if (mcAction === 'prune') {
-            await pruneToRecent(ws, { maxDays: (args.maxDays as number) ?? 5 })
-            result = { content: [{ type: 'text', text: 'Memory prune completed.' }] }
-          } else if (mcAction === 'cycle1') {
-            const c1result = await runCycle1(ws, config)
-            result = { content: [{ type: 'text', text: `Cycle1 completed: ${JSON.stringify(c1result)}` }] }
-          } else {
-            result = { content: [{ type: 'text', text: `unknown memory action: ${mcAction}` }], isError: true }
-          }
-        } catch (e: unknown) {
-          result = { content: [{ type: 'text', text: `memory_cycle error: ${e instanceof Error ? e.message : String(e)}` }], isError: true }
-        }
-        break
-      }
-      case 'recall_memory': {
-        const mode = String(args.mode ?? 'search')
-        const query = String(args.query ?? '')
-        const typeFilter = String(args.type ?? 'all')
-        const limit = Number(args.limit ?? 5)
-        const includeSource = Boolean(args.source ?? false)
-        const contextArg = args.context as string | number | undefined
-        const debug = Boolean(args.debug)
-        const trace = Boolean(args.trace)
-        const metadataFilters = {
-          memory_kind: args.memory_kind as string | undefined,
-          task_status: args.task_status as string | undefined,
-          source_type: args.source_type as string | undefined,
-          session_id: args.session_id as string | undefined,
-        }
-        const useCompact = args.compact !== false // default true
-
-        const addUtcDays = (value: Date, days: number) => {
-          const next = new Date(value)
-          next.setDate(next.getDate() + days)
-          return next
-        }
-        const monthRange = (value: string) => {
-          const match = String(value).trim().match(/^(\d{4})-(\d{2})$/)
-          if (!match) return null
-          const year = Number(match[1])
-          const month = Number(match[2])
-          if (!Number.isFinite(year) || !Number.isFinite(month) || month < 1 || month > 12) return null
-          const start = `${match[1]}-${match[2]}-01`
-          const nextMonth = month === 12 ? { year: year + 1, month: 1 } : { year, month: month + 1 }
-          const endDate = new Date(Date.UTC(nextMonth.year, nextMonth.month - 1, 1))
-          endDate.setUTCDate(endDate.getUTCDate() - 1)
-          return { start, end: endDate.toISOString().slice(0, 10) }
-        }
-
-        // ── Parse timerange (common for all modes) ──
-        const timerangeArg = args.timerange as string | undefined
-        let trStart: string | null = null
-        let trEnd: string | null = null
-        if (timerangeArg) {
-          const now = new Date()
-          const localDate = (value: Date) => {
-            const year = value.getFullYear()
-            const month = String(value.getMonth() + 1).padStart(2, '0')
-            const day = String(value.getDate()).padStart(2, '0')
-            return `${year}-${month}-${day}`
-          }
-          const today = localDate(now)
-          const weekdayOffset = (now.getDay() + 6) % 7
-          const weekStart = localDate(addUtcDays(now, -weekdayOffset))
-          const lastWeekStart = localDate(addUtcDays(now, -(weekdayOffset + 7)))
-          const lastWeekEnd = localDate(addUtcDays(now, -(weekdayOffset + 1)))
-          const daysAgo = (n: number) => localDate(addUtcDays(now, -n))
-          const normalizedTimerange = String(timerangeArg).trim().toLowerCase()
-
-          const dMatch = normalizedTimerange.match(/^(\d+)d$/)
-          const wMatch = normalizedTimerange.match(/^(\d+)w$/)
-          const rangeMatch = normalizedTimerange.match(/^(\d{4}-\d{2}-\d{2})~(\d{4}-\d{2}-\d{2})$/)
-          const dateMatch = normalizedTimerange.match(/^(\d{4}-\d{2}-\d{2})$/)
-          const monthMatch = monthRange(normalizedTimerange)
-
-          if (dMatch) {
-            trStart = daysAgo(Number(dMatch[1]))
-            trEnd = today
-          } else if (wMatch) {
-            trStart = daysAgo(Number(wMatch[1]) * 7)
-            trEnd = today
-          } else if (normalizedTimerange === 'today' || normalizedTimerange === '오늘') {
-            trStart = today
-            trEnd = today
-          } else if (normalizedTimerange === 'yesterday' || normalizedTimerange === '어제') {
-            trStart = daysAgo(1)
-            trEnd = daysAgo(1)
-          } else if (normalizedTimerange === 'this-week' || normalizedTimerange === 'this week' || normalizedTimerange === 'this_week' || normalizedTimerange === '이번주' || normalizedTimerange === '이번 주') {
-            trStart = weekStart
-            trEnd = today
-          } else if (normalizedTimerange === 'last-week' || normalizedTimerange === 'last week' || normalizedTimerange === 'last_week' || normalizedTimerange === '지난주' || normalizedTimerange === '지난 주') {
-            trStart = lastWeekStart
-            trEnd = lastWeekEnd
-          } else if (rangeMatch) {
-            trStart = rangeMatch[1]
-            trEnd = rangeMatch[2]
-          } else if (monthMatch) {
-            trStart = monthMatch.start
-            trEnd = monthMatch.end
-          } else if (dateMatch) {
-            trStart = dateMatch[1]
-            trEnd = dateMatch[1]
-          }
-        }
-
-        const queryLower = query.toLowerCase().trim()
-        const ftsQuery = query.replace(/['"*\-(){}[\]^~:]/g, ' ').replace(/\b(OR|AND|NOT|NEAR)\b/gi, '').trim()
-        const filterRowsByMetadata = async (rows: Array<Record<string, unknown>>): Promise<Array<Record<string, unknown>>> => {
-          return await memoryStore.applyMetadataFilters(rows, metadataFilters) as Array<Record<string, unknown>>
-        }
-        const buildSourceParts = (row: Record<string, unknown>) => {
-          return [
-            row.source_ref ? String(row.source_ref) : null,
-            row.source_ts ? `ts:${String(row.source_ts)}` : null,
-            row.source_kind ? `kind:${String(row.source_kind)}` : null,
-            row.source_backend ? `backend:${String(row.source_backend)}` : null,
-          ].filter(Boolean) as string[]
-        }
-        const formatEpisodeLine = (ep: Record<string, unknown>, marker = ' ') => {
-          const role = useCompact ? (ep.role === 'user' ? 'u' : ep.role === 'assistant' ? 'a' : ep.role) : ep.role
-          const ts = useCompact ? String(ep.ts ?? '').replace(/:\d{2}\.\d+/, '') : String(ep.ts ?? '')
-          const sourceParts = includeSource ? buildSourceParts(ep) : []
-          const sourceSuffix = sourceParts.length > 0 ? ` [source ${sourceParts.join(' | ')}]` : ''
-          const markerPrefix = marker && marker !== ' ' ? `${marker}` : ''
-          return `${markerPrefix}[${ts}] ${role}: ${String(ep.content ?? '')}${sourceSuffix}`
-        }
-        const inferredIntent = query
-          ? await memoryStore.classifyQueryIntent(query)
-          : { primary: 'decision', scores: {} as Record<string, number> }
-
-        let effectiveMode = mode
-        let effectiveType = typeFilter
-        if (mode === 'search' && typeFilter === 'all' && query) {
-          if (inferredIntent.primary === 'event' || (trStart && trEnd && inferredIntent.primary === 'history')) {
-            effectiveMode = 'episodes'
-            effectiveType = 'episodes'
-          } else if (inferredIntent.primary === 'task') {
-            effectiveMode = 'tasks'
-            effectiveType = 'tasks'
-          } else if (inferredIntent.primary === 'profile') {
-            effectiveMode = 'profile'
-            effectiveType = 'profiles'
-          } else if (inferredIntent.primary === 'policy' || inferredIntent.primary === 'security') {
-            effectiveMode = 'policy'
-            effectiveType = 'facts'
-          }
-        }
-
-        const formatDirectRows = (rows: Array<Record<string, unknown>>) => {
-          if (rows.length === 0) return '(no matching memories found)'
-          return rows.map(row => {
-            const ts = String(row.last_seen ?? row.updated_at ?? row.ts ?? '').trim()
-            const content = String(row.content ?? row.text ?? row.value ?? row.title ?? '').trim()
-            const type = String(row.type ?? '')
-            const subtype = String(row.subtype ?? '')
-            const confidence = row.confidence ?? row.score ?? row.quality_score
-            const sourceParts = buildSourceParts(row)
-            const meta = [
-              type,
-              subtype,
-              confidence != null ? `conf:${Number(confidence).toFixed(2)}` : null,
-            ].filter(Boolean).join(', ')
-            const source = includeSource && sourceParts.length > 0 ? ` [source ${sourceParts.join(' | ')}]` : ''
-            return `[${ts}] ${content} (${meta})${source}`
-          }).join('\n')
-        }
-
-        const loadProfileRows = async () => {
-          return filterRowsByMetadata(memoryStore.getProfileRecallRows(query, limit) as Array<Record<string, unknown>>)
-        }
-
-        const loadPolicyRows = async () => {
-          const hybrid = await memoryStore.searchRelevantHybrid(query || '', limit, {
-            intent: { primary: 'policy', scores: {} },
-            filters: metadataFilters,
-            recordRetrieval: false,
-          })
-          const rows = Array.isArray(hybrid) ? hybrid : ((hybrid as { results?: Array<Record<string, unknown>> })?.results ?? [])
-          return filterRowsByMetadata(rows as Array<Record<string, unknown>>)
-        }
-
-        const loadEntityRows = async () => {
-          return filterRowsByMetadata(memoryStore.getEntityRecallRows(query, limit) as Array<Record<string, unknown>>)
-        }
-
-        const loadRelationRows = async () => {
-          return filterRowsByMetadata(memoryStore.getRelationRecallRows(query, limit) as Array<Record<string, unknown>>)
-        }
-
-        const loadDirectTypeRows = async (kind: string) => {
-          if (kind === 'profiles') return await loadProfileRows()
-          if (kind === 'entities') return await loadEntityRows()
-          if (kind === 'relations') return await loadRelationRows()
-          if (kind === 'facts') return await loadPolicyRows()
-          return []
-        }
-
-        // ── mode: verify ──
-        if (effectiveMode === 'verify') {
-          if (!query) {
-            result = { content: [{ type: 'text', text: '(query required for verify mode)' }], isError: true }
-            break
-          }
-          try {
-            const verifyLimit = Math.min(limit, 3)
-            const { embedText: embedFn } = await import('./lib/embedding-provider.mjs')
-            const vector = await embedFn(query)
-            const matches = await memoryStore.verifyMemoryClaim(query, {
-              limit: verifyLimit,
-              queryVector: vector,
-              ftsQuery,
-            }) as Array<Record<string, unknown>>
-
-            const best = matches[0]
-            if (!best || !best.accepted) {
-              result = {
-                content: [{
-                  type: 'text',
-                  text: JSON.stringify({
-                    matched: false,
-                    fact: null,
-                    query,
-                    best_candidate: best
-                      ? {
-                          fact: best.text ?? best.content ?? '',
-                          confidence: Number(best.confidence ?? best.similarity ?? 0).toFixed(2),
-                          lexical_overlap: Number(best.lexical_overlap ?? 0).toFixed(2),
-                          verify_score: Number(best.verify_score ?? 0).toFixed(2),
-                        }
-                      : null,
-                  }),
-                }],
-              }
-            } else {
-              result = {
-                content: [{
-                  type: 'text',
-                  text: JSON.stringify({
-                    matched: true,
-                    fact: best.text ?? best.content ?? '',
-                    mention_count: best.mention_count ?? 0,
-                    last_seen: best.last_seen ?? null,
-                    confidence: Number(best.confidence ?? best.similarity ?? 0).toFixed(2),
-                    lexical_overlap: Number(best.lexical_overlap ?? 0).toFixed(2),
-                    verify_score: Number(best.verify_score ?? 0).toFixed(2),
-                    status: best.status ?? 'active',
-                    all_matches: matches.map(m => ({
-                      fact: m.text ?? m.content ?? '',
-                      mention_count: m.mention_count ?? 0,
-                      confidence: Number(m.confidence ?? m.similarity ?? 0).toFixed(2),
-                      lexical_overlap: Number(m.lexical_overlap ?? 0).toFixed(2),
-                      verify_score: Number(m.verify_score ?? 0).toFixed(2),
-                    })),
-                  }),
-                }],
-              }
-            }
-          } catch (e: unknown) {
-            result = { content: [{ type: 'text', text: `verify error: ${e instanceof Error ? e.message : String(e)}` }], isError: true }
-          }
-          break
-        }
-
-        // ── mode: episodes ──
-        if (effectiveMode === 'episodes') {
-          try {
-            // No query and no timerange → return latest N episodes
-            if (!query && !(trStart && trEnd)) {
-              const latestEpisodes = memoryStore.db.prepare(`
-                SELECT id, ts, day_key, role, kind, content, source_ref, backend AS source_backend
-                FROM episodes
-                WHERE kind IN ('message', 'turn')
-                ORDER BY ts DESC
-                LIMIT ?
-              `).all(limit) as Array<Record<string, unknown>>
-              if (latestEpisodes.length === 0) {
-                result = { content: [{ type: 'text', text: '(no episodes found)' }] }
-              } else {
-                const lines = latestEpisodes.map(ep => formatEpisodeLine(ep))
-                result = { content: [{ type: 'text', text: lines.join('\n') }] }
-              }
-              break
-            }
-
-            // Default to last 3 days if no timerange specified
-            let startDate: string, endDate: string
-            if (trStart && trEnd) {
-              startDate = trStart
-              endDate = trEnd
-            } else {
-              const now = new Date()
-              const kst = new Date(now.getTime() + 9 * 60 * 60 * 1000)
-              endDate = kst.toISOString().slice(0, 10)
-              startDate = new Date(kst.getTime() - 3 * 86400000).toISOString().slice(0, 10)
-            }
-
-            const { embedText: embedFn } = await import('./lib/embedding-provider.mjs')
-            const vector = query ? await embedFn(query) : []
-            const episodes = await memoryStore.getEpisodeRecallRows({
-              query,
-              startDate,
-              endDate,
-              limit,
-              queryVector: vector,
-              ftsQuery,
-              includeTranscripts: debug || metadataFilters.source_type === 'transcript',
-            }) as Array<Record<string, unknown>>
-
-            if (episodes.length === 0) {
-              result = { content: [{ type: 'text', text: '(no episodes found in date range)' }] }
-            } else {
-              const lines = episodes.map(ep => formatEpisodeLine(ep))
-              const contextBlocks: string[] = []
-
-              if (query && contextArg !== undefined) {
-                for (const matched of episodes) {
-                  const matchedId = Number(matched.id ?? matched.entity_id ?? 0)
-                  if (!matchedId || !matched.day_key) continue
-                  const dayEpisodes = memoryStore.getEpisodesForDate(String(matched.day_key), {
-                    includeTranscripts: debug || metadataFilters.source_type === 'transcript',
-                  })
-                    .map((ep: Record<string, unknown>) => ({
-                      ...ep,
-                      day_key: matched.day_key,
-                      source_ref: matched.source_ref ?? null,
-                      source_backend: matched.source_backend ?? null,
-                    }))
-                  if (contextArg === 'semantic') {
-                    const plan = await buildSemanticDayPlan(dayEpisodes)
-                    const idx = plan.rows.findIndex((row: Record<string, unknown>) => Number(row.id) === matchedId)
-                    if (idx >= 0) {
-                      const seg = plan.segments.find((s: { start: number; end: number }) => idx >= s.start && idx <= s.end)
-                      if (seg) {
-                        contextBlocks.push(`--- context (semantic, ${matched.day_key}) ---`)
-                        for (let i = seg.start; i <= seg.end; i += 1) {
-                          const row = dayEpisodes.find((ep: Record<string, unknown>) => Number(ep.id) === Number(plan.rows[i]?.id))
-                          if (!row) continue
-                          contextBlocks.push(formatEpisodeLine(row, Number(row.id) === matchedId ? '*' : ' '))
-                        }
-                      }
-                    }
-                  } else {
-                    const n = Math.max(1, Number(contextArg))
-                    const matchIdx = dayEpisodes.findIndex((ep: Record<string, unknown>) => Number(ep.id) === matchedId)
-                    if (matchIdx >= 0) {
-                      const start = Math.max(0, matchIdx - n)
-                      const end = Math.min(dayEpisodes.length - 1, matchIdx + n)
-                      contextBlocks.push(`--- context (±${n}, ${matched.day_key}) ---`)
-                      for (let i = start; i <= end; i += 1) {
-                        contextBlocks.push(formatEpisodeLine(dayEpisodes[i], i === matchIdx ? '*' : ' '))
-                      }
-                    }
-                  }
-                }
-              }
-
-              const output = contextBlocks.length > 0
-                ? `--- matches ---\n${lines.join('\n')}\n\n${contextBlocks.join('\n')}`
-                : lines.join('\n')
-              result = { content: [{ type: 'text', text: output }] }
-            }
-          } catch (e: unknown) {
-            result = { content: [{ type: 'text', text: `episodes error: ${e instanceof Error ? e.message : String(e)}` }], isError: true }
-          }
-          break
-        }
-
-        // ── mode: bulk ──
-        if (effectiveMode === 'bulk') {
-          const hints = args.hints as string[] | undefined
-          if (!Array.isArray(hints) || hints.length === 0) {
-            result = { content: [{ type: 'text', text: '(hints array required for bulk mode)' }], isError: true }
-            break
-          }
-          try {
-            const { embedText: embedFn } = await import('./lib/embedding-provider.mjs')
-            const summary = await memoryStore.bulkVerifyHints(hints, { embedFn }) as Record<string, unknown>
-            result = { content: [{ type: 'text', text: JSON.stringify(summary, null, useCompact ? 0 : 2) }] }
-          } catch (e: unknown) {
-            result = { content: [{ type: 'text', text: `bulk error: ${e instanceof Error ? e.message : String(e)}` }], isError: true }
-          }
-          break
-        }
-
-        if (effectiveMode === 'tasks') {
-          try {
-            const tasks = await filterRowsByMetadata(await memoryStore.getPriorityTasks(query, { limit }) as Array<Record<string, unknown>>)
-            memoryStore.recordRetrieval(tasks)
-            const rows = tasks.map((task: { stage?: string; title?: string; details?: string; confidence?: number; last_seen?: string }) => ({
-              type: 'task',
-              subtype: task.stage,
-              status: (task as { status?: string }).status,
-              content: `${task.title}${task.details ? ` — ${task.details}` : ''}`,
-              confidence: task.confidence,
-              last_seen: task.last_seen,
-            }))
-            result = { content: [{ type: 'text', text: formatDirectRows(rows) }] }
-          } catch (e: unknown) {
-            result = { content: [{ type: 'text', text: `tasks error: ${e instanceof Error ? e.message : String(e)}` }], isError: true }
-          }
-          break
-        }
-
-        if (effectiveMode === 'policy') {
-          try {
-            const rows = await loadPolicyRows()
-            memoryStore.recordRetrieval(rows)
-            result = { content: [{ type: 'text', text: formatDirectRows(rows) }] }
-          } catch (e: unknown) {
-            result = { content: [{ type: 'text', text: `policy error: ${e instanceof Error ? e.message : String(e)}` }], isError: true }
-          }
-          break
-        }
-
-        if (effectiveMode === 'profile') {
-          try {
-            const rows = await loadProfileRows()
-            memoryStore.recordRetrieval(rows)
-            result = { content: [{ type: 'text', text: formatDirectRows(rows) }] }
-          } catch (e: unknown) {
-            result = { content: [{ type: 'text', text: `profile error: ${e instanceof Error ? e.message : String(e)}` }], isError: true }
-          }
-          break
-        }
-
-        // ── mode: search (default — existing behavior) ──
-        // Special query shortcuts for direct DB access
-        if (queryLower === 'all' || queryLower === 'facts' || queryLower === 'episodes' || queryLower === 'profiles' || queryLower === 'tasks' || queryLower === 'signals' || queryLower === 'entities' || queryLower === 'relations') {
-          try {
-            const rows = await filterRowsByMetadata(memoryStore.getRecallShortcutRows(queryLower, limit, { startDate: trStart, endDate: trEnd }) as Array<Record<string, unknown>>)
-
-            if (rows.length === 0) {
-              result = { content: [{ type: 'text', text: `(no ${queryLower} found)` }] }
-            } else {
-              const lines = rows.map(r => {
-                const ts = r.last_seen ?? ''
-                const meta = [r.type as string, r.subtype as string, r.confidence ? `conf:${Number(r.confidence).toFixed(2)}` : null].filter(Boolean).join(', ')
-                return `[${ts}] ${r.content} (${meta})`
-              })
-              result = { content: [{ type: 'text', text: lines.join('\n') }] }
-            }
-          } catch (e: unknown) {
-            result = { content: [{ type: 'text', text: `query error: ${e instanceof Error ? e.message : String(e)}` }], isError: true }
-          }
-          break
-        }
-
-        // Special query: "hints" — fetch current hint context
-        if (queryLower === 'hints') {
-          try {
-            const ctx = await memoryStore.buildInboundMemoryContext('general context check', {})
-            if (!ctx) {
-              result = { content: [{ type: 'text', text: '(no hints generated)' }] }
-            } else {
-              result = { content: [{ type: 'text', text: ctx }] }
-            }
-          } catch (e: unknown) {
-            result = { content: [{ type: 'text', text: `hints error: ${e instanceof Error ? e.message : String(e)}` }], isError: true }
-          }
-          break
-        }
-
-        // Special query: "hint:1,3" — fetch specific hints by index
-        const hintIdxMatch = queryLower.match(/^hint:(\d+(?:,\d+)*)$/)
-        if (hintIdxMatch) {
-          try {
-            const ctx = await memoryStore.buildInboundMemoryContext('general context check', {})
-            if (!ctx) {
-              result = { content: [{ type: 'text', text: '(no hints generated)' }] }
-            } else {
-              const allHints = ctx.split('\n').filter((l: string) => l.startsWith('<hint '))
-              const indices = hintIdxMatch[1].split(',').map(Number)
-              const selected = indices
-                .filter(i => i >= 0 && i < allHints.length)
-                .map(i => allHints[i])
-              result = { content: [{ type: 'text', text: selected.length > 0 ? selected.join('\n') : `(no hints at indices: ${indices.join(',')})` }] }
-            }
-          } catch (e: unknown) {
-            result = { content: [{ type: 'text', text: `hint index error: ${e instanceof Error ? e.message : String(e)}` }], isError: true }
-          }
-          break
-        }
-
-        if (!query) {
-          result = { content: [{ type: 'text', text: '(query required for search mode)' }], isError: true }
-          break
-        }
-
-        if (effectiveType === 'profiles' || effectiveType === 'entities' || effectiveType === 'relations') {
-          try {
-            const directRows = await loadDirectTypeRows(effectiveType)
-            memoryStore.recordRetrieval(directRows)
-            result = { content: [{ type: 'text', text: formatDirectRows(directRows) }] }
-          } catch (e: unknown) {
-            result = { content: [{ type: 'text', text: `search error: ${e instanceof Error ? e.message : String(e)}` }], isError: true }
-          }
-          break
-        }
-
-        const hybrid = await memoryStore.searchRelevantHybrid(query, limit * 2, { debug, trace, filters: metadataFilters })
-        const results = Array.isArray(hybrid) ? hybrid : ((hybrid as { results?: Array<Record<string, unknown>> })?.results ?? [])
-        const debugPayload = !Array.isArray(hybrid) ? (hybrid as { debug?: Record<string, unknown> })?.debug : null
-
-        if (!results || results.length === 0) {
-          result = { content: [{ type: 'text', text: '(no matching memories found)' }] }
-          break
-        }
-
-        // Map memory type names: fact->facts, task->tasks, signal->signals, episode->episodes
-        const typeMap: Record<string, string> = { fact: 'facts', task: 'tasks', signal: 'signals', episode: 'episodes' }
-        const filtered = results
-          .filter((r: Record<string, unknown>) => effectiveType === 'all' || typeMap[r.type as string] === effectiveType || r.type === effectiveType)
-          .slice(0, limit)
-
-        // Context expansion: gather surrounding episodes for each matched episode
-        let contextEpisodes: string[] = []
-        if (contextArg !== undefined) {
-          const episodeResults = filtered.filter((r: Record<string, unknown>) => r.type === 'episode')
-          for (const r of episodeResults) {
-            const matchedId = Number(r.entity_id ?? r.id ?? 0)
-            if (!matchedId) continue
-            const dayKey = memoryStore.getEpisodeDayKey(matchedId)
-            if (!dayKey) continue
-            const dayEpisodes = memoryStore.getEpisodesForDate(dayKey, {
-              includeTranscripts: debug || metadataFilters.source_type === 'transcript',
-            })
-            if (contextArg === 'semantic') {
-              const plan = await buildSemanticDayPlan(dayEpisodes)
-              const idx = plan.rows.findIndex((row: Record<string, unknown>) => Number(row.id) === matchedId)
-              if (idx >= 0) {
-                const seg = plan.segments.find((s: { start: number; end: number }) => idx >= s.start && idx <= s.end)
-                if (seg) {
-                  const startIdx = dayEpisodes.findIndex((e: Record<string, unknown>) => Number(e.id) === Number(plan.rows[seg.start]?.id))
-                  const endIdx = dayEpisodes.findIndex((e: Record<string, unknown>) => Number(e.id) === Number(plan.rows[seg.end]?.id))
-                  if (startIdx >= 0 && endIdx >= 0) {
-                    const slice = dayEpisodes.slice(startIdx, endIdx + 1)
-                    contextEpisodes.push(`--- context (semantic segment, ${dayKey}) ---`)
-                    for (const ep of slice) {
-                      const role = useCompact ? (ep.role === 'user' ? 'u' : 'a') : ep.role
-                      const ts = useCompact ? String(ep.ts ?? '').replace(/:\d{2}\.\d+/, '') : String(ep.ts ?? '')
-                      contextEpisodes.push(`[${ts}] ${role}: ${ep.content}`)
-                    }
-                  }
-                }
-              }
-            } else {
-              const n = Math.max(1, Number(contextArg))
-              const matchIdx = dayEpisodes.findIndex((e: Record<string, unknown>) => Number(e.id) === matchedId)
-              if (matchIdx >= 0) {
-                const start = Math.max(0, matchIdx - n)
-                const end = Math.min(dayEpisodes.length - 1, matchIdx + n)
-                contextEpisodes.push(`--- context (±${n}, ${dayKey}) ---`)
-                for (let i = start; i <= end; i++) {
-                  const ep = dayEpisodes[i]
-                  const role = useCompact ? (ep.role === 'user' ? 'u' : 'a') : ep.role
-                  const ts = useCompact ? String(ep.ts ?? '').replace(/:\d{2}\.\d+/, '') : String(ep.ts ?? '')
-                  const marker = i === matchIdx ? '*' : ' '
-                  contextEpisodes.push(`${marker}[${ts}] ${role}: ${ep.content}`)
-                }
-              }
-            }
-          }
-        }
-
-        const formatted = filtered
-          .map((r: Record<string, unknown>) => {
-            const ts = r.updated_at ?? r.source_ts
-            const date = ts ? new Date(typeof ts === 'number' && ts < 1e12 ? (ts as number) * 1000 : ts as number).toLocaleString() : 'unknown'
-            const meta = [
-              r.type as string,
-              r.subtype ? `subtype:${String(r.subtype)}` : null,
-              r.retrieval_count ? `retrieved:${r.retrieval_count}` : null,
-            ].filter(Boolean).join(', ')
-            let line = `[${date}] ${r.content || r.text || ''} (${meta})`
-            if (includeSource) {
-              const sourceParts = [
-                r.source_ref ? String(r.source_ref) : null,
-                r.source_ts ? `ts:${String(r.source_ts)}` : null,
-                r.source_kind ? `kind:${String(r.source_kind)}` : null,
-                r.source_backend ? `backend:${String(r.source_backend)}` : null,
-              ].filter(Boolean)
-              if (sourceParts.length > 0) {
-                line += `\n  └ source: ${sourceParts.join(' | ')}`
-              }
-            }
-            return line
-          })
-          .join('\n')
-
-        const output = contextEpisodes.length > 0
-          ? `${formatted}\n\n${contextEpisodes.join('\n')}`
-          : formatted
-
-        const finalText = debug && debugPayload
-          ? `${output || '(no matching memories found)'}\n\n--- debug ---\n${JSON.stringify(debugPayload, null, useCompact ? 0 : 2)}`
-          : (output || '(no matching memories found)')
-
-        result = { content: [{ type: 'text', text: finalText }] }
-        break
-      }
+      // memory_cycle — handled by memory-service.mjs MCP
       default:
         result = {
           content: [{ type: 'text', text: `unknown tool: ${toolName}` }],
@@ -2285,7 +1544,7 @@ async function handleInbound(
   // Build memory context first, then send message + context together
   let memoryContextBlock = ''
   try {
-    const memoryContext = await memoryStore.buildInboundMemoryContext(messageBody, {
+    const memoryContext = await memoryGetHints(messageBody, {
       channelId: route.targetChatId,
       userId: msg.userId,
     })
@@ -2310,7 +1569,7 @@ async function handleInbound(
     process.stderr.write(`claude2bot: notification failed: ${e}\n`)
   })
 
-  memoryStore.appendEpisode({
+  void memoryAppendEpisode({
     ts: msg.ts,
     backend: backend.name,
     channelId: route.targetChatId,
@@ -2410,6 +1669,8 @@ function shutdown(): void {
   }
   try { turnEndWatcher.close() } catch {}
   try { controlWorker?.kill() } catch {}
+  try { memServiceProcess.kill() } catch {}
+  try { mlServiceProcess.kill() } catch {}
   void stopOwnedRuntime('process shutdown')
     .catch(() => {})
     .finally(() => {
