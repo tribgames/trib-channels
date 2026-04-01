@@ -15,6 +15,7 @@ import {
 import { spawn } from 'child_process'
 import * as fs from 'fs'
 import * as https from 'https'
+import * as http from 'http'
 import * as os from 'os'
 import * as path from 'path'
 import { loadConfig, createBackend, loadBotConfig, loadProfileConfig, DATA_DIR } from './lib/config.js'
@@ -442,7 +443,6 @@ if (config.webhook?.enabled) {
 }
 
 // ── Hints HTTP endpoint (for UserPromptSubmit hook) ─────────────────
-import * as http from 'http'
 
 const HINTS_PORT_FILE = path.join(os.tmpdir(), 'claude2bot', 'hints-port')
 const hintsServer = http.createServer(async (req, res) => {
