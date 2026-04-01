@@ -25,6 +25,7 @@ import { EventPipeline } from './lib/event-pipeline.js'
 import {
   OutputForwarder,
   discoverSessionBoundTranscript,
+  discoverCurrentClaudeSession,
 } from './lib/output-forwarder.js'
 import { controlClaudeSession } from './lib/session-control.js'
 import { JsonStateFile, ensureDir, removeFileIfExists, writeTextFile, type StatusState } from './lib/state-file.js'
@@ -50,6 +51,7 @@ import {
   writeServerPid,
   clearServerPid,
   RUNTIME_ROOT,
+  readSessionSignal,
 } from './lib/runtime-paths.js'
 import type { InboundMessage } from './backends/types.js'
 import { PLUGIN_ROOT } from './lib/config.js'
@@ -372,6 +374,68 @@ async function rebindTranscriptContext(
   }
 
   return previousPath
+}
+
+// ── Session signal watching ──────────────────────────────────────────
+// SessionStart hook writes a signal file on startup/resume/clear/new
+// (main interactive sessions only). We poll it every second and rebind
+// transcript when a new signal arrives.
+// channelsEnabled tracks whether the parent Claude session was started
+// with --channels or --dangerously-load-development-channels. When false,
+// the output forwarder and inbound notification bridge are disabled
+// (MCP tools like reply/fetch_messages still work).
+let lastSignalTs = 0
+let parentClaudePid: number | null = null
+let channelsBridgeEnabled = true // assume enabled until signal says otherwise
+
+function isChannelsBridgeEnabled(): boolean {
+  return channelsBridgeEnabled
+}
+
+function checkSessionSignal(): void {
+  const signal = readSessionSignal()
+  if (!signal || signal.ts <= lastSignalTs) return
+
+  // Lazily discover parent Claude PID via process tree walk
+  if (parentClaudePid === null) {
+    const session = discoverCurrentClaudeSession()
+    parentClaudePid = session?.pid ?? -1
+  }
+
+  // Only respond to signals from our parent Claude session
+  if (parentClaudePid > 0 && signal.pid !== parentClaudePid) return
+
+  lastSignalTs = signal.ts
+
+  // Update channel bridge state
+  const wasEnabled = channelsBridgeEnabled
+  channelsBridgeEnabled = signal.channelsEnabled !== false
+  if (wasEnabled && !channelsBridgeEnabled) {
+    forwarder.stopWatch()
+    process.stderr.write(`trib-channels: channels disabled — forwarder stopped\n`)
+  } else if (!wasEnabled && channelsBridgeEnabled) {
+    process.stderr.write(`trib-channels: channels enabled — forwarder active\n`)
+  }
+
+  if (!channelsBridgeEnabled) return
+
+  // Wait for transcript file to appear (may lag slightly after /clear)
+  if (!signal.transcriptPath || !fs.existsSync(signal.transcriptPath)) return
+
+  // Already bound to this transcript — skip
+  const currentPath = getPersistedTranscriptPath()
+  if (currentPath === signal.transcriptPath) return
+
+  if (!bridgeRuntimeConnected) return
+
+  const channelId = statusState.read().channelId
+    || config.channelsConfig?.channels?.[config.channelsConfig?.main || 'general']?.id
+    || ''
+  if (!channelId) return
+
+  forwarder.reset()
+  applyTranscriptBinding(channelId, signal.transcriptPath)
+  process.stderr.write(`trib-channels: session signal rebind (${signal.source}): ${signal.transcriptPath}\n`)
 }
 
 // ── Scheduler ──────────────────────────────────────────────────────────
@@ -1414,6 +1478,7 @@ backend.onMessage = (msg) => {
     void refreshBridgeOwnership()
     return
   }
+  if (!isChannelsBridgeEnabled()) return // channel flag off — skip inbound notification
   if (shouldDropDuplicateInbound(msg)) return
   if (!claimChannelOwner(msg.chatId)) return
   const route = resolveInboundRoute(msg.chatId)
@@ -1605,9 +1670,10 @@ claimBridgeOwnership('server start')
 void refreshBridgeOwnership({ restoreBinding: true })
 bridgeOwnershipTimer = setInterval(() => {
   void refreshBridgeOwnership()
+  checkSessionSignal()
 }, 1000)
 
-if (bridgeRuntimeConnected) {
+if (bridgeRuntimeConnected && isChannelsBridgeEnabled()) {
   // Greeting — inject once, then bind forwarder when transcript appears
   const greetingDone = path.join(DATA_DIR, '.greeting-sent')
   const today = new Date().toISOString().slice(0, 10)

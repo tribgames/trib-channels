@@ -18,7 +18,21 @@ export type ActiveInstanceState = {
 export const RUNTIME_ROOT = join(tmpdir(), 'trib-channels')
 export const OWNER_DIR = join(RUNTIME_ROOT, 'owners')
 export const ACTIVE_INSTANCE_FILE = join(RUNTIME_ROOT, 'active-instance.json')
+export const SESSION_SIGNAL_FILE = join(RUNTIME_ROOT, 'session-signal.json')
 export const RUNTIME_STALE_TTL = 24 * 60 * 60 * 1000
+
+export type SessionSignal = {
+  sessionId: string
+  transcriptPath: string
+  pid: number
+  ts: number
+  source: string
+  channelsEnabled: boolean
+}
+
+export function readSessionSignal(): SessionSignal | null {
+  return readJsonFile<SessionSignal | null>(SESSION_SIGNAL_FILE, null)
+}
 
 function sanitize(value: string): string {
   return value.replace(/[^a-zA-Z0-9._-]/g, '_')

@@ -23,6 +23,35 @@ if (_event.isSidechain) process.exit(0);                          // team agents
 if (_event.agentId) process.exit(0);                              // subagents
 if (_event.kind && _event.kind !== 'interactive') process.exit(0); // headless/-p
 
+// Write session signal for MCP server transcript rebinding.
+// Fires on startup, resume, /clear, /new — only for main interactive sessions
+// (sidechains, subagents, non-interactive already filtered above).
+const os = require('os');
+const RUNTIME_ROOT = path.join(os.tmpdir(), 'trib-channels');
+const SIGNAL_FILE = path.join(RUNTIME_ROOT, 'session-signal.json');
+const sessionId = _event.session_id || _event.sessionId;
+const transcriptPath = _event.transcript_path || _event.transcriptPath;
+
+// Detect channel flag from parent Claude process args
+let channelsEnabled = false;
+try {
+  const { execFileSync } = require('child_process');
+  const args = execFileSync('ps', ['-o', 'args=', '-p', String(process.ppid)], { encoding: 'utf8' }).trim();
+  channelsEnabled = args.includes('--channels') || args.includes('--dangerously-load-development-channels');
+} catch {}
+
+try {
+  fs.mkdirSync(RUNTIME_ROOT, { recursive: true });
+  fs.writeFileSync(SIGNAL_FILE, JSON.stringify({
+    sessionId: sessionId || '',
+    transcriptPath: transcriptPath || '',
+    pid: process.ppid,
+    ts: Date.now(),
+    source: _event.source || 'unknown',
+    channelsEnabled,
+  }));
+} catch {}
+
 const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA;
 const LOCAL_FILE = path.join(DATA_DIR, 'settings.local.md');
 const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
