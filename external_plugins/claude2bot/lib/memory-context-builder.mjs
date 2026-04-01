@@ -1,3 +1,6 @@
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { embedText } from './embedding-provider.mjs'
 import { cleanMemoryText } from './memory-extraction.mjs'
 import { buildHintKey, formatHintTag, shouldInjectHint } from './memory-context-utils.mjs'
@@ -248,13 +251,36 @@ export async function buildInboundMemoryContext(store, query, options = {}) {
   // Intent-based episode injection: event/history intents get recent episodes
   if (lines.length === 0 && (intent.primary === 'event' || intent.primary === 'history')) {
     try {
+      // Try temporal parser for precise date extraction
+      let startDate = null
+      let endDate = null
+      try {
+        const mlPort = fs.readFileSync(path.join(os.tmpdir(), 'claude2bot', 'ml-port'), 'utf8').trim()
+        const res = await fetch(`http://localhost:${mlPort}/temporal`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: clean, lang: 'ko' }),
+          signal: AbortSignal.timeout(1000),
+        })
+        const data = await res.json()
+        if (data.parsed?.length > 0) {
+          startDate = data.parsed[0].start
+          endDate = data.parsed[0].end || new Date(new Date(startDate).getTime() + 86400000).toISOString().slice(0, 10)
+        }
+      } catch {}
+
+      // Fallback: recent 2 days if no temporal parse
+      const dateFilter = startDate
+        ? `AND ts >= '${startDate}' AND ts < '${endDate}'`
+        : `AND ts >= datetime('now', '-2 days')`
+
       const recentEpisodes = store.db.prepare(`
         SELECT ts, role, content FROM episodes
         WHERE kind IN ('message', 'turn')
           AND content NOT LIKE 'You are consolidating%'
           AND content NOT LIKE 'You are improving%'
           AND LENGTH(content) BETWEEN 10 AND 500
-          AND ts >= datetime('now', '-2 days')
+          ${dateFilter}
         ORDER BY ts DESC
         LIMIT 5
       `).all()

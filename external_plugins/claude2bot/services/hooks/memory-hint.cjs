@@ -28,7 +28,8 @@ function main() {
           hookSpecificOutput: {
             hookEventName: 'UserPromptSubmit',
             additionalContext: hints
-          }
+          },
+          systemMessage: hints
         }));
       });
     } catch (e) {
