@@ -40,9 +40,9 @@ function main() {
 
         process.stdout.write(JSON.stringify({
           hookSpecificOutput: {
-            permissionDecision: 'deny',
-            reason: 'Auto-memory is disabled when MCP memory system is active. Use recall_memory for retrieval and let memory_cycle handle storage.'
-          }
+            permissionDecision: 'deny'
+          },
+          systemMessage: 'Auto-memory files are blocked. MCP memory system is active — use recall_memory tool for retrieval and memory_cycle for storage. Do not attempt to read or write files under the memory/ directory.'
         }));
         return;
       }
