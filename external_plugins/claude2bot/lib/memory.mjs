@@ -40,16 +40,13 @@ import {
   getIntentTypeCaps,
   getIntentSubtypeBonus,
   shouldKeepRerankItem,
-  computeSourceTrustAdjustment,
   computeSecondStageRerankScore,
-  getSecondStageThreshold,
   compactRetrievalContent,
   collapseClaimSurfaceDuplicates,
 } from './memory-ranking-utils.mjs'
 import {
   buildMemoryQueryPlan,
   isDoneTaskQuery,
-  isOngoingTaskQuery,
   isRelationQuery,
   isRuleQuery,
   parseTemporalHint,
@@ -93,7 +90,7 @@ import {
 } from './memory-maintenance-store.mjs'
 import { buildInboundMemoryContext as buildInboundMemoryContextImpl } from './memory-context-builder.mjs'
 import { DEFAULT_MEMORY_TUNING, mergeMemoryTuning } from './memory-tuning.mjs'
-import { detectDevQueryBias, inferTaskActivity, inferTaskScope, isDevWorkstream } from './memory-dev-utils.mjs'
+import { detectDevQueryBias, inferTaskActivity, inferTaskScope } from './memory-dev-utils.mjs'
 import {
   applyLexicalIntentHints,
   detectProfileQuerySlot,
@@ -102,11 +99,7 @@ import {
   profileKeyForSignal,
   shouldKeepProfileValue,
 } from './memory-profile-utils.mjs'
-import {
-  getConfiguredIntentBoost,
-  getConfiguredTypeBoost,
-  getProfileSlotRankAdjustment,
-} from './memory-score-utils.mjs'
+// memory-score-utils imports removed — scoring consolidated into 3-stage pipeline
 import {
   averageVectors,
   contextualizeEmbeddingInput,
@@ -3545,20 +3538,9 @@ export class MemoryStore {
     const queryTokens = new Set(tokenizeMemoryText(query))
     const queryTokenCount = queryTokens.size
     const tuning = options.tuning ?? this.getRetrievalTuning()
-    const weightConfig = tuning?.weights ?? DEFAULT_MEMORY_TUNING.weights
     const primaryIntent = intent?.primary ?? 'decision'
-    const profileSlot = primaryIntent === 'profile' ? detectProfileQuerySlot(query) : ''
-    const devBiasConfig = tuning?.devBias ?? DEFAULT_MEMORY_TUNING.devBias
-    const devBias = Number(intent?.devBias ?? detectDevQueryBias(query))
-    const isDevQuery = devBias >= Number(devBiasConfig.queryThreshold ?? 0.3)
     const effectiveIntent = options.graphFirst ? 'graph' : primaryIntent
     const includeDoneTasks = isDoneTaskQuery(query)
-    const ongoingTaskQuery = Boolean(options.preferActiveTasks) || isOngoingTaskQuery(query)
-    const explicitRelationQuery = isRelationQuery(query)
-
-    // Entity-filtered retrieval: find matching entities and collect their source episode IDs
-    const scopedEntityIds = new Set(queryEntities.map(item => Number(item.id)).filter(Number.isFinite))
-    const scopedEntityNames = new Set(queryEntities.map(item => String(item.name ?? '').toLowerCase()).filter(Boolean))
 
     const dedupKey = (item) => {
       const entityId = Number(item?.entity_id ?? 0)
@@ -3595,156 +3577,65 @@ export class MemoryStore {
       }
     }
 
+    // --- Stage 2: Relevance (how related is this item to the query?) ---
+    function computeRelevanceScore(item, contentTokens) {
+      // 1. Dense similarity (vector similarity) — strongest signal
+      const denseSim = item.dense_score != null ? Math.abs(Number(item.dense_score)) : 0
+
+      // 2. Lexical overlap (token overlap)
+      const overlapCount = contentTokens.reduce((count, token) => count + (queryTokens.has(token) ? 1 : 0), 0)
+      const overlapRatio = queryTokenCount > 0 ? overlapCount / queryTokenCount : 0
+
+      // 3. Sparse score (FTS BM25) — normalize to 0-1 range
+      const sparseSig = item.sparse_score != null ? Math.min(1, Math.abs(Number(item.sparse_score)) / 10) : 0
+
+      return { relevance: denseSim * 0.50 + overlapRatio * 0.35 + sparseSig * 0.15, overlapCount }
+    }
+
+    // --- Stage 3: Quality (how trustworthy/useful is this item?) ---
+    function computeQualityScore(item) {
+      // 1. Confidence (LLM extraction confidence)
+      const confidence = Number(item.quality_score ?? item.confidence ?? 0.5)
+
+      // 2. Recency (newer = better, 15-day half-life)
+      const ageSeconds = item.updated_at ? Math.max(0, now / 1000 - Number(item.updated_at)) : 0
+      const ageDays = ageSeconds / 86400
+      const recency = Math.exp(-ageDays / 15)
+
+      // 3. Retrieval count (frequently retrieved = useful)
+      const popularity = Math.min(1, Number(item.retrieval_count ?? 0) / 10)
+
+      return confidence * 0.60 + recency * 0.30 + popularity * 0.10
+    }
+
+    const RELEVANCE_WEIGHT = 0.75
+    const QUALITY_WEIGHT = 0.25
+
     const scored = [...merged.values()]
       .map(item => {
-        const sparse = item.sparse_score ?? 0
-        const dense = item.dense_score ?? 0
-        const ageSeconds = item.updated_at ? Math.max(0, now / 1000 - Number(item.updated_at)) : 0
-        // Ebbinghaus-inspired decay: rapid initial forgetting, then plateau
-        // R = e^(-t/S) where S scales with retrieval_count (spaced repetition)
-        const ageDays = ageSeconds / 86400
-        const recencyCfg = weightConfig.recency ?? DEFAULT_MEMORY_TUNING.weights.recency
-        const overlapCfg = weightConfig.overlap ?? DEFAULT_MEMORY_TUNING.weights.overlap
-        const retrievalCfg = weightConfig.retrieval ?? DEFAULT_MEMORY_TUNING.weights.retrieval
-        const focusCfg = weightConfig.focus ?? DEFAULT_MEMORY_TUNING.weights.focus
-        const qualityCfg = weightConfig.quality ?? DEFAULT_MEMORY_TUNING.weights.quality
-        const densityCfg = weightConfig.densityPenalty ?? DEFAULT_MEMORY_TUNING.weights.densityPenalty
-        const entityCfg = weightConfig.entityBoost ?? DEFAULT_MEMORY_TUNING.weights.entityBoost
-        const doneTaskCfg = weightConfig.doneTask ?? DEFAULT_MEMORY_TUNING.weights.doneTask
-        const taskStageCfg = weightConfig.taskStagePenalty ?? DEFAULT_MEMORY_TUNING.weights.taskStagePenalty
-        const relationCfg = weightConfig.relationPenalty ?? DEFAULT_MEMORY_TUNING.weights.relationPenalty
-        const stabilityFactor = 1 + Math.min(Number(recencyCfg.maxRetrievalFactor ?? 5), Number(item.retrieval_count ?? 0)) * Number(recencyCfg.stabilityStep ?? 0.8)
-        const recencyPenalty = Math.min(
-          Number(recencyCfg.maxPenalty ?? 0.4),
-          (1 - Math.exp(-ageDays / (stabilityFactor * Number(recencyCfg.windowDays ?? 15)))) * Number(recencyCfg.maxPenalty ?? 0.4),
-        )
         const contentTokens = tokenizeMemoryText(`${item.subtype ?? ''} ${item.content}`)
-        const overlapCount = contentTokens.reduce((count, token) => count + (queryTokens.has(token) ? 1 : 0), 0)
-        const overlapRatio = queryTokenCount > 0 ? overlapCount / queryTokenCount : 0
-        const overlapCap =
-          isPolicyIntent(primaryIntent) ? Number(overlapCfg.policyMax ?? 0.42) :
-          (primaryIntent === 'event' || primaryIntent === 'history') ? Number(overlapCfg.historyMax ?? 0.34) :
-          Number(overlapCfg.defaultMax ?? 0.26)
-        const overlapBoost =
-          overlapCount > 0
-            ? -Math.min(overlapCap, overlapRatio * overlapCap)
-            : 0
-        const retrievalBoost = -Math.min(Number(retrievalCfg.maxBoost ?? 0.08), Number(item.retrieval_count ?? 0) * Number(retrievalCfg.step ?? 0.01))
-        const focusBoost =
-          primaryIntent === 'task' || primaryIntent === 'decision'
-            ? -Math.min(Number(focusCfg.maxBoost ?? 0.14), Math.max(0, Number(item.focus_similarity ?? 0)) * Number(focusCfg.multiplier ?? 0.12))
-            : 0
-        const qualityBoost =
-          item.type === 'fact' || item.type === 'task' || item.type === 'relation' || item.type === 'proposition'
-            ? -Math.min(Number(qualityCfg.strongMax ?? 0.12), Math.max(0, Number(item.quality_score ?? 0.5) - 0.5) * Number(qualityCfg.strongMultiplier ?? 0.3))
-            : item.type === 'signal' || item.type === 'profile' || item.type === 'entity'
-              ? -Math.min(Number(qualityCfg.lightMax ?? 0.08), Math.max(0, Number(item.quality_score ?? 0.5) - 0.5) * Number(qualityCfg.lightMultiplier ?? 0.2))
-              : 0
-        const typeBoost = getConfiguredTypeBoost(item, tuning)
-        let intentBoost = getConfiguredIntentBoost(primaryIntent, item, tuning)
-        if (primaryIntent === 'task' && ongoingTaskQuery && item.type === 'task' && String(item.stage ?? '').toLowerCase() === 'planned') {
-          intentBoost += Number(tuning?.taskSeed?.ongoingQuery?.plannedPenalty ?? DEFAULT_MEMORY_TUNING.taskSeed.ongoingQuery.plannedPenalty)
-        }
-        const profileSlotBoost =
-          primaryIntent === 'profile'
-            ? getProfileSlotRankAdjustment(profileSlot, item)
-            : 0
-        const densityPenalty =
-          item.type === 'signal' && overlapCount === 0 ? Number(densityCfg.signalNoOverlap ?? 0.12) :
-          item.type === 'episode' && overlapCount === 0 ? Number(densityCfg.episodeNoOverlap ?? 0.10) :
-          0
-        // Entity boost: items linked to a matching entity get a score boost
-        const entityBoost =
-          scopedEntityIds.size > 0
-            ? (
-                item.type === 'entity' && scopedEntityIds.has(Number(item.entity_id)) ? Number(entityCfg.entityMatch ?? -0.28) :
-                item.type === 'relation' && [...scopedEntityNames].some(name => String(item.content ?? '').toLowerCase().includes(name)) ? Number(entityCfg.relationMatch ?? -0.24) :
-                item.scoped_entity_id && scopedEntityIds.has(Number(item.scoped_entity_id)) ? Number(entityCfg.scopedMatch ?? -0.26) :
-                0
-              )
-            : 0
-        const sourceTrustBoost = computeSourceTrustAdjustment(item, effectiveIntent)
-        const doneTaskBoost =
-          item.type === 'task'
-            ? (
-                includeDoneTasks && item.status === 'done' ? Number(doneTaskCfg.doneBoost ?? -0.42) :
-                includeDoneTasks && (item.status === 'active' || item.status === 'in_progress') ? Number(doneTaskCfg.activePenalty ?? 0.28) :
-                0
-              )
-            : 0
-        const taskStagePenalty =
-          item.type === 'task'
-            ? (
-                item.stage === 'planned' ? Number(taskStageCfg.planned ?? 0.12) :
-                item.stage === 'investigating' ? Number(taskStageCfg.investigating ?? 0.06) :
-                item.stage === 'implementing' ? Number(taskStageCfg.implementing ?? -0.03) :
-                item.stage === 'wired' ? Number(taskStageCfg.wired ?? -0.02) :
-                item.stage === 'verified' ? Number(taskStageCfg.verified ?? -0.01) :
-                0
-              )
-            : 0
-        const relationPenalty =
-          !explicitRelationQuery && (item.type === 'relation' || item.type === 'entity')
-            ? Number(relationCfg.default ?? 0.12)
-            : 0
-        const devWorkstreamPenalty =
-          item.workstream
-            ? (
-                isDevQuery && isDevWorkstream(item.workstream, item.content)
-                  ? -Number(devBiasConfig.workstreamBoost ?? 0.2)
-                  : (!isDevQuery && isDevWorkstream(item.workstream, item.content)
-                      ? Number(devBiasConfig.generalSuppress ?? 0.6)
-                      : 0)
-              )
-            : 0
-        // Cross-lingual dense boost: strong vector similarity gets extra weight
-        // dense_score sign: more negative = more similar (KNN distance)
-        const denseBoost = (item.dense_score != null && Number(item.dense_score) < -0.25)
-          ? -Math.min(0.35, Math.abs(Number(item.dense_score)) * 0.5)
-          : 0
+        const { relevance, overlapCount } = computeRelevanceScore(item, contentTokens)
+        const quality = computeQualityScore(item)
+        const weighted_score = -(relevance * RELEVANCE_WEIGHT + quality * QUALITY_WEIGHT)
         return {
           ...item,
           content: compactRetrievalContent(item),
           overlapCount,
-          weighted_score: sparse + dense + recencyPenalty + typeBoost + intentBoost + profileSlotBoost + overlapBoost + retrievalBoost + focusBoost + qualityBoost + densityPenalty + entityBoost + sourceTrustBoost + doneTaskBoost + taskStagePenalty + relationPenalty + devWorkstreamPenalty + denseBoost,
+          relevance,
+          quality,
+          weighted_score,
         }
       })
-    const positiveCoreMatches = scored.filter(item =>
-      Number(item.overlapCount) > 0 &&
-      (item.type === 'fact' || item.type === 'task'),
-    ).length
-    const hasPositiveOverlap = scored.some(item => Number(item.overlapCount) > 0)
+
     const ranked = collapseClaimSurfaceDuplicates(scored, 'weighted_score')
-      .map(item => {
-        const hasDenseSignal = item.dense_score != null && Number(item.dense_score) < -0.25
-        const overlapAdjustment =
-          Number(item.overlapCount) > 0
-            ? -Math.min(0.2, Number(item.overlapCount) * 0.06)
-            : hasDenseSignal ? 0.06 : (hasPositiveOverlap ? 0.28 : 0.08)
-        return {
-          ...item,
-          weighted_score: Number(item.weighted_score) + overlapAdjustment,
-        }
-      })
-      .filter(item => {
-        if (positiveCoreMatches < 2) return true
-        if (Number(item.overlapCount) > 0) return true
-        if (item.dense_score != null && Number(item.dense_score) < -0.15) return true
-        return item.type === 'signal'
-      })
       .sort((a, b) => Number(a.weighted_score) - Number(b.weighted_score))
 
     const hasCoreResult = ranked.some(item => item.type === 'fact' || item.type === 'task')
     const conciseQuery = queryTokenCount <= 4
     const hasTaskCandidate = ranked.some(item => item.type === 'task')
-    const hasDecisionLikeCore = ranked.some(item =>
-      (item.type === 'fact' && (item.subtype === 'decision' || item.subtype === 'constraint')) ||
-      item.type === 'proposition',
-    )
     const typeCaps = getIntentTypeCaps(effectiveIntent, { hasTaskCandidate, hasCoreResult, conciseQuery })
     const typeCounts = new Map()
     const selected = []
-    const rerankThreshold = getSecondStageThreshold(effectiveIntent, tuning?.secondStageThreshold)
     // Ensure core types (fact/task/proposition) are represented in rerank pool
     const sliceSize = Math.max(limit * 4, 20)
     const sliced = ranked.slice(0, sliceSize)
@@ -3753,12 +3644,10 @@ export class MemoryStore {
     const missingCore = ranked.filter(item => coreTypes.has(item.type) && !slicedIds.has(`${item.type}:${item.entity_id ?? item.ref}`)).slice(0, limit)
     const rerankInput = [...sliced, ...missingCore]
     const rerankPool = collapseClaimSurfaceDuplicates(rerankInput, 'rerank_score')
-      .map(item => {
-        return {
-          ...item,
-          rerank_score: Number(item.weighted_score) + getIntentSubtypeBonus(effectiveIntent, item),
-        }
-      })
+      .map(item => ({
+        ...item,
+        rerank_score: Number(item.weighted_score) + getIntentSubtypeBonus(effectiveIntent, item),
+      }))
       .filter(item => shouldKeepRerankItem(effectiveIntent, item, { hasTaskCandidate }))
       .map(item => ({
         ...item,
@@ -3769,23 +3658,9 @@ export class MemoryStore {
           exactDate: parseTemporalHint(query)?.start ?? '',
         }),
       }))
-      .map(item => ({
-        ...item,
-        second_stage_score:
-          effectiveIntent === 'decision' && hasDecisionLikeCore && item.type === 'task'
-            ? Number(item.second_stage_score) + 0.12
-            : Number(item.second_stage_score),
-      }))
       .sort((a, b) => Number(a.second_stage_score) - Number(b.second_stage_score))
 
     for (const item of rerankPool) {
-      const allowByOverlap = Number(item.overlapCount) > 0
-      const allowBySparse =
-        item.sparse_score != null &&
-        Number(item.sparse_score) <= 0 &&
-        (effectiveIntent === 'decision' || effectiveIntent === 'graph' || isPolicyIntent(effectiveIntent) || effectiveIntent === 'event' || effectiveIntent === 'history')
-      const allowByDense = item.dense_score != null && Number(item.dense_score) < -0.25
-      if (Number(item.second_stage_score) > rerankThreshold && !allowByOverlap && !allowBySparse && !allowByDense) continue
       const type = String(item.type)
       const cap = typeCaps.get(type) ?? 2
       const count = typeCounts.get(type) ?? 0
