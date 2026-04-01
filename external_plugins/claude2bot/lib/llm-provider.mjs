@@ -30,7 +30,7 @@ export async function callLLM(prompt, provider, options = {}) {
 }
 
 async function callCodex(prompt, provider, options) {
-  const args = ['exec', '--model', provider.model || 'gpt-5.3-codex-spark']
+  const args = ['exec', '--model', provider.model || 'gpt-5.4']
   if (provider.effort) args.push('-c', `model_reasoning_effort=${provider.effort}`)
   if (provider.fast) args.push('-c', 'service_tier=fast')
   args.push('--skip-git-repo-check', '--json', prompt)

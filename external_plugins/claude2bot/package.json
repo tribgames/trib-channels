@@ -8,7 +8,10 @@
     "start": "npx tsx server.ts",
     "test:memory:cycle1": "node scripts/run-memory-cycle1-regression.mjs",
     "test:memory:cycle2": "node scripts/run-memory-cycle2-regression.mjs",
+    "test:memory:context": "node scripts/run-memory-context-regression.mjs",
     "test:memory:fixture": "node scripts/run-memory-fixture-regression.mjs",
+    "test:memory:gate": "node scripts/run-memory-quality-gate.mjs",
+    "test:memory:live-subset": "node scripts/run-memory-live-subset-regression.mjs",
     "test:memory:snapshots": "node scripts/run-memory-fixture-snapshots.mjs",
     "test:memory:smoke": "node scripts/run-memory-smoke-regression.mjs"
   },

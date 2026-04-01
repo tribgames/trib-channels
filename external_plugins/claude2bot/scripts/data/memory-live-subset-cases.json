@@ -1,0 +1,110 @@
+[
+  {
+    "id": "subset-profile-language",
+    "query": "언어 선호 뭐야",
+    "acceptableIntents": ["profile"],
+    "requireTop1": false,
+    "expectedAny": [
+      { "type": "profile", "subtype": "language" }
+    ]
+  },
+  {
+    "id": "subset-profile-tone",
+    "query": "응답 스타일은 어떻게 잡혀 있어?",
+    "acceptableIntents": ["profile"],
+    "requireTop1": true,
+    "expectedTop1Any": [
+      { "type": "profile", "subtypeAny": ["response_style", "tone"] },
+      { "type": "signal", "subtype": "tone" }
+    ],
+    "expectedAny": [
+      { "type": "profile", "subtypeAny": ["response_style", "tone"] },
+      { "type": "signal", "subtype": "tone" }
+    ]
+  },
+  {
+    "id": "subset-decision-no-profile-md",
+    "query": "프로필 md는 두지 않는 방향이었지?",
+    "acceptableIntents": ["decision", "profile"],
+    "requireTop1": false,
+    "expectedAny": [
+      { "type": "fact", "subtype": "decision", "contentAll": ["프로필", "md"] }
+    ]
+  },
+  {
+    "id": "subset-decision-context-needed",
+    "query": "context.md는 필요하다고 봤지?",
+    "acceptableIntents": ["decision", "history"],
+    "requireTop1": true,
+    "expectedTop1Any": [
+      { "type": "fact", "subtype": "decision", "contentAll": ["context.md", "필요"] }
+    ],
+    "expectedAny": [
+      { "type": "fact", "subtype": "decision", "contentAll": ["context.md", "필요"] }
+    ]
+  },
+  {
+    "id": "subset-preference-efficiency",
+    "query": "장기기억 처리에서 뭘 더 중시해?",
+    "acceptableIntents": ["decision", "profile", "history"],
+    "requireTop1": false,
+    "expectedAny": [
+      { "type": "fact", "subtype": "preference", "contentAll": ["효율성", "성능"] }
+    ]
+  },
+  {
+    "id": "subset-preference-local-time",
+    "query": "시간 정보는 서버 말고 뭘 기준으로 하길 원했지?",
+    "acceptableIntents": ["decision", "profile", "history"],
+    "requireTop1": false,
+    "expectedAny": [
+      { "type": "fact", "subtype": "preference", "contentAny": ["로컬 디바이스 기준", "서버 시간이 아니라 로컬 디바이스 기준"] }
+    ]
+  },
+  {
+    "id": "subset-task-provider-structure",
+    "query": "프로바이더 설정 구조 작업 뭐야",
+    "acceptableIntents": ["task"],
+    "requireTop1": true,
+    "expectedTop1Any": [
+      { "type": "task", "status": "active", "contentAny": ["프로바이더", "설정 구조"] }
+    ],
+    "expectedAny": [
+      { "type": "task", "status": "active", "contentAny": ["프로바이더", "설정 구조"] }
+    ]
+  },
+  {
+    "id": "subset-task-context-format",
+    "query": "context 주입 양식 조사 작업 뭐야",
+    "acceptableIntents": ["task"],
+    "requireTop1": false,
+    "expectedAny": [
+      { "type": "task", "status": "active", "contentAny": ["context", "양식"] }
+    ]
+  },
+  {
+    "id": "subset-task-discord-injection",
+    "query": "Discord 인젝션 노출 검증 작업 있지?",
+    "acceptableIntents": ["task", "decision"],
+    "requireTop1": true,
+    "expectedTop1Any": [
+      { "type": "task", "status": "active", "contentAny": ["Discord", "검증"] }
+    ],
+    "expectedAny": [
+      { "type": "task", "status": "active", "contentAny": ["Discord", "검증"] },
+      { "type": "task", "status": "active", "contentAny": ["Discord", "메시지 인젝션"] }
+    ]
+  },
+  {
+    "id": "subset-task-opensource-memory",
+    "query": "OpenClaw랑 Letta 조사 작업 뭐야",
+    "acceptableIntents": ["task", "decision"],
+    "requireTop1": true,
+    "expectedTop1Any": [
+      { "type": "task", "status": "active", "contentAll": ["OpenClaw", "Letta"] }
+    ],
+    "expectedAny": [
+      { "type": "task", "status": "active", "contentAll": ["OpenClaw", "Letta"] }
+    ]
+  }
+]

@@ -10,6 +10,18 @@
 const fs = require('fs');
 const path = require('path');
 
+// Read hook event from stdin for session filtering
+let _event = {};
+try {
+  const _input = fs.readFileSync(0, 'utf8');
+  if (_input) _event = JSON.parse(_input);
+} catch {}
+
+// Safety filters: only inject context for main interactive sessions
+if (_event.isSidechain) process.exit(0);                          // team agents
+if (_event.agentId) process.exit(0);                              // subagents
+if (_event.kind && _event.kind !== 'interactive') process.exit(0); // headless/-p
+
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || __dirname.replace(/[/\\]hooks$/, '');
 const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA;
 

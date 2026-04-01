@@ -1,9 +1,12 @@
 import { DatabaseSync } from 'node:sqlite'
 import {
   appendFileSync,
+  closeSync,
   existsSync,
   mkdirSync,
+  openSync,
   readFileSync,
+  readSync,
   readdirSync,
   rmSync,
   statSync,
@@ -408,7 +411,10 @@ export class MemoryStore {
     ensureDir(dirname(this.dbPath))
     this.db = new DatabaseSync(this.dbPath, { allowExtension: true })
     this.vecEnabled = false
+    this.readDb = null
+    this._transcriptOffsets = new Map()
     this._loadVecExtension()
+    this._openReadDb()
     this.init()
     this.backfillCanonicalKeys()
     if (this.needsDerivedIndexRebuild()) {
@@ -447,6 +453,28 @@ export class MemoryStore {
     } catch (e) {
       process.stderr.write(`[memory] sqlite-vec load failed: ${e.message}\n`)
     }
+  }
+
+  _openReadDb() {
+    try {
+      const rdb = new DatabaseSync(this.dbPath, { readOnly: true, allowExtension: true })
+      if (sqliteVec) sqliteVec.load(rdb)
+      rdb.exec(`PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 1000;`)
+      this.readDb = rdb
+    } catch (e) {
+      process.stderr.write(`[memory] readDb open failed, falling back to main db: ${e.message}\n`)
+      this.readDb = null
+    }
+  }
+
+  get vecReadDb() {
+    return this.readDb ?? this.db
+  }
+
+  close() {
+    try { this.readDb?.close() } catch {}
+    this.readDb = null
+    try { this.db?.close() } catch {}
   }
 
   async switchEmbeddingModel(config = {}) {
@@ -493,6 +521,9 @@ export class MemoryStore {
         this.db.exec('DROP TABLE IF EXISTS vec_memory')
         const dims = getEmbeddingDims()
         this.db.exec(`CREATE VIRTUAL TABLE vec_memory USING vec0(embedding float[${dims}])`)
+        try { this.readDb?.close() } catch {}
+        this.readDb = null
+        this._openReadDb()
       } catch {}
     }
 
@@ -1740,9 +1771,26 @@ export class MemoryStore {
 
   ingestTranscriptFile(transcriptPath) {
     if (!existsSync(transcriptPath)) return 0
-    const lines = readFileSync(transcriptPath, 'utf8').split('\n').filter(Boolean)
+    const prev = this._transcriptOffsets.get(transcriptPath) ?? { bytes: 0, lineIndex: 0 }
+    let fd = null
+    let lines
+    try {
+      const stat = statSync(transcriptPath)
+      if (stat.size < prev.bytes) {
+        // File was truncated/replaced — reset
+        prev.bytes = 0
+        prev.lineIndex = 0
+      }
+      if (stat.size <= prev.bytes) return 0
+      fd = openSync(transcriptPath, 'r')
+      const buf = Buffer.alloc(stat.size - prev.bytes)
+      readSync(fd, buf, 0, buf.length, prev.bytes)
+      prev.bytes = stat.size
+      lines = buf.toString('utf8').split('\n').filter(Boolean)
+    } catch { return 0 }
+    finally { if (fd != null) closeSync(fd) }
     let count = 0
-    let index = 0
+    let index = prev.lineIndex
     for (const line of lines) {
       index += 1
       try {
@@ -1772,6 +1820,8 @@ export class MemoryStore {
         if (id) count += 1
       } catch { /* skip malformed lines */ }
     }
+    prev.lineIndex = index
+    this._transcriptOffsets.set(transcriptPath, prev)
     return count
   }
 
@@ -3370,7 +3420,7 @@ export class MemoryStore {
     if (this.vecEnabled) {
       try {
         const hex = vecToHex(vector)
-        const knnRows = this.db.prepare(`
+        const knnRows = this.vecReadDb.prepare(`
           SELECT rowid, distance FROM vec_memory WHERE embedding MATCH X'${hex}' ORDER BY distance LIMIT ?
         `).all(limit * 3)
 

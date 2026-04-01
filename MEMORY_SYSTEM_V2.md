@@ -139,10 +139,10 @@ claude2bot의 메모리 시스템을 인간 뇌의 기억 구조를 모방하여
 - MCP instructions의 고정 `Current time` 제거
 
 ### memory-context
-- threshold 0.9+ 확신 높은 것만 자동 주입
-- 0.7~0.9는 recall_memory로 위임
+- type별 composite gate + overlap 기반으로 높은 확신 항목만 자동 주입
+- 낮은 확신 / 타입 불일치 항목은 recall_memory로 위임
 - `<system-reminder>` 태그로 감싸서 터미널 노출 방지 (테스트 필요)
-- 중복 제거: episode kind 필터 + content hash dedup
+- 중복 제거: episode kind 필터(message/turn 기본, transcript는 debug 전용) + content hash dedup
 
 ---
 
@@ -431,6 +431,7 @@ claude2bot의 메모리 시스템을 인간 뇌의 기억 구조를 모방하여
 - 사용자에게 알리지 않고 자율적으로 호출
 - "검색해볼게요" 안내 없이 조용히 검색 → 결과만 자연스럽게 반영
 - query는 핵심 키워드 3~5단어로 짧게
+- history/date recall 기본 소스는 message/turn, transcript는 debug/source_type=transcript에서만 노출
 
 ### memory-context 터미널 노출 대응
 - system-reminder 감싸기 테스트 예정 (코드 반영 완료)

@@ -37,9 +37,9 @@ claude --dangerously-load-development-channels plugin:claude2bot@claude2bot
 
 **Discord bridge** — Messages flow between Discord and Claude Code in real time. Claude's responses are auto-forwarded. Permission buttons let you approve tool use from Discord.
 
-**Memory Summarize** — At a scheduled time (default 03:00), claude2bot summarizes the day's conversation and updates memory via the `memory_cycle` MCP tool.
+**Memory Cycle** — Scheduled cycle jobs extract durable facts, tasks, signals, and propositions into `memory.sqlite`, then refresh `context.md` and retrieval indexes through the `memory_cycle` MCP tool.
 
-**Memory System** — Conversations are stored in `memory.sqlite`, then consolidated into a daily > weekly > monthly > yearly > lifetime chain. Identity, ongoing tasks, interests, and recent activity are rebuilt into session context.
+**Memory System** — claude2bot uses a hybrid local RAG stack: intent routing, sparse + dense retrieval, scoped seed lanes, `recall_memory`, and a compact `context.md` for session bootstrap.
 
 **Scheduler** — Three modes: non-interactive (`claude -p` tasks), interactive (prompt injection into live session), and proactive (frequency-based autonomous conversations).
 
@@ -60,20 +60,23 @@ claude --dangerously-load-development-channels plugin:claude2bot@claude2bot
 - Auto-start on Login
 - Optional add-ons: ngrok, whisper CLI
 
-## Memory Summarize
+## Memory Cycle
 
 ```
-Summarize time (default 03:00)
-  1. Extract user-assistant conversation from transcript
-  2. Generate via claude -p:
-     - daily summary
-     - identity profile (evolves organically)
-     - ongoing tasks
-     - interest keywords
-     - lifetime compressed history
-  3. Roll up: daily > weekly > monthly > yearly > lifetime
-  4. Build context.md (code concat, no AI)
-  5. Restart session with context injected
+Cycle 1 (default: near-real-time)
+  1. Read new message episodes
+  2. Extract durable facts / tasks / signals / propositions
+  3. Update retrieval indexes
+
+Cycle 2 (default: daily)
+  1. Refine stored memories
+  2. Write daily summary + context.md
+  3. Refresh retrieval context
+
+Recall
+  1. `recall_memory` routes queries by intent
+  2. Hybrid retrieval combines sparse + dense + seed lanes
+  3. Source-aware episode lookup is available for verification
 ```
 
 Memory files are stored at `~/.claude/plugins/data/claude2bot-claude2bot/history/`.
@@ -122,13 +125,7 @@ claude --channels plugin:claude2bot@claude2bot
 ```
 history/
   daily/           Daily summaries (never deleted)
-  weekly/          Weekly rollups (max 4)
-  monthly/         Monthly rollups (max 12)
-  yearly/          Yearly rollups (max 3)
-  lifetime.md      Compressed full history
-  identity.md      User profile (forms organically)
-  interests.json   Keyword frequency tracking
-  ongoing.md       Active tasks (cumulative)
+  bot.md           User-maintained bot profile
   context.md       Injected on session start
 ```
 
@@ -136,9 +133,10 @@ history/
 memory.sqlite      Canonical long-term memory store
 ```
 
-**Compression chain**: daily > weekly > monthly > yearly > lifetime
-
-**Fallback chain**: lifetime > yearly > monthly > weekly > daily
+Core tables:
+- `episodes`, `facts`, `tasks`, `signals`, `profiles`, `propositions`
+- `entities`, `relations`, `entity_links`
+- `memory_vectors`, `pending_embeds`, `memory_meta`
 
 ## Requirements
 

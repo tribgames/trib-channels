@@ -265,5 +265,119 @@
         "Implement cycle state file and sequential catch-up execution"
       ]
     }
+  },
+  {
+    "id": "keep-language-and-tone-profiles",
+    "episodes": [
+      {
+        "ts": "2026-03-31T09:35:00.000Z",
+        "role": "user",
+        "kind": "message",
+        "content": "한국어로 답해주고 존댓말로 짧게 말해줘."
+      }
+    ],
+    "llmOutput": {
+      "profiles": [
+        {
+          "key": "language",
+          "value": "한국어",
+          "confidence": 0.95
+        },
+        {
+          "key": "tone",
+          "value": "존댓말",
+          "confidence": 0.92
+        },
+        {
+          "key": "response_style",
+          "value": "짧고 직접적인 답변 선호",
+          "confidence": 0.88
+        }
+      ],
+      "facts": [],
+      "tasks": [],
+      "signals": [
+        {
+          "kind": "language",
+          "value": "한국어 우선 대화",
+          "score": 0.82
+        }
+      ]
+    },
+    "expect": {
+      "profilesInclude": [
+        { "key": "language", "value": "한국어" },
+        { "key": "tone", "value": "존댓말" }
+      ]
+    }
+  },
+  {
+    "id": "drop-pipeline-latency-meta-fact",
+    "episodes": [
+      {
+        "ts": "2026-03-31T09:40:00.000Z",
+        "role": "user",
+        "kind": "message",
+        "content": "전처리/후처리 비용은 작고 실제 병목은 LLM 추론 단계인 것 같아."
+      }
+    ],
+    "llmOutput": {
+      "profiles": [],
+      "facts": [
+        {
+          "type": "fact",
+          "text": "현재 메모리 파이프라인에서 전처리(스키마 가이드/힌트 정규화)와 후처리(JSON 파싱·upsert) 비용은 미미하고, 응답 지연의 실질적 병목은 LLM 추론 단계이다.",
+          "confidence": 0.9
+        }
+      ],
+      "tasks": [],
+      "signals": []
+    },
+    "expect": {
+      "factsExclude": [
+        "응답 지연의 실질적 병목은 LLM 추론 단계이다"
+      ]
+    }
+  },
+  {
+    "id": "drop-provider-schema-meta-fact",
+    "episodes": [
+      {
+        "ts": "2026-03-31T09:40:00.000Z",
+        "role": "user",
+        "kind": "message",
+        "content": "모델 선택은 프로바이더 타입으로 분리하고 CRUD 스키마에 action 필드를 넣을지 검토해보자."
+      }
+    ],
+    "llmOutput": {
+      "profiles": [],
+      "facts": [
+        {
+          "type": "decision",
+          "text": "모델 선택은 프로바이더 타입으로 분리하고 CRUD 스키마에 action 필드를 넣을지 검토한다.",
+          "confidence": 0.91
+        }
+      ],
+      "tasks": [
+        {
+          "title": "메모리 프로바이더 분리와 CRUD 스키마 설계를 검토한다",
+          "details": "provider/model 분리와 action 필드 도입 여부를 설계 차원에서 정리한다.",
+          "stage": "planned",
+          "evidence_level": "claimed",
+          "status": "active",
+          "priority": "normal",
+          "confidence": 0.83
+        }
+      ],
+      "signals": []
+    },
+    "expect": {
+      "factsExclude": [
+        "프로바이더 타입으로 분리하고 CRUD 스키마에 action 필드를 넣을지"
+      ],
+      "tasksInclude": [
+        "메모리 프로바이더 분리와 CRUD 스키마 설계를 검토한다"
+      ]
+    }
   }
 ]

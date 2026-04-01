@@ -29,6 +29,26 @@ function normalize(text) {
   return String(text ?? '').toLowerCase()
 }
 
+function matchesExpectation(item, expected) {
+  if (typeof expected === 'string') {
+    return normalize(item?.content).includes(normalize(expected))
+  }
+  if (!expected || typeof expected !== 'object') return false
+  if (expected.type && String(item?.type ?? '') !== String(expected.type)) return false
+  if (expected.subtype && String(item?.subtype ?? '') !== String(expected.subtype)) return false
+  if (Array.isArray(expected.subtypeAny) && !expected.subtypeAny.includes(String(item?.subtype ?? ''))) return false
+  if (expected.status && String(item?.status ?? '') !== String(expected.status)) return false
+  const content = normalize(item?.content)
+  if (Array.isArray(expected.contentAny) && !expected.contentAny.some(token => content.includes(normalize(token)))) return false
+  if (Array.isArray(expected.contentAll) && !expected.contentAll.every(token => content.includes(normalize(token)))) return false
+  return true
+}
+
+function shouldRequireTop1(testCase, intents = []) {
+  if (typeof testCase.requireTop1 === 'boolean') return testCase.requireTop1
+  return intents.some(intent => ['profile', 'task', 'history', 'event'].includes(intent))
+}
+
 let intentPass = 0
 let hitAt5 = 0
 let hitAt1 = 0
@@ -46,14 +66,14 @@ for (const testCase of cases) {
   const acceptableIntents = new Set([testCase.expectedIntent, ...(testCase.acceptableIntents || [])])
   const intentMatched = acceptableIntents.has(intent.primary)
   if (intentMatched) intentPass += 1
+  const requireTop1 = shouldRequireTop1(testCase, [...acceptableIntents])
 
   const top1Matched = results.length > 0 && (testCase.expectedTop1Any || testCase.expectedAny || []).some(expected =>
-    normalize(results[0]?.content).includes(normalize(expected)),
+    matchesExpectation(results[0], expected),
   )
-  const firstMatchIndex = results.findIndex(item => {
-    const content = normalize(item.content)
-    return (testCase.expectedAny || []).some(expected => content.includes(normalize(expected)))
-  })
+  const firstMatchIndex = results.findIndex(item =>
+    (testCase.expectedAny || []).some(expected => matchesExpectation(item, expected)),
+  )
 
   const hit = firstMatchIndex >= 0
   if (hit) {
@@ -61,7 +81,7 @@ for (const testCase of cases) {
     reciprocalRankSum += 1 / (firstMatchIndex + 1)
   }
   if (top1Matched) hitAt1 += 1
-  if (!intentMatched || !hit || (Array.isArray(testCase.expectedTop1Any) && !top1Matched)) failures += 1
+  if (!intentMatched || !hit || (requireTop1 && !top1Matched)) failures += 1
 
   process.stdout.write(`\n[${testCase.id}]\n`)
   process.stdout.write(`query: ${testCase.query}\n`)

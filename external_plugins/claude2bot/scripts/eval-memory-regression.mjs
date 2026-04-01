@@ -33,6 +33,7 @@ function normalize(text) {
 }
 
 let intentPass = 0
+let hitAt1 = 0
 let hitAt5 = 0
 let reciprocalRankSum = 0
 
@@ -47,16 +48,21 @@ for (const testCase of cases) {
     const content = normalize(item.content)
     return (testCase.expectedAny || []).some(expected => content.includes(normalize(expected)))
   })
+  const top1Matched = results.length > 0 && (testCase.expectedTop1Any || testCase.expectedAny || []).some(expected =>
+    normalize(results[0]?.content).includes(normalize(expected)),
+  )
 
   const hit = firstMatchIndex >= 0
   if (hit) {
     hitAt5 += 1
     reciprocalRankSum += 1 / (firstMatchIndex + 1)
   }
+  if (top1Matched) hitAt1 += 1
 
   process.stdout.write(`\n[${testCase.id}]\n`)
   process.stdout.write(`query: ${testCase.query}\n`)
   process.stdout.write(`intent: ${intent.primary} ${intentMatched ? 'PASS' : `FAIL(expected ${testCase.expectedIntent})`}\n`)
+  process.stdout.write(`hit@1: ${top1Matched ? 'PASS' : 'FAIL'}\n`)
   process.stdout.write(`hit@5: ${hit ? 'PASS' : 'FAIL'}\n`)
   results.forEach((item, index) => {
     process.stdout.write(`${index + 1}. [${item.type}:${item.subtype}] ${String(item.content).slice(0, 160)}\n`)
@@ -66,5 +72,6 @@ for (const testCase of cases) {
 const total = cases.length || 1
 process.stdout.write('\n=== summary ===\n')
 process.stdout.write(`intent_accuracy=${(intentPass / total).toFixed(3)} (${intentPass}/${total})\n`)
+process.stdout.write(`hit_at_1=${(hitAt1 / total).toFixed(3)} (${hitAt1}/${total})\n`)
 process.stdout.write(`hit_at_5=${(hitAt5 / total).toFixed(3)} (${hitAt5}/${total})\n`)
 process.stdout.write(`mrr_at_5=${(reciprocalRankSum / total).toFixed(3)}\n`)

@@ -196,6 +196,9 @@ const BASE_INSTRUCTIONS = [
   'When the user is asking you to remember or verify, always prefer the recall_memory MCP tool over unaided answering.',
   'Pass explicit parameters: mode for strategy; query for the target fact/event/rule unless you are browsing episodes by date only; timerange for time-bounded recall; type only with search; hints only with bulk; source/context only with episodes when trace or surrounding turns are needed.',
   'Search best practice: date-only lookup -> episodes + timerange; event/topic lookup -> episodes + query (+ timerange if known); rule lookup -> verify or policy; current work -> tasks; language/tone/address -> profile.',
+  'Do not automatically call recall_memory at session start. Only recall when the user references past context — e.g. "continue", "last time", "what were we doing", or resumes mid-topic without context.',
+  'When recalled memory conflicts with the current code, config, or observable state, trust the current state. Memory is a reference, not the source of truth.',
+  'When this memory system is active, do not write work state, task progress, or session context to auto-memory files (MEMORY.md). The memory cycle extracts and stores this automatically. Only write stable rules and user preferences to auto-memory when the user explicitly asks to remember.',
   '',
   '## Team Agent Report Format',
   'When reporting team agent activity, use ● prefix:',
@@ -260,13 +263,21 @@ function stopServerTyping(): void {
 
 // ── Stop hook file watch (turn-end signal) ─────────────────────────
 const TURN_END_FILE = getTurnEndPath(INSTANCE_ID)
+const TURN_END_BASENAME = path.basename(TURN_END_FILE)
+const TURN_END_DIR = path.dirname(TURN_END_FILE)
 removeFileIfExists(TURN_END_FILE) // Clean up any stale turn-end marker on startup
-fs.watchFile(TURN_END_FILE, { interval: 500 }, async (curr) => {
-  if (curr.size > 0) {
-    // Turn ended — stop typing + forward final text, then clean up marker
-    stopServerTyping()
-    await forwarder.forwardFinalText()
-    removeFileIfExists(TURN_END_FILE)
+// Watch parent directory (fs.watch is event-driven, ~0ms latency vs 500ms polling)
+const turnEndWatcher = fs.watch(TURN_END_DIR, async (_event, filename) => {
+  if (filename !== TURN_END_BASENAME) return
+  try {
+    const stat = fs.statSync(TURN_END_FILE)
+    if (stat.size > 0) {
+      stopServerTyping()
+      await forwarder.forwardFinalText()
+      removeFileIfExists(TURN_END_FILE)
+    }
+  } catch {
+    // File doesn't exist or was already removed — ignore
   }
 })
 
@@ -1655,11 +1666,25 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
 
         // ── mode: episodes ──
         if (effectiveMode === 'episodes') {
-          if (!query && !(trStart && trEnd)) {
-            result = { content: [{ type: 'text', text: '(episodes mode requires query or timerange)' }], isError: true }
-            break
-          }
           try {
+            // No query and no timerange → return latest N episodes
+            if (!query && !(trStart && trEnd)) {
+              const latestEpisodes = memoryStore.db.prepare(`
+                SELECT id, ts, day_key, role, kind, content, source_ref, backend AS source_backend
+                FROM episodes
+                WHERE kind IN ('message', 'turn')
+                ORDER BY ts DESC
+                LIMIT ?
+              `).all(limit) as Array<Record<string, unknown>>
+              if (latestEpisodes.length === 0) {
+                result = { content: [{ type: 'text', text: '(no episodes found)' }] }
+              } else {
+                const lines = latestEpisodes.map(ep => formatEpisodeLine(ep))
+                result = { content: [{ type: 'text', text: lines.join('\n') }] }
+              }
+              break
+            }
+
             // Default to last 3 days if no timerange specified
             let startDate: string, endDate: string
             if (trStart && trEnd) {
@@ -2336,7 +2361,7 @@ function shutdown(): void {
     clearInterval(bridgeOwnershipTimer)
     bridgeOwnershipTimer = null
   }
-  try { fs.unwatchFile(TURN_END_FILE) } catch {}
+  try { turnEndWatcher.close() } catch {}
   try { controlWorker?.kill() } catch {}
   void stopOwnedRuntime('process shutdown')
     .catch(() => {})

@@ -174,6 +174,7 @@ export class OutputForwarder {
   private userMessageId = ''
   private emoji = ''
   private lastFileSize = 0
+  private readFileSize = 0
   private watchingPath = ''
   private watcher: FSWatcher | null = null
   private idleTimer: ReturnType<typeof setTimeout> | null = null
@@ -182,6 +183,15 @@ export class OutputForwarder {
   private inRecallSequence = false
   private hasSeenAssistant = false
   private sending = false
+  private sendRetryTimer: ReturnType<typeof setTimeout> | null = null
+  private sendQueue: Array<{
+    type: 'text' | 'toolLog'
+    text: string
+    nextFileSize: number
+    bufferText: string
+    preformatted?: boolean
+    skipHashDedup?: boolean
+  }> = []
   private mainSessionId = ''
   private watchDebounce: ReturnType<typeof setTimeout> | null = null
   private turnTextBuffer = ''
@@ -209,11 +219,14 @@ export class OutputForwarder {
       this.mainSessionId = ''
     }
     try {
-      this.lastFileSize = options.replayFromStart
+      const fileSize = options.replayFromStart
         ? 0
         : existsSync(this.transcriptPath) ? statSync(this.transcriptPath).size : 0
+      this.lastFileSize = fileSize
+      this.readFileSize = fileSize
     } catch {
       this.lastFileSize = 0
+      this.readFileSize = 0
     }
   }
 
@@ -228,22 +241,30 @@ export class OutputForwarder {
     if (this.idleTimer) { clearTimeout(this.idleTimer); this.idleTimer = null }
   }
 
-  /** Read new bytes from transcript file since lastFileSize */
-  private readNewLines(): string[] {
-    if (!this.transcriptPath || !existsSync(this.transcriptPath)) return []
+  /** Read new bytes from transcript file since readFileSize */
+  private readNewLines(): { lines: string[]; nextFileSize: number } {
+    if (!this.transcriptPath || !existsSync(this.transcriptPath)) {
+      return { lines: [], nextFileSize: this.readFileSize }
+    }
     let fd: number | null = null
     try {
       const stat = statSync(this.transcriptPath)
-      if (stat.size <= this.lastFileSize) return []
+      if (stat.size <= this.readFileSize) {
+        return { lines: [], nextFileSize: this.readFileSize }
+      }
+      const startOffset = this.readFileSize
 
       fd = openSync(this.transcriptPath, 'r')
-      const buf = Buffer.alloc(stat.size - this.lastFileSize)
-      readSync(fd, buf, 0, buf.length, this.lastFileSize)
-      this.lastFileSize = stat.size
+      const buf = Buffer.alloc(stat.size - startOffset)
+      readSync(fd, buf, 0, buf.length, startOffset)
+      this.readFileSize = stat.size
 
-      return buf.toString('utf8').split('\n').filter(l => l.trim())
+      return {
+        lines: buf.toString('utf8').split('\n').filter(l => l.trim()),
+        nextFileSize: stat.size,
+      }
     } catch {
-      return []
+      return { lines: [], nextFileSize: this.readFileSize }
     } finally {
       if (fd != null) {
         closeSync(fd)
@@ -255,9 +276,9 @@ export class OutputForwarder {
   private lastToolName = ''
   private lastToolFilePath = ''
 
-  /** Extract new assistant text + tool logs from transcript since lastFileSize */
-  private extractNewText(): string {
-    const newLines = this.readNewLines()
+  /** Extract new assistant text + tool logs from transcript since readFileSize */
+  private extractNewText(): { text: string; nextFileSize: number } {
+    const { lines: newLines, nextFileSize } = this.readNewLines()
     let newText = ''
     for (const l of newLines) {
       try {
@@ -354,7 +375,7 @@ export class OutputForwarder {
         }
       } catch {}
     }
-    return newText.trim()
+    return { text: newText.trim(), nextFileSize }
   }
 
   // ── Single-send gate ──────────────────────────────────────────────
@@ -366,77 +387,148 @@ export class OutputForwarder {
     'Waiting for user response.', 'Waiting for user response',
   ])
 
-  private async sendOnce(text: string): Promise<void> {
-    if (!text || !this.channelId) return
-    if (OutputForwarder.SKIP_TEXTS.has(text.trim())) return
-    const formatted = formatForDiscord(text)
-    const hash = createHash('md5').update(formatted).digest('hex')
-    if (this.lastHash === hash) return
-    this.lastHash = hash
-    this.turnTextBuffer = this.turnTextBuffer
-      ? `${this.turnTextBuffer}\n\n${text.trim()}`
-      : text.trim()
-    const chunks = chunk(formatted, 2000)
-    this.sentCount += chunks.length
+  private commitReadProgress(nextFileSize: number): void {
+    if (nextFileSize <= this.lastFileSize) return
+    this.lastFileSize = nextFileSize
     this.persistState()
-    for (const c of chunks) {
-      try { await this.cb.send(this.channelId, c) }
-      catch (err) { process.stderr.write(`claude2bot: send failed: ${err}\n`) }
+  }
+
+  private async deliverQueueItem(item: {
+    text: string
+    nextFileSize: number
+    bufferText: string
+    preformatted?: boolean
+    skipHashDedup?: boolean
+  }): Promise<void> {
+    if (!item.text || !this.channelId) {
+      this.commitReadProgress(item.nextFileSize)
+      return
     }
+    if (!item.skipHashDedup && OutputForwarder.SKIP_TEXTS.has(item.text.trim())) {
+      this.commitReadProgress(item.nextFileSize)
+      return
+    }
+
+    const formatted = item.preformatted ? item.text : formatForDiscord(item.text)
+    const hash = item.skipHashDedup ? '' : createHash('md5').update(formatted).digest('hex')
+    if (!item.skipHashDedup && this.lastHash === hash) {
+      this.commitReadProgress(item.nextFileSize)
+      return
+    }
+
+    const chunks = chunk(formatted, 2000)
+    for (const c of chunks) {
+      await this.cb.send(this.channelId, c)
+    }
+
+    if (!item.skipHashDedup) {
+      this.lastHash = hash
+    }
+    if (item.bufferText.trim()) {
+      this.turnTextBuffer = this.turnTextBuffer
+        ? `${this.turnTextBuffer}\n\n${item.bufferText.trim()}`
+        : item.bufferText.trim()
+    }
+    this.sentCount += chunks.length
+    this.commitReadProgress(item.nextFileSize)
+  }
+
+  private scheduleRetry(): void {
+    if (this.sendRetryTimer) return
+    this.sendRetryTimer = setTimeout(() => {
+      this.sendRetryTimer = null
+      void this.drainQueue()
+    }, 1000)
   }
 
   /** Forward new assistant text to Discord. Returns true if text was sent. */
   async forwardNewText(): Promise<boolean> {
-    if (!this.channelId || this.sending) return false
-    this.sending = true
-    try {
-      const newText = this.extractNewText()
-      if (!newText) {
-        this.persistState()
-        return false
+    if (!this.channelId) return false
+    const { text: newText, nextFileSize } = this.extractNewText()
+    if (!newText) {
+      if (!this.sending && this.sendQueue.length === 0) {
+        this.commitReadProgress(nextFileSize)
       }
-      await this.sendOnce(newText)
-      return true
-    } finally { this.sending = false }
+      return false
+    }
+    this.sendQueue.push({
+      type: 'text',
+      text: newText,
+      nextFileSize,
+      bufferText: newText,
+    })
+    void this.drainQueue()
+    return true
   }
 
   /** Forward tool log line to Discord */
   async forwardToolLog(toolLine: string): Promise<void> {
-    if (!this.channelId || this.sending) return
+    if (!this.channelId) return
+    const { text: newText, nextFileSize } = this.extractNewText()
+    const message = newText
+      ? formatForDiscord(newText) + '\n\n' + toolLine
+      : toolLine
+    this.sendQueue.push({
+      type: 'toolLog',
+      text: message,
+      nextFileSize,
+      bufferText: newText,
+      preformatted: true,
+      skipHashDedup: true,
+    })
+    void this.drainQueue()
+  }
+
+  /** Drain the send queue sequentially. Only one drain loop runs at a time. */
+  private async drainQueue(): Promise<void> {
+    if (this.sending) return
     this.sending = true
     try {
-      // Update reaction to tool emoji
-      if (this.userMessageId) {
-        const newEmoji = '\u{1F6E0}\uFE0F'
+      while (this.sendQueue.length > 0) {
+        const item = this.sendQueue[0]
         try {
-          if (this.emoji && this.emoji !== newEmoji) {
-            await this.cb.removeReaction(this.channelId, this.userMessageId, this.emoji)
+          if (item.type === 'text') {
+            await this.deliverQueueItem(item)
+          } else if (item.type === 'toolLog') {
+            await this.processToolLog(item)
           }
-          await this.cb.react(this.channelId, this.userMessageId, newEmoji)
-          this.emoji = newEmoji
-        } catch {}
-      }
-      // Combine pending text + tool log
-      const newText = this.extractNewText()
-      const msg = newText
-        ? formatForDiscord(newText) + '\n\n' + toolLine
-        : toolLine
-      // Tool logs are always treated as new output, so skip hash dedup here.
-      this.sentCount++
-      this.persistState()
-      const chunks = chunk(msg, 2000)
-      for (const c of chunks) {
-        try { await this.cb.send(this.channelId, c) }
-        catch (err) { process.stderr.write(`claude2bot: send failed: ${err}\n`) }
+          this.sendQueue.shift()
+        } catch (err) {
+          process.stderr.write(`claude2bot: send failed: ${err}\n`)
+          this.scheduleRetry()
+          break
+        }
       }
     } finally { this.sending = false }
+  }
+
+  /** Internal: process a single tool log send (extracted from old forwardToolLog) */
+  private async processToolLog(item: {
+    text: string
+    nextFileSize: number
+    bufferText: string
+    preformatted?: boolean
+    skipHashDedup?: boolean
+  }): Promise<void> {
+    // Update reaction to tool emoji
+    if (this.userMessageId) {
+      const newEmoji = '\u{1F6E0}\uFE0F'
+      try {
+        if (this.emoji && this.emoji !== newEmoji) {
+          await this.cb.removeReaction(this.channelId, this.userMessageId, this.emoji)
+        }
+        await this.cb.react(this.channelId, this.userMessageId, newEmoji)
+        this.emoji = newEmoji
+      } catch {}
+    }
+    await this.deliverQueueItem(item)
   }
 
   /** Forward final text on session idle */
   async forwardFinalText(retries = 0): Promise<void> {
     if (!this.channelId) return
-    if (this.sending) {
-      if (retries < 3) {
+    if (this.sending || this.sendQueue.length > 0) {
+      if (retries < 5) {
         setTimeout(() => void this.forwardFinalText(retries + 1), 300)
       }
       return
@@ -448,8 +540,16 @@ export class OutputForwarder {
         try { await this.cb.removeReaction(this.channelId, this.userMessageId, this.emoji) }
         catch {}
       }
-      const newText = this.extractNewText()
-      if (newText) await this.sendOnce(newText)
+      const { text: newText, nextFileSize } = this.extractNewText()
+      if (newText) {
+        await this.deliverQueueItem({
+          text: newText,
+          nextFileSize,
+          bufferText: newText,
+        })
+      } else {
+        this.commitReadProgress(nextFileSize)
+      }
       if (this.turnTextBuffer.trim()) {
         await this.cb.recordAssistantTurn?.({
           channelId: this.channelId,
@@ -599,19 +699,23 @@ export class OutputForwarder {
     // Intentionally empty: watch must never stop
   }
 
-  /** Reset the idle timer — fires after 5s of no new data */
+  /** Reset the idle timer — safety net in case turn-end signal is missed */
   private resetIdleTimer(): void {
     if (this.idleTimer) clearTimeout(this.idleTimer)
     this.idleTimer = setTimeout(() => {
       this.idleTimer = null
       if (this.onIdleCallback) this.onIdleCallback()
-    }, 5000)
+    }, 1000)
   }
 
   private closeWatcher(): void {
     if (this.watchDebounce) {
       clearTimeout(this.watchDebounce)
       this.watchDebounce = null
+    }
+    if (this.sendRetryTimer) {
+      clearTimeout(this.sendRetryTimer)
+      this.sendRetryTimer = null
     }
     if (this.watcher) {
       this.watcher.close()

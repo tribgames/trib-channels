@@ -165,7 +165,7 @@ export async function verifyMemoryClaim(store, query, options = {}) {
   if (store.vecEnabled && Array.isArray(queryVector) && queryVector.length > 0) {
     try {
       const hex = vecToHex(queryVector)
-      const knnRows = store.db.prepare(
+      const knnRows = store.vecReadDb.prepare(
         `SELECT rowid, distance FROM vec_memory WHERE embedding MATCH X'${hex}' ORDER BY distance LIMIT ?`
       ).all(verifyLimit * 3)
       for (const knn of knnRows) {
@@ -221,7 +221,7 @@ export async function getEpisodeRecallRows(store, options = {}) {
   if (store.vecEnabled && Array.isArray(queryVector) && queryVector.length > 0) {
     try {
       const hex = vecToHex(queryVector)
-      const knnRows = store.db.prepare(
+      const knnRows = store.vecReadDb.prepare(
         `SELECT rowid, distance FROM vec_memory WHERE embedding MATCH X'${hex}' ORDER BY distance LIMIT ?`
       ).all(queryLimit * 5)
       for (const knn of knnRows) {
