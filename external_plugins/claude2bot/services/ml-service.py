@@ -30,19 +30,31 @@ class Handler(BaseHTTPRequestHandler):
 
             parsed = []
             if text:
-                settings = {'PREFER_DATES_FROM': 'past'}
-                if lang:
-                    settings['LANGUAGE_DETECTION_CONFIDENCE_THRESHOLD'] = 0.5
-                    result = dateparser.parse(text, languages=[lang], settings=settings)
-                else:
-                    result = dateparser.parse(text, settings=settings)
+                settings = {'PREFER_DATES_FROM': 'past', 'RETURN_AS_TIMEZONE_AWARE': False}
 
+                # Try full text first
+                result = dateparser.parse(text, languages=[lang] if lang else None, settings=settings)
                 if result:
-                    parsed.append({
-                        'text': text,
-                        'start': result.strftime('%Y-%m-%d'),
-                        'end': None,
-                    })
+                    parsed.append({'text': text, 'start': result.strftime('%Y-%m-%d'), 'end': None})
+                else:
+                    # Extract temporal tokens and try each
+                    TEMPORAL_KO = ['어제', '오늘', '내일', '그저께', '엊그제', '모레', '아까',
+                                   '방금', '지난주', '이번주', '다음주', '지난달', '이번달', '다음달',
+                                   '작년', '올해', '내년', '그제', '지난번']
+                    for token in TEMPORAL_KO:
+                        if token in text:
+                            r = dateparser.parse(token, languages=['ko'], settings=settings)
+                            if r:
+                                parsed.append({'text': token, 'start': r.strftime('%Y-%m-%d'), 'end': None})
+                                break
+                    # Also try N일/주/달 전 patterns
+                    if not parsed:
+                        import re
+                        m = re.search(r'(\d+)\s*(일|주|달|개월|년)\s*전', text)
+                        if m:
+                            r = dateparser.parse(f"{m.group(1)} {m.group(2)} 전", languages=['ko'], settings=settings)
+                            if r:
+                                parsed.append({'text': m.group(0), 'start': r.strftime('%Y-%m-%d'), 'end': None})
 
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')

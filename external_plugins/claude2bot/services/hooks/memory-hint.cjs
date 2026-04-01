@@ -29,7 +29,7 @@ function main() {
             hookEventName: 'UserPromptSubmit',
             additionalContext: hints
           },
-          systemMessage: hints
+          suppressOutput: true
         }));
       });
     } catch (e) {
