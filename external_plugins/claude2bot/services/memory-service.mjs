@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Suppress experimental warnings (they go to stdout and break MCP stdio)
+process.removeAllListeners('warning')
+process.on('warning', () => {})
 /**
  * memory-service.mjs — MCP server + HTTP hybrid memory service.
  *
