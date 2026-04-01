@@ -37,13 +37,14 @@ function main() {
 }
 
 function extractMessage(payload) {
-  // UserPromptSubmit payload: { message: { content: "..." } } or { message: "..." }
   if (!payload) return null;
+  // Claude Code UserPromptSubmit format: { user_prompt: "..." }
+  if (typeof payload.user_prompt === 'string') return payload.user_prompt;
+  // Fallback: { message: { content: "..." } } or { message: "..." }
   const msg = payload.message;
   if (!msg) return null;
   if (typeof msg === 'string') return msg;
   if (typeof msg.content === 'string') return msg.content;
-  // content can be array of blocks
   if (Array.isArray(msg.content)) {
     return msg.content
       .filter(b => b.type === 'text')
