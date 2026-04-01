@@ -15,5 +15,13 @@
     "messaging",
     "mcp",
     "discord-bot"
-  ]
+  ],
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "type": "command",
+        "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/memory-hint.cjs"
+      }
+    ]
+  }
 }
