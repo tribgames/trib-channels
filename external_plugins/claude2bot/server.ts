@@ -109,18 +109,9 @@ const INSTANCE_ID = makeInstanceId()
 ensureRuntimeDirs()
 cleanupStaleRuntimeFiles()
 
-// ── Memory + ML service processes ────────────────────────────────────
-// Memory store initialization, cycle1 scheduler, and embedding config
-// are now handled by memory-service.mjs (spawned as a child process).
-const memServiceProcess = spawn(process.execPath, [path.join(PLUGIN_ROOT, 'services', 'memory-service.mjs')], {
-  stdio: 'ignore',
-  env: { ...process.env, CLAUDE_PLUGIN_DATA: DATA_DIR },
-})
-memServiceProcess.on('exit', (code) => {
-  process.stderr.write(`[memory-service] exited with code ${code}\n`)
-})
-
-// ML service removed — ONNX embedding stays in Node.js, intent classifier handles temporal detection
+// ── Memory service ───────────────────────────────────────────────────
+// memory-service.mjs is managed by .mcp.json (trib-memory).
+// Do NOT spawn here — Claude Code handles lifecycle via .mcp.json.
 
 // ── Instructions ───────────────────────────────────────────────────────
 // Based on the official Claude Code Discord plugin instructions.
@@ -1663,7 +1654,7 @@ function shutdown(): void {
   }
   try { turnEndWatcher.close() } catch {}
   try { controlWorker?.kill() } catch {}
-  try { memServiceProcess.kill() } catch {}
+  // memory-service lifecycle managed by .mcp.json
   // ML service removed — temporal parser is spawned by memory-service
   void stopOwnedRuntime('process shutdown')
     .catch(() => {})
