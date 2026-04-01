@@ -85,6 +85,58 @@ void store.warmupEmbeddings()
   .then(() => store.ensureEmbeddings({ perTypeLimit: 12 }))
   .catch(err => process.stderr.write(`[memory-service] embedding warmup failed: ${err}\n`))
 
+// ── Cycle schedulers ─────────────────────────────────────────────────
+
+// cycle1: fast extraction at configured interval (default 5m)
+const cycle1Config = mainConfig?.memory?.cycle1 ?? {}
+const cycle1IntervalStr = cycle1Config.interval || '5m'
+const cycle1Ms = (() => {
+  const m = cycle1IntervalStr.match(/^(\d+)(s|m|h)$/)
+  if (!m) return 300_000
+  const n = Number(m[1])
+  return m[2] === 's' ? n * 1000 : m[2] === 'm' ? n * 60_000 : n * 3600_000
+})()
+
+let cycle1Timer = null
+function startCycle1Scheduler() {
+  if (cycle1Timer) return
+  cycle1Timer = setInterval(async () => {
+    try {
+      await runCycle1(store, mainConfig)
+      process.stderr.write(`[cycle1] completed at ${new Date().toISOString()}\n`)
+    } catch (e) {
+      process.stderr.write(`[cycle1] error: ${e.message}\n`)
+    }
+  }, cycle1Ms)
+  process.stderr.write(`[cycle1] scheduler started: interval=${cycle1IntervalStr} (${cycle1Ms}ms)\n`)
+}
+
+// cycle2: daily consolidation at configured time (default 03:00)
+const cycle2Config = mainConfig?.memory?.cycle2 ?? {}
+const cycle2Schedule = cycle2Config.schedule || '03:00'
+const [cycle2Hour, cycle2Min] = cycle2Schedule.split(':').map(Number)
+let lastCycle2Date = ''
+
+function checkCycle2() {
+  const now = new Date()
+  const today = now.toISOString().slice(0, 10)
+  if (today === lastCycle2Date) return
+  if (now.getHours() === cycle2Hour && now.getMinutes() >= cycle2Min) {
+    lastCycle2Date = today
+    sleepCycle(store, mainConfig).then(() => {
+      process.stderr.write(`[cycle2] completed at ${now.toISOString()}\n`)
+    }).catch(e => {
+      process.stderr.write(`[cycle2] error: ${e.message}\n`)
+    })
+  }
+}
+
+// Check cycle2 every minute
+setInterval(checkCycle2, 60_000)
+
+// Start cycle1 after brief delay (let store warm up)
+setTimeout(startCycle1Scheduler, 5000)
+
 // ══════════════════════════════════════════════════════════════════════
 //  SHARED HELPERS (used by both MCP and HTTP)
 // ══════════════════════════════════════════════════════════════════════
