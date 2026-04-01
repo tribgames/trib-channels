@@ -441,6 +441,53 @@ if (config.webhook?.enabled) {
   webhookServer = new WebhookServer(config.webhook, config.channelsConfig ?? null)
 }
 
+// ── Hints HTTP endpoint (for UserPromptSubmit hook) ─────────────────
+import * as http from 'http'
+
+const HINTS_PORT_FILE = path.join(os.tmpdir(), 'claude2bot', 'hints-port')
+const hintsServer = http.createServer(async (req, res) => {
+  if (req.method === 'GET' && req.url?.startsWith('/hints')) {
+    const url = new URL(req.url, `http://localhost`)
+    const q = url.searchParams.get('q') || ''
+    if (!q || q.length < 3) {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end('{}')
+      return
+    }
+    try {
+      const ctx = await memoryStore.buildInboundMemoryContext(q, {})
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ hints: ctx || '' }))
+    } catch (e) {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end('{}')
+    }
+    return
+  }
+  res.writeHead(404)
+  res.end()
+})
+
+{
+  const basePort = 3350
+  const maxPort = basePort + 7
+  let port = basePort
+  const tryListen = () => {
+    hintsServer.listen(port, () => {
+      try { fs.mkdirSync(path.dirname(HINTS_PORT_FILE), { recursive: true }) } catch {}
+      fs.writeFileSync(HINTS_PORT_FILE, String(port))
+      process.stderr.write(`[hints] listening on port ${port}\n`)
+    })
+  }
+  hintsServer.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EADDRINUSE' && port < maxPort) {
+      port++
+      tryListen()
+    }
+  })
+  tryListen()
+}
+
 // ── Event pipeline ───────────────────────────────────────────────────
 
 const eventPipeline = new EventPipeline(config.events, config.channelsConfig)
