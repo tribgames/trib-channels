@@ -37,11 +37,24 @@ import {
 
 // ── Configuration ────────────────────────────────────────────────────
 
-const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA || process.argv[2]
+const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
+  || process.argv[2]
+  || (() => {
+    // Fallback: find plugin data dir by convention
+    const candidates = [
+      path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude2bot-claude2bot'),
+      path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude2bot'),
+    ]
+    for (const c of candidates) {
+      if (fs.existsSync(path.join(c, 'memory.sqlite'))) return c
+    }
+    return null
+  })()
 if (!DATA_DIR) {
-  process.stderr.write('[memory-service] CLAUDE_PLUGIN_DATA or argv[2] required\n')
+  process.stderr.write('[memory-service] CLAUDE_PLUGIN_DATA not set and no fallback found\n')
   process.exit(1)
 }
+process.stderr.write(`[memory-service] DATA_DIR=${DATA_DIR}\n`)
 
 const PORT_FILE = path.join(os.tmpdir(), 'claude2bot', 'memory-port')
 const BASE_PORT = 3350
