@@ -248,107 +248,114 @@ export class OutputForwarder {
   /** Track last tool_use name and file path for matching with tool_result */
   private lastToolName = ''
   private lastToolFilePath = ''
+  private extracting = false
 
   /** Extract new assistant text + tool logs from transcript since readFileSize */
   private extractNewText(): { text: string; nextFileSize: number } {
-    const { lines: newLines, nextFileSize } = this.readNewLines()
-    let newText = ''
-    for (const l of newLines) {
-      try {
-        const entry = JSON.parse(l)
+    if (this.extracting) {
+      return { text: '', nextFileSize: this.readFileSize }
+    }
+    this.extracting = true
+    try {
+      const { lines: newLines, nextFileSize } = this.readNewLines()
+      let newText = ''
+      for (const l of newLines) {
+        try {
+          const entry = JSON.parse(l)
 
-        // Pin to the main session id on the first non-sidechain entry.
-        if (!entry.isSidechain && entry.sessionId && !this.mainSessionId) {
-          this.mainSessionId = entry.sessionId
-        }
+          // Pin to the main session id on the first non-sidechain entry.
+          if (!entry.isSidechain && entry.sessionId && !this.mainSessionId) {
+            this.mainSessionId = entry.sessionId
+          }
 
-        // Keep sidechains out of the forwarding path.
-        if (entry.isSidechain) continue
-        if (this.mainSessionId && entry.sessionId && entry.sessionId !== this.mainSessionId) continue
+          // Keep sidechains out of the forwarding path.
+          if (entry.isSidechain) continue
+          if (this.mainSessionId && entry.sessionId && entry.sessionId !== this.mainSessionId) continue
 
-        // tool_result: show Edit diff from toolUseResult, skip the rest
-        if (entry.type === 'user' && entry.message?.content?.some((c: any) => c.type === 'tool_result')) {
-          // Skip recall_memory tool results entirely
-          if (OutputForwarder.isRecallMemory(this.lastToolName)) {
+          // tool_result: show Edit diff from toolUseResult, skip the rest
+          if (entry.type === 'user' && entry.message?.content?.some((c: any) => c.type === 'tool_result')) {
+            // Skip recall_memory tool results entirely
+            if (OutputForwarder.isRecallMemory(this.lastToolName)) {
+              continue
+            }
+            if (this.lastToolName === 'Edit' && entry.toolUseResult && !OutputForwarder.isMemoryFile(this.lastToolFilePath)) {
+              const old = entry.toolUseResult.oldString || ''
+              const nw = entry.toolUseResult.newString || ''
+              if (old || nw) {
+                const diffLines: string[] = []
+                for (const l of old.split('\n')) diffLines.push('- ' + l)
+                for (const l of nw.split('\n')) diffLines.push('+ ' + l)
+                const shown = diffLines.slice(0, 15)
+                let diffContent = shown.join('\n')
+                if (diffLines.length > 15) diffContent += '\n... +' + (diffLines.length - 15) + ' lines'
+                const block = safeCodeBlock(diffContent, 'diff')
+                newText += block + '\n'
+              }
+            }
             continue
           }
-          if (this.lastToolName === 'Edit' && entry.toolUseResult && !OutputForwarder.isMemoryFile(this.lastToolFilePath)) {
-            const old = entry.toolUseResult.oldString || ''
-            const nw = entry.toolUseResult.newString || ''
-            if (old || nw) {
-              const diffLines: string[] = []
-              for (const l of old.split('\n')) diffLines.push('- ' + l)
-              for (const l of nw.split('\n')) diffLines.push('+ ' + l)
-              const shown = diffLines.slice(0, 15)
-              let diffContent = shown.join('\n')
-              if (diffLines.length > 15) diffContent += '\n... +' + (diffLines.length - 15) + ' lines'
-              const block = safeCodeBlock(diffContent, 'diff')
-              newText += block + '\n'
-            }
-          }
-          continue
-        }
 
-        if (entry.type === 'assistant' && entry.message?.content) {
-          this.hasSeenAssistant = true
-          const SEARCH_TOOLS = new Set(['Read', 'Grep', 'Glob'])
-          const parts: string[] = []
+          if (entry.type === 'assistant' && entry.message?.content) {
+            this.hasSeenAssistant = true
+            const SEARCH_TOOLS = new Set(['Read', 'Grep', 'Glob'])
+            const parts: string[] = []
 
-          for (const c of entry.message.content) {
-            if (c.type === 'text' && c.text?.trim()) {
-              // Plain text resets grouping sequences.
-              this.inExplorerSequence = false
-              this.inRecallSequence = false
-              // Strip system XML tags (channel, memory-context, system-reminder, event) before forwarding
-              let cleaned = c.text.trim()
-                .replace(/<(channel|memory-context|system-reminder|event)\b[^>]*>[\s\S]*?<\/\1>/g, '')
-                .trim()
-              if (cleaned) parts.push(cleaned)
-            } else if (c.type === 'tool_use') {
-              this.lastToolName = c.name || ''
-              this.lastToolFilePath = c.input?.file_path || ''
-              if (OutputForwarder.isHidden(c.name)) continue
+            for (const c of entry.message.content) {
+              if (c.type === 'text' && c.text?.trim()) {
+                // Plain text resets grouping sequences.
+                this.inExplorerSequence = false
+                this.inRecallSequence = false
+                // Strip system XML tags (channel, memory-context, system-reminder, event) before forwarding
+                let cleaned = c.text.trim()
+                  .replace(/<(channel|memory-context|system-reminder|event)\b[^>]*>[\s\S]*?<\/\1>/g, '')
+                  .trim()
+                if (cleaned) parts.push(cleaned)
+              } else if (c.type === 'tool_use') {
+                this.lastToolName = c.name || ''
+                this.lastToolFilePath = c.input?.file_path || ''
+                if (OutputForwarder.isHidden(c.name)) continue
 
-              // Show only the first Read/Grep/Glob item in a grouped sequence.
-              if (SEARCH_TOOLS.has(c.name)) {
-                if (!this.inExplorerSequence) {
-                  this.inExplorerSequence = true
-                  let target = ''
-                  if (c.name === 'Read') target = c.input?.file_path ? basename(c.input.file_path) : ''
-                  else if (c.name === 'Grep') target = '"' + (c.input?.pattern || '').substring(0, 25) + '"'
-                  else if (c.name === 'Glob') target = (c.input?.pattern || '').substring(0, 25)
-                  if (parts.length > 0) parts.push('')
-                  parts.push('● **Explorer** (' + (target || c.name) + ')')
+                // Show only the first Read/Grep/Glob item in a grouped sequence.
+                if (SEARCH_TOOLS.has(c.name)) {
+                  if (!this.inExplorerSequence) {
+                    this.inExplorerSequence = true
+                    let target = ''
+                    if (c.name === 'Read') target = c.input?.file_path ? basename(c.input.file_path) : ''
+                    else if (c.name === 'Grep') target = '"' + (c.input?.pattern || '').substring(0, 25) + '"'
+                    else if (c.name === 'Glob') target = (c.input?.pattern || '').substring(0, 25)
+                    if (parts.length > 0) parts.push('')
+                    parts.push('● **Explorer** (' + (target || c.name) + ')')
+                  }
+                  // Ignore subsequent search steps in the same sequence.
+                  continue
                 }
-                // Ignore subsequent search steps in the same sequence.
-                continue
-              }
 
-              // Show only the first recall_memory in a grouped sequence.
-              if (OutputForwarder.isRecallMemory(c.name)) {
-                if (!this.inRecallSequence) {
-                  this.inRecallSequence = true
-                  if (parts.length > 0) parts.push('')
-                  parts.push('● **recall_memory**')
+                // Show only the first recall_memory in a grouped sequence.
+                if (OutputForwarder.isRecallMemory(c.name)) {
+                  if (!this.inRecallSequence) {
+                    this.inRecallSequence = true
+                    if (parts.length > 0) parts.push('')
+                    parts.push('● **recall_memory**')
+                  }
+                  continue
                 }
-                continue
-              }
 
-              // Non-search tools end the Explorer and recall grouping sequences.
-              this.inExplorerSequence = false
-              this.inRecallSequence = false
-              const toolLine = OutputForwarder.buildToolLine(c.name, c.input)
-              if (toolLine) {
-                if (parts.length > 0) parts.push('')
-                parts.push(toolLine)
+                // Non-search tools end the Explorer and recall grouping sequences.
+                this.inExplorerSequence = false
+                this.inRecallSequence = false
+                const toolLine = OutputForwarder.buildToolLine(c.name, c.input)
+                if (toolLine) {
+                  if (parts.length > 0) parts.push('')
+                  parts.push(toolLine)
+                }
               }
             }
+            if (parts.length) newText += parts.join('\n') + '\n'
           }
-          if (parts.length) newText += parts.join('\n') + '\n'
-        }
-      } catch {}
-    }
-    return { text: newText.trim(), nextFileSize }
+        } catch {}
+      }
+      return { text: newText.trim(), nextFileSize }
+    } finally { this.extracting = false }
   }
 
   // ── Single-send gate ──────────────────────────────────────────────
@@ -414,15 +421,18 @@ export class OutputForwarder {
     }, 1000)
   }
 
-  /** Forward new assistant text to Discord. Returns true if text was sent. */
-  async forwardNewText(): Promise<boolean> {
-    if (!this.channelId) return false
+  /** Forward new assistant text to Discord. Returns { hadText, hadData } —
+   *  hadText = visible text was sent, hadData = transcript had new lines (even if hidden). */
+  async forwardNewText(): Promise<{ hadText: boolean; hadData: boolean }> {
+    if (!this.channelId) return { hadText: false, hadData: false }
+    const prevFileSize = this.readFileSize
     const { text: newText, nextFileSize } = this.extractNewText()
+    const hadData = nextFileSize > prevFileSize
     if (!newText) {
       if (!this.sending && this.sendQueue.length === 0) {
         this.commitReadProgress(nextFileSize)
       }
-      return false
+      return { hadText: false, hadData }
     }
     this.sendQueue.push({
       type: 'text',
@@ -431,7 +441,7 @@ export class OutputForwarder {
       bufferText: newText,
     })
     void this.drainQueue()
-    return true
+    return { hadText: true, hadData }
   }
 
   /** Forward tool log line to Discord */
@@ -501,8 +511,8 @@ export class OutputForwarder {
   async forwardFinalText(retries = 0): Promise<void> {
     if (!this.channelId) return
     if (this.sending || this.sendQueue.length > 0) {
-      if (retries < 5) {
-        setTimeout(() => void this.forwardFinalText(retries + 1), 300)
+      if (retries < 20) {
+        setTimeout(() => void this.forwardFinalText(retries + 1), 500)
       }
       return
     }
@@ -661,7 +671,15 @@ export class OutputForwarder {
     this.watchingPath = this.transcriptPath
     try {
       this.watcher = watch(this.transcriptPath, () => this.scheduleWatchFlush())
-      this.watcher.on('error', () => this.closeWatcher())
+      this.watcher.on('error', () => {
+        this.closeWatcher()
+        // Schedule a retry to re-create the watcher after 2 seconds
+        setTimeout(() => {
+          if (!this.watcher && this.transcriptPath) {
+            this.startWatch()
+          }
+        }, 2000)
+      })
     } catch {
       this.closeWatcher()
     }
@@ -701,10 +719,11 @@ export class OutputForwarder {
     if (this.watchDebounce) clearTimeout(this.watchDebounce)
     this.watchDebounce = setTimeout(() => {
       this.watchDebounce = null
-      void this.forwardNewText().then(hadText => {
-        // Only reset idle timer when visible text was actually forwarded.
-        // HIDDEN tools (SendMessage, TaskUpdate etc.) should not delay idle detection.
-        if (hadText) {
+      void this.forwardNewText().then(({ hadText, hadData }) => {
+        // Reset idle timer when visible text was forwarded OR when new transcript
+        // lines existed (e.g. hidden tool activity). This prevents premature idle
+        // detection during sequences of hidden tools that produce no visible text.
+        if (hadText || hadData) {
           this.resetIdleTimer()
         }
       })

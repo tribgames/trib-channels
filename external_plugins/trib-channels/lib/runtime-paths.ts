@@ -71,8 +71,12 @@ export function getControlResponsePath(instanceId: string): string {
   return join(RUNTIME_ROOT, `control-${sanitize(instanceId)}.response.json`)
 }
 
-export function getPermissionResultPath(instanceId: string, uuid: string): string {
-  return join(RUNTIME_ROOT, `perm-${sanitize(instanceId)}-${sanitize(uuid)}.result`)
+/** Build the permission result file path.
+ *  `stableId` should be the Claude session PID (stable across MCP server restarts)
+ *  rather than the server's INSTANCE_ID. Both the hook and the server must agree
+ *  on this identifier so they read/write the same file. */
+export function getPermissionResultPath(stableId: string, uuid: string): string {
+  return join(RUNTIME_ROOT, `perm-${sanitize(stableId)}-${sanitize(uuid)}.result`)
 }
 
 export function getStopFlagPath(instanceId: string): string {

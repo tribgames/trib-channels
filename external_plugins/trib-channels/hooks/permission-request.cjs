@@ -18,6 +18,7 @@ if (!DATA_DIR) process.exit(0);
 
 const RUNTIME_ROOT = path.join(os.tmpdir(), 'trib-channels');
 const ACTIVE_INSTANCE_FILE = path.join(RUNTIME_ROOT, 'active-instance.json');
+const SESSION_SIGNAL_FILE = path.join(RUNTIME_ROOT, 'session-signal.json');
 
 const POLL_INTERVAL = 2000;
 const TIMEOUT = 900000; // 15 minutes
@@ -30,6 +31,15 @@ function sanitize(value) {
 function readActiveInstance() {
   try {
     return JSON.parse(fs.readFileSync(ACTIVE_INSTANCE_FILE, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function readSessionPid() {
+  try {
+    const signal = JSON.parse(fs.readFileSync(SESSION_SIGNAL_FILE, 'utf8'));
+    return signal && signal.pid ? String(signal.pid) : null;
   } catch {
     return null;
   }
@@ -107,9 +117,17 @@ process.stdin.on('end', async () => {
     cleanupStaleFiles();
 
     const uuid = crypto.randomBytes(16).toString('hex');
+    // Use Claude session PID as the stable identifier for perm result files.
+    // The session PID survives MCP server restarts within the same Claude session,
+    // unlike the server's INSTANCE_ID which changes on every restart.
+    const sessionPid = readSessionPid();
     const active = readActiveInstance();
-    if (!active || !active.instanceId) process.exit(0);
-    const instanceId = sanitize(active.instanceId);
+    const stableId = sessionPid || (active && active.instanceId ? active.instanceId : null);
+    if (!stableId) {
+      process.stderr.write('[perm-hook] no session PID or active instance found — cannot create permission request\n');
+      process.exit(0);
+    }
+    const instanceId = sanitize(stableId);
     const pendingFile = path.join(RUNTIME_ROOT, `perm-${instanceId}-${uuid}.pending`);
     const resultFile = path.join(RUNTIME_ROOT, `perm-${instanceId}-${uuid}.result`);
 
@@ -139,7 +157,7 @@ process.stdin.on('end', async () => {
     const messageId = msgResult.id;
 
     if (!messageId) {
-      // If Discord delivery fails, fall back to the terminal flow.
+      process.stderr.write('[perm-hook] Discord message send failed — falling back to terminal flow\n');
       process.exit(0);
     }
 
@@ -250,8 +268,9 @@ process.stdin.on('end', async () => {
     const denyDecision = { hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'deny', message: 'Timeout' } } };
     process.stdout.write(JSON.stringify(denyDecision));
     process.exit(0);
-  } catch {
+  } catch (err) {
     // Fail closed and let Claude fall back to terminal approval.
+    process.stderr.write('[perm-hook] unexpected error: ' + (err && err.message ? err.message : String(err)) + '\n');
     process.exit(0);
   }
 });

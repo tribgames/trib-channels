@@ -231,7 +231,11 @@ const turnEndWatcher = fs.watch(TURN_END_DIR, async (_event, filename) => {
     const stat = fs.statSync(TURN_END_FILE)
     if (stat.size > 0) {
       stopServerTyping()
-      await forwarder.forwardFinalText()
+      const now = Date.now()
+      if (now - lastFinalTextTime >= FINAL_TEXT_DEDUP_MS) {
+        lastFinalTextTime = now
+        await forwarder.forwardFinalText()
+      }
       removeFileIfExists(TURN_END_FILE)
     }
   } catch {
@@ -294,6 +298,10 @@ const forwarder = new OutputForwarder({
   removeReaction: (ch, mid, emoji) => backend.removeReaction(ch, mid, emoji),
 }, statusState)
 
+// Dedup guard: prevent redundant forwardFinalText calls from multiple trigger sites
+let lastFinalTextTime = 0
+const FINAL_TEXT_DEDUP_MS = 500
+
 // Runtime ownership follows the newest interactive Claude session.
 // Multiple plugin processes may coexist; only the current owner connects
 // Discord/webhook/scheduler and claims channel state.
@@ -310,7 +318,11 @@ try {
 // Wire up forwarder's idle detection to server idle handling
 forwarder.setOnIdle(() => {
   stopServerTyping()
-  void forwarder.forwardFinalText()
+  const now = Date.now()
+  if (now - lastFinalTextTime >= FINAL_TEXT_DEDUP_MS) {
+    lastFinalTextTime = now
+    void forwarder.forwardFinalText()
+  }
 })
 
 function applyTranscriptBinding(
@@ -506,6 +518,22 @@ function noteStartupHandoff(previous: ReturnType<typeof readActiveInstance>): vo
   logOwnership(`startup handoff from ${previous.instanceId}`)
 }
 
+// Persistent last-channel file — survives runtime cleanup across sessions
+const LAST_CHANNEL_FILE = path.join(DATA_DIR, 'last-channel.json')
+
+function persistLastChannel(channelId: string): void {
+  try {
+    fs.writeFileSync(LAST_CHANNEL_FILE, JSON.stringify({ channelId, ts: Date.now() }))
+  } catch { /* best effort */ }
+}
+
+function readLastChannel(): string {
+  try {
+    const data = JSON.parse(fs.readFileSync(LAST_CHANNEL_FILE, 'utf8'))
+    return typeof data.channelId === 'string' ? data.channelId : ''
+  } catch { return '' }
+}
+
 function bindPersistedTranscriptIfAny(): void {
   const initBound = discoverSessionBoundTranscript()
   if (!initBound?.exists) return
@@ -532,6 +560,15 @@ function bindPersistedTranscriptIfAny(): void {
         } catch { /* skip unreadable files */ }
       }
     } catch { /* RUNTIME_ROOT not readable */ }
+  }
+  // Fallback: read from persistent last-channel file (survives runtime cleanup)
+  if (!currentStatus.channelId) {
+    const lastCh = readLastChannel()
+    if (lastCh) {
+      statusState.update((state: Record<string, unknown>) => { state.channelId = lastCh })
+      currentStatus = statusState.read()
+      process.stderr.write(`trib-channels: restored channelId from last-channel.json\n`)
+    }
   }
   if (!currentStatus.channelId) return
   applyTranscriptBinding(currentStatus.channelId, initBound.transcriptPath)
@@ -822,8 +859,12 @@ backend.onInteraction = (interaction: BackendInteraction) => {
       return
     }
 
-    // Write result file (idempotent — skip if already exists)
-    const resultPath = getPermissionResultPath(INSTANCE_ID, uuid)
+    // Write result file using the Claude session PID as the stable identifier.
+    // The hook uses the same PID to construct the expected result filename,
+    // so this survives MCP server restarts within one Claude session.
+    const signal = readSessionSignal()
+    const permStableId = signal?.pid ? String(signal.pid) : INSTANCE_ID
+    const resultPath = getPermissionResultPath(permStableId, uuid)
     if (!fs.existsSync(resultPath)) {
       fs.writeFileSync(resultPath, action)
     }
@@ -1466,7 +1507,7 @@ const inboundQueue = (() => {
   }
 })()
 
-backend.onMessage = (msg) => {
+backend.onMessage = async (msg) => {
   if (!bridgeRuntimeConnected || !currentOwnerState().owned) {
     void refreshBridgeOwnership()
     return
@@ -1483,7 +1524,11 @@ backend.onMessage = (msg) => {
   backend.resetSendCount()
   // Flush unsent assistant text before resetting — prevents skipping text
   // when reset() + applyTranscriptBinding() jumps lastFileSize forward.
-  void forwarder.forwardFinalText()
+  const now = Date.now()
+  if (now - lastFinalTextTime >= FINAL_TEXT_DEDUP_MS) {
+    lastFinalTextTime = now
+    await forwarder.forwardFinalText()
+  }
   forwarder.reset()
 
   // Prefer the current parent Claude session. If the exact transcript is not
@@ -1511,6 +1556,7 @@ backend.onMessage = (msg) => {
       if (transcriptPath) state.transcriptPath = transcriptPath
       else delete state.transcriptPath
     })
+    persistLastChannel(route.targetChatId)
     if (!boundTranscript?.exists) {
       await rebindTranscriptContext(route.targetChatId, {
         previousPath: transcriptPath,
